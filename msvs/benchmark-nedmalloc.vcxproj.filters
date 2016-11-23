@@ -1,0 +1,25 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="..\benchmark\main.c" />
+    <ClCompile Include="..\benchmark\nedmalloc\benchmark.c" />
+    <ClCompile Include="..\test\thread.c" />
+    <ClCompile Include="..\test\timer.c" />
+    <ClCompile Include="..\benchmark\nedmalloc\nedmalloc.c">
+      <Filter>nedmalloc</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\benchmark\benchmark.h" />
+    <ClInclude Include="..\test\thread.h" />
+    <ClInclude Include="..\test\timer.h" />
+    <ClInclude Include="..\benchmark\nedmalloc\nedmalloc.h">
+      <Filter>nedmalloc</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="nedmalloc">
+      <UniqueIdentifier>{8cf10f4f-6242-4cb6-9b21-f1ad5668326a}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

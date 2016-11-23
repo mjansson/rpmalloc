@@ -1,0 +1,12 @@
+Heap organization:
+
+top/       - "source" heaps that have no superheap.
+combining/ - heaps whose purpose is to combine two existing superheaps.
+debug/     - heaps whose only purpose is debugging or statistics-gathering.
+threads/   - heaps designed to support multiple threads.
+special/   - esoteric heaps to support custom allocation schemes like obstacks.
+
+buildingblock/ - layers that cannot be used standalone but rather are useful for building other heaps.
+objectrep/ - heaps that change the representation of individual objects (e.g., by adding headers).
+             (admittedly this is a terrible organizational principle)
+utility/   - currently a grab-bag

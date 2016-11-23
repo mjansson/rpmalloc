@@ -1,0 +1,21 @@
+#! /bin/sh
+
+case "$OSTYPE" in
+darwin)
+echo "Compiling for Darwin"
+  g++ -pipe -O3 -finline-limit=65000 -fkeep-inline-functions -finline-functions -ffast-math -fomit-frame-pointer -DNDEBUG  -I. -I../.. -I../../util -D_REENTRANT=1 -compatibility_version 1 -current_version 1 -dynamiclib libkingsley.cpp -o libkingsley.dylib;;
+[Ll]inux*)
+  echo "Compiling for Linux"
+  g++ -pipe -march=pentiumpro -O3 -finline-limit=65000 -fkeep-inline-functions -finline-functions -ffast-math -fomit-frame-pointer -DNDEBUG  -I. -I../.. -I../../util -D_REENTRANT=1 -shared libkingsley.cpp -o libkingsley.so -ldl -lpthread;;
+solaris)
+  echo "Compiling for Solaris"
+  #CC -xildoff -native -noex -xipo=2 -xO5 -mt -DNDEBUG -I. -I.. -D_REENTRANT=1 -G -PIC libkingsley.cpp -o libkingsley.so;;
+#  g++ -pipe -DNDEBUG -I. -I.. -D_REENTRANT=1 -fPIC -shared libkingsley.cpp -o libkingsley.so;;
+   g++ -fPIC -pipe -march=ultrasparc -O3 -finline-limit=5000 -fkeep-inline-functions -finline-functions -ffast-math -fomit-frame-pointer -DNDEBUG  -I. -I.. -I../.. -I../../util -D_REENTRANT=1 -shared libkingsley.cpp -o libkingsley.so;;
+#  g++ -pipe -march=ultrasparc -O3 -finline-limit=65000 -fkeep-inline-functions -finline-functions -ffast-math -fomit-frame-pointer -DNDEBUG  -I. -I.. -D_REENTRANT=1 -shared libkingsley.cpp -o libkingsley.so;;
+*)
+  echo "hmmm"
+esac
+
+
+

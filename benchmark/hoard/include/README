@@ -1,0 +1,6 @@
+Directory structure:
+
+hoard/        - files specific to Hoard
+superblocks/  - files that perform superblock management
+util/         - generic files, candidates for inclusion in Heap Layers
+
