@@ -52,6 +52,8 @@ allocate_fixed_size(void* argptr) {
 		if (iter) {
 			arg->mops += num_loops * num_pointers * 2;
 			arg->ticks += ticks_elapsed;
+			if (((double)arg->ticks / (double)timer_ticks_per_second()) > 60.0f)
+				break;
 		}
 	}
 
@@ -119,7 +121,7 @@ allocate_random_size(void* argptr) {
 
 	size_t pointers_size = sizeof(void*) * num_pointers;
 	pointers = benchmark_malloc(pointers_size);
-	memset(pointers, 0, pointers_size);
+	memset((void*)pointers, 0, pointers_size);
 
 	while (!benchmark_start)
 		thread_yield();
@@ -131,12 +133,15 @@ allocate_random_size(void* argptr) {
 		for (size_t iloop = 0; iloop < (iter ? num_loops : num_loops / 4); ++iloop) {
 			for (size_t iptr = 0; iptr < num_pointers; ++iptr) {
 				size_t size_index = (iter + iloop + iptr) % random_size_count;
+				size_t size = random_size[size_index];
+				if (arg->size)
+					size = size % arg->size;
 				//Interleave alloc and free calls
 				if (pointers[iptr]) {
 					benchmark_free((void*)pointers[iptr]);
 					++arg->mops;
 				}
-				pointers[iptr] = benchmark_malloc(random_size[size_index]);
+				pointers[iptr] = benchmark_malloc(size);
 				arg->accumulator += (uintptr_t)pointers[iptr];
 				++arg->mops;
 			}
@@ -151,8 +156,11 @@ allocate_random_size(void* argptr) {
 		}
 		size_t ticks_elapsed = timer_current() - tick_start;
 		arg->accumulator += ticks_elapsed;
-		if (iter)
+		if (iter) {
 			arg->ticks += ticks_elapsed;
+			if (((double)arg->ticks / (double)timer_ticks_per_second()) > 60.0f)
+				break;
+		}
 	}
 
 	benchmark_free((void**)pointers);
@@ -186,15 +194,16 @@ int main(int argc, char** argv) {
 	uintptr_t thread_handle[16];
 	FILE* fd;
 
-	fd = fopen("benchmark-random.txt", "w+b");
+	fd = fopen("benchmark-random-small.txt", "w+b");
 
 	for (size_t num_threads = 1; num_threads <= 12; ++num_threads) {
 		benchmark_start = 0;
 
-		printf("Running %u threads alloc/free random size: ", (unsigned int)num_threads);
+		printf("Running %u threads alloc/free random size <4096: ", (unsigned int)num_threads);
 		fflush(stdout);
 
 		for (size_t ithread = 0; ithread < num_threads; ++ithread) {
+			arg[ithread].size = 4096;
 			arg[ithread].thread_arg.fn = allocate_random_size;
 			arg[ithread].thread_arg.arg = &arg[ithread];
 			thread_handle[ithread] = thread_run(&arg[ithread].thread_arg);
@@ -223,6 +232,53 @@ int main(int argc, char** argv) {
 		char linebuf[128];
 		int len = snprintf(linebuf, sizeof(linebuf), "%u,%u\n", (unsigned int)num_threads,
 		                   (unsigned int)average_mops);
+		fwrite(linebuf, len, 1, fd);
+		fflush(fd);
+
+		printf("%u memory ops/CPU second\n", (unsigned int)average_mops);
+		fflush(stdout);
+	}
+
+	fclose(fd);
+
+	fd = fopen("benchmark-random-large.txt", "w+b");
+
+	for (size_t num_threads = 1; num_threads <= 12; ++num_threads) {
+		benchmark_start = 0;
+
+		printf("Running %u threads alloc/free random size <65536: ", (unsigned int)num_threads);
+		fflush(stdout);
+
+		for (size_t ithread = 0; ithread < num_threads; ++ithread) {
+			arg[ithread].size = 0;
+			arg[ithread].thread_arg.fn = allocate_random_size;
+			arg[ithread].thread_arg.arg = &arg[ithread];
+			thread_handle[ithread] = thread_run(&arg[ithread].thread_arg);
+		}
+
+		thread_sleep(1000);
+
+		benchmark_start = 1;
+		thread_fence();
+
+		uint64_t mops = 0;
+		uint64_t ticks = 0;
+		for (size_t ithread = 0; ithread < num_threads; ++ithread) {
+			thread_join(thread_handle[ithread]);
+			ticks += arg[ithread].ticks;
+			mops += arg[ithread].mops;
+			if (!arg[ithread].accumulator)
+				exit(-1);
+		}
+
+		if (!ticks)
+			ticks = 1;
+
+		double time_elapsed = (double)ticks / (double)timer_ticks_per_second();
+		double average_mops = (double)mops / time_elapsed;
+		char linebuf[128];
+		int len = snprintf(linebuf, sizeof(linebuf), "%u,%u\n", (unsigned int)num_threads,
+			(unsigned int)average_mops);
 		fwrite(linebuf, len, 1, fd);
 		fflush(fd);
 
