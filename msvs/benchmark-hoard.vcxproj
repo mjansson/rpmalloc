@@ -109,7 +109,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS=1;NDEBUG=1;_WINDOWS;_UNICODE;UNICODE</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..;..\test;..\benchmark;..\benchmark\hoard\include;..\benchmark\hoard\include\util;..\benchmark\hoard\include\hoard;..\benchmark\hoard\include\superblocks;..\benchmark\hoard\Heap-Layers</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\test;..\benchmark;..\benchmark\hoard\include;..\benchmark\hoard\include\util;..\benchmark\hoard\include\hoard;..\benchmark\hoard\include\superblocks;..\benchmark\hoard\Heap-Layers</AdditionalIncludeDirectories>
       <ExceptionHandling>Async</ExceptionHandling>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -141,7 +141,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS=1;NDEBUG=1;_WINDOWS;_UNICODE;UNICODE</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..;..\test;..\benchmark;..\benchmark\hoard\include;..\benchmark\hoard\include\util;..\benchmark\hoard\include\hoard;..\benchmark\hoard\include\superblocks;..\benchmark\hoard\Heap-Layers</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\test;..\benchmark;..\benchmark\hoard\include;..\benchmark\hoard\include\util;..\benchmark\hoard\include\hoard;..\benchmark\hoard\include\superblocks;..\benchmark\hoard\Heap-Layers</AdditionalIncludeDirectories>
       <ExceptionHandling>Async</ExceptionHandling>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -174,7 +174,7 @@
       <FunctionLevelLinking>false</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS=1;NDEBUG=1;_WINDOWS;_UNICODE;UNICODE</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..;..\test;..\benchmark;..\benchmark\hoard\include;..\benchmark\hoard\include\util;..\benchmark\hoard\include\hoard;..\benchmark\hoard\include\superblocks;..\benchmark\hoard\Heap-Layers</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\test;..\benchmark;..\benchmark\hoard\include;..\benchmark\hoard\include\util;..\benchmark\hoard\include\hoard;..\benchmark\hoard\include\superblocks;..\benchmark\hoard\Heap-Layers</AdditionalIncludeDirectories>
       <ExceptionHandling>Async</ExceptionHandling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <BufferSecurityCheck>false</BufferSecurityCheck>
@@ -211,7 +211,7 @@
       <FunctionLevelLinking>false</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS=1;NDEBUG=1;_WINDOWS;_UNICODE;UNICODE</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..;..\test;..\benchmark;..\benchmark\hoard\include;..\benchmark\hoard\include\util;..\benchmark\hoard\include\hoard;..\benchmark\hoard\include\superblocks;..\benchmark\hoard\Heap-Layers</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\test;..\benchmark;..\benchmark\hoard\include;..\benchmark\hoard\include\util;..\benchmark\hoard\include\hoard;..\benchmark\hoard\include\superblocks;..\benchmark\hoard\Heap-Layers</AdditionalIncludeDirectories>
       <ExceptionHandling>Async</ExceptionHandling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <BufferSecurityCheck>false</BufferSecurityCheck>
