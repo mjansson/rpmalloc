@@ -1,5 +1,5 @@
 
-#include <rpmalloc.h>
+#include <rpmalloc/rpmalloc.h>
 #include <benchmark.h>
 
 int

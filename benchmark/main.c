@@ -18,10 +18,10 @@ typedef struct benchmark_arg benchmark_arg;
 
 static int benchmark_start;
 
-void
+static void
 allocate_fixed_size(void* argptr) {
 	benchmark_arg* arg = argptr;
-	volatile void* pointers[1024];
+	void* pointers[1024];
 	const size_t num_pointers = sizeof(pointers) / sizeof(pointers[0]);
 	const size_t num_loops = 8192*4;
 
@@ -52,7 +52,7 @@ allocate_fixed_size(void* argptr) {
 		if (iter) {
 			arg->mops += num_loops * num_pointers * 2;
 			arg->ticks += ticks_elapsed;
-			if (((double)arg->ticks / (double)timer_ticks_per_second()) > 60.0f)
+			if (timer_ticks_to_seconds(arg->ticks) > 60)
 				break;
 		}
 	}
@@ -64,7 +64,7 @@ allocate_fixed_size(void* argptr) {
 	arg->accumulator += arg->mops;
 }
 
-const size_t random_size[] = {
+static const size_t random_size[] = {
 	18, 3032, 336, 3774, 552, 961, 662, 5727, 56986, 6923, 4714, 625, 929, 344, 104, 2021, 426, 924,
 	5015, 3138, 531, 7180, 610, 58817, 42511, 500, 427, 446, 2704, 456, 3223, 2505, 4808, 7271,
 	4273, 44269, 30, 1306, 845, 179, 638, 7149, 517, 130, 182, 3755, 634, 4012, 825, 3617, 566,
@@ -109,10 +109,10 @@ const size_t random_size[] = {
 	553
 };
 
-void
+static void
 allocate_random_size(void* argptr) {
 	benchmark_arg* arg = argptr;
-	volatile void* volatile* pointers;
+	void** pointers;
 	const size_t num_pointers = 8192;
 	const size_t num_loops = 8192*4;
 	const size_t random_size_count = (sizeof(random_size) / sizeof(random_size[0]));
@@ -121,7 +121,7 @@ allocate_random_size(void* argptr) {
 
 	size_t pointers_size = sizeof(void*) * num_pointers;
 	pointers = benchmark_malloc(pointers_size);
-	memset((void*)pointers, 0, pointers_size);
+	memset(pointers, 0, pointers_size);
 
 	while (!benchmark_start)
 		thread_yield();
@@ -158,12 +158,12 @@ allocate_random_size(void* argptr) {
 		arg->accumulator += ticks_elapsed;
 		if (iter) {
 			arg->ticks += ticks_elapsed;
-			if (((double)arg->ticks / (double)timer_ticks_per_second()) > 60.0f)
+			if (timer_ticks_to_seconds(arg->ticks) > 60)
 				break;
 		}
 	}
 
-	benchmark_free((void**)pointers);
+	benchmark_free(pointers);
 
 	benchmark_thread_finalize();
 
@@ -175,6 +175,9 @@ int main(int argc, char** argv) {
 		return -1;
 	if (benchmark_initialize() < 0)
 		return -2;
+
+	(void)sizeof(argc);
+	(void)sizeof(argv);
 
 	size_t size_table[] = {
 		16, 32, 48, 64, 96, 128,
@@ -227,12 +230,12 @@ int main(int argc, char** argv) {
 		if (!ticks)
 			ticks = 1;
 
-		double time_elapsed = (double)ticks / (double)timer_ticks_per_second();
+		double time_elapsed = timer_ticks_to_seconds(ticks);
 		double average_mops = (double)mops / time_elapsed;
 		char linebuf[128];
 		int len = snprintf(linebuf, sizeof(linebuf), "%u,%u\n", (unsigned int)num_threads,
 		                   (unsigned int)average_mops);
-		fwrite(linebuf, len, 1, fd);
+		fwrite(linebuf, (len > 0) ? (size_t)len : 0, 1, fd);
 		fflush(fd);
 
 		printf("%u memory ops/CPU second\n", (unsigned int)average_mops);
@@ -274,12 +277,12 @@ int main(int argc, char** argv) {
 		if (!ticks)
 			ticks = 1;
 
-		double time_elapsed = (double)ticks / (double)timer_ticks_per_second();
+		double time_elapsed = timer_ticks_to_seconds(ticks);
 		double average_mops = (double)mops / time_elapsed;
 		char linebuf[128];
 		int len = snprintf(linebuf, sizeof(linebuf), "%u,%u\n", (unsigned int)num_threads,
-			(unsigned int)average_mops);
-		fwrite(linebuf, len, 1, fd);
+		                   (unsigned int)average_mops);
+		fwrite(linebuf, (len > 0) ? (size_t)len : 0, 1, fd);
 		fflush(fd);
 
 		printf("%u memory ops/CPU second\n", (unsigned int)average_mops);
@@ -293,7 +296,7 @@ int main(int argc, char** argv) {
 	for (size_t num_threads = 1; num_threads <= 12; ++num_threads) {
 		char linebuf[128];
 		int len = snprintf(linebuf, sizeof(linebuf), "%u threads\n", (unsigned int)num_threads);
-		fwrite(linebuf, len, 1, fd);
+		fwrite(linebuf, (len > 0) ? (size_t)len : 0, 1, fd);
 		fflush(fd);
 
 		for (size_t isize = 0; isize < num_sizes; ++isize) {
@@ -329,11 +332,11 @@ int main(int argc, char** argv) {
 			if (!ticks)
 				ticks = 1;
 
-			double time_elapsed = (double)ticks / (double)timer_ticks_per_second();
+			double time_elapsed = timer_ticks_to_seconds(ticks);
 			double average_mops = (double)mops / time_elapsed;
 			len = snprintf(linebuf, sizeof(linebuf), "%u,%u\n",
-				(unsigned int)size, (unsigned int)average_mops);
-			fwrite(linebuf, len, 1, fd);
+			               (unsigned int)size, (unsigned int)average_mops);
+			fwrite(linebuf, (len > 0) ? (size_t)len : 0, 1, fd);
 			fflush(fd);
 
 			printf("%u memory ops\n", (unsigned int)average_mops);

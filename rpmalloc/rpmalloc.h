@@ -9,7 +9,7 @@
  *
  */
 
-#include <stdint.h>
+#include <stddef.h>
 
 extern int
 rpmalloc_initialize(void);

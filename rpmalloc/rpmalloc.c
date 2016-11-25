@@ -37,7 +37,7 @@
 #  define atomic_thread_fence_release() _ReadWriteBarrier()
 #else
 #  define ALIGNED_STRUCT(name, alignment) struct __attribute__((__aligned__(alignment))) name
-#  define FORCEINLINE inline __attribute__(__always_inline__)
+#  define FORCEINLINE inline __attribute__((__always_inline__))
 #  ifdef __arm__
 #    define atomic_thread_fence_acquire() __asm volatile("dmb sy" ::: "memory")
 #    define atomic_thread_fence_release() __asm volatile("dmb st" ::: "memory")
@@ -85,6 +85,20 @@ static FORCEINLINE void
 atomic_store32(atomic32_t* dst, int32_t val) {
 	dst->nonatomic = val;
 }
+
+#if PLATFORM_POSIX
+
+static FORCEINLINE void
+atomic_store64(atomic64_t* dst, int64_t val) {
+	dst->nonatomic = val;
+}
+
+static FORCEINLINE int64_t
+atomic_exchange_and_add64(atomic64_t* dst, int64_t add) {
+	return __sync_fetch_and_add(&dst->nonatomic, add);
+}
+
+#endif
 
 static FORCEINLINE int32_t
 atomic_incr32(atomic32_t* val) {
@@ -701,6 +715,8 @@ _memory_adjust_size_class(size_t iclass) {
 #  include <windows.h>
 #else
 #  include <sys/mman.h>
+#  include <sched.h>
+#  include <errno.h>
 #  ifndef MAP_UNINITIALIZED
 #    define MAP_UNINITIALIZED 0
 #  endif
@@ -857,7 +873,7 @@ _memory_map(size_t page_count) {
 		}
 		munmap(pages_ptr, total_size);
 	}
-	while (true);
+	while (1);
 #endif
 
 	return pages_ptr;

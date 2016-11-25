@@ -1,5 +1,6 @@
 
 #include <stdint.h>
+#include <stddef.h>
 
 extern int
 benchmark_initialize(void);
