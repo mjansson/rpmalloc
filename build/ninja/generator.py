@@ -110,14 +110,14 @@ class Generator(object):
   def writer(self):
     return self.writer
 
-  def lib(self, module, sources, basepath = None, configs = None, includepaths = None, variables = None):
-    return self.toolchain.lib(self.writer, module, sources, basepath, configs, includepaths, variables)
+  def lib(self, module, sources, basepath = None, configs = None, includepaths = None, variables = None, externalsources = False):
+    return self.toolchain.lib(self.writer, module, sources, basepath, configs, includepaths, variables, None, externalsources)
 
-  def sharedlib(self, module, sources, basepath = None, configs = None, includepaths = None, libpaths = None, implicit_deps = None, libs = None, frameworks = None, variables = None):
-    return self.toolchain.sharedlib(self.writer, module, sources, basepath, configs, includepaths, libpaths, implicit_deps, libs, frameworks, variables)
+  def sharedlib(self, module, sources, basepath = None, configs = None, includepaths = None, libpaths = None, implicit_deps = None, libs = None, frameworks = None, variables = None, externalsources = False):
+    return self.toolchain.sharedlib(self.writer, module, sources, basepath, configs, includepaths, libpaths, implicit_deps, libs, frameworks, variables, None, externalsources)
 
-  def bin(self, module, sources, binname, basepath = None, configs = None, includepaths = None, libpaths = None, implicit_deps = None, libs = None, frameworks = None, variables = None):
-    return self.toolchain.bin(self.writer, module, sources, binname, basepath, configs, includepaths, libpaths, implicit_deps, libs, frameworks, variables)
+  def bin(self, module, sources, binname, basepath = None, configs = None, includepaths = None, libpaths = None, implicit_deps = None, libs = None, frameworks = None, variables = None, outpath = None, externalsources = False):
+    return self.toolchain.bin(self.writer, module, sources, binname, basepath, configs, includepaths, libpaths, implicit_deps, libs, frameworks, variables, outpath, externalsources)
 
   def app(self, module, sources, binname, basepath = None, configs = None, includepaths = None, libpaths = None, implicit_deps = None, libs = None, frameworks = None, variables = None, resources = None):
     return self.toolchain.app(self.writer, module, sources, binname, basepath, configs, includepaths, libpaths, implicit_deps, libs, frameworks, variables, resources)

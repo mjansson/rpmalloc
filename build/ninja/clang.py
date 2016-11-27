@@ -30,18 +30,19 @@ class ClangToolchain(toolchain.Toolchain):
 
     #Command definitions
     self.cccmd = '$toolchain$cc -MMD -MT $out -MF $out.d -I. $includepaths $moreincludepaths $cflags $carchflags $cconfigflags -c $in -o $out'
+    self.cxxcmd = '$toolchain$cc -MMD -MT $out -MF $out.d -I. $includepaths $moreincludepaths $cxxflags $carchflags $cconfigflags -c $in -o $out'
     self.ccdeps = 'gcc'
     self.ccdepfile = '$out.d'
     self.arcmd = self.rmcmd('$out') + ' && $toolchain$ar crsD $ararchflags $arflags $out $in'
     self.linkcmd = '$toolchain$cc $libpaths $configlibpaths $linkflags $linkarchflags $linkconfigflags -o $out $in $libs $archlibs $oslibs'
 
     #Base flags
-    self.cflags = [ '-std=c11', '-D' + project.upper() + '_COMPILE=1',
-                    '-W', '-Werror', '-pedantic', '-Wall', '-Weverything',
-                    '-Wno-padded', '-Wno-documentation-unknown-command',
-                    '-funit-at-a-time', '-fstrict-aliasing',
-                    '-fno-math-errno','-ffinite-math-only', '-funsafe-math-optimizations',
-                    '-fno-trapping-math', '-ffast-math' ]
+    self.cflags = ['-D' + project.upper() + '_COMPILE=1',
+                   '-funit-at-a-time', '-fstrict-aliasing',
+                   '-fno-math-errno','-ffinite-math-only', '-funsafe-math-optimizations',
+                   '-fno-trapping-math', '-ffast-math']
+    self.cwarnflags = ['-W', '-Werror', '-pedantic', '-Wall', '-Weverything',
+                       '-Wno-padded', '-Wno-documentation-unknown-command']
     self.mflags = []
     self.arflags = []
     self.linkflags = []
@@ -75,6 +76,8 @@ class ClangToolchain(toolchain.Toolchain):
 
     #Builders
     self.builders['c'] = self.builder_cc
+    self.builders['cc'] = self.builder_cxx
+    self.builders['cpp'] = self.builder_cxx
     self.builders['lib'] = self.builder_lib
     self.builders['sharedlib'] = self.builder_sharedlib
     self.builders['bin'] = self.builder_bin
@@ -94,6 +97,17 @@ class ClangToolchain(toolchain.Toolchain):
 
     #Setup target platform
     self.build_toolchain()
+
+    self.cflags += ['-std=c11']
+    self.cxxflags += ['-std=c++11', '-stdlib=libc++']
+    
+    self.cexternflags = []
+    self.cxxexternflags = []
+    self.cexternflags += self.cflags
+    self.cxxexternflags += self.cxxflags + ['-Wno-deprecated-declarations']
+
+    self.cflags += self.cwarnflags
+    self.cxxflags += self.cwarnflags
 
   def name(self):
     return 'clang'
@@ -137,6 +151,7 @@ class ClangToolchain(toolchain.Toolchain):
     writer.variable('includepaths', self.make_includepaths(self.includepaths))
     writer.variable('moreincludepaths', '')
     writer.variable('cflags', self.cflags)
+    writer.variable('cxxflags', self.cxxflags)
     if self.target.is_macosx() or self.target.is_ios():
       writer.variable('mflags', self.mflags)
     writer.variable('carchflags', '')
@@ -157,6 +172,7 @@ class ClangToolchain(toolchain.Toolchain):
   def write_rules(self, writer):
     super(ClangToolchain, self).write_rules(writer)
     writer.rule('cc', command = self.cccmd, depfile = self.ccdepfile, deps = self.ccdeps, description = 'CC $in')
+    writer.rule('cxx', command = self.cxxcmd, depfile = self.ccdepfile, deps = self.ccdeps, description = 'CXX $in')
     if self.target.is_macosx() or self.target.is_ios():
       writer.rule('cm', command = self.cmcmd, depfile = self.ccdepfile, deps = self.ccdeps, description = 'CM $in')
       writer.rule( 'lipo', command = self.lipocmd, description = 'LIPO $out' )
@@ -183,6 +199,7 @@ class ClangToolchain(toolchain.Toolchain):
 
   def build_windows_toolchain(self):
     self.cflags += ['-U__STRICT_ANSI__', '-Wno-reserved-id-macro']
+    self.cxxflags = self.cflags
     self.oslibs = ['kernel32', 'user32', 'shell32', 'advapi32']
 
   def build_android_toolchain(self):
@@ -192,6 +209,7 @@ class ClangToolchain(toolchain.Toolchain):
     self.linkcmd += ' -shared -Wl,-soname,$liblinkname --sysroot=$sysroot'
     self.cflags += ['-fpic', '-ffunction-sections', '-funwind-tables', '-fstack-protector', '-fomit-frame-pointer',
                     '-no-canonical-prefixes', '-Wa,--noexecstack']
+    self.cxxflags = self.cflags
 
     self.linkflags += ['-no-canonical-prefixes', '-Wl,--no-undefined', '-Wl,-z,noexecstack', '-Wl,-z,relro', '-Wl,-z,now']
 
@@ -231,6 +249,7 @@ class ClangToolchain(toolchain.Toolchain):
     self.lipo = "PATH=" + localpath + " " + subprocess.check_output(['xcrun', '--sdk', sdk, '-f', 'lipo']).strip()
 
     self.mflags += self.cflags + ['-fobjc-arc', '-fno-objc-exceptions', '-x', 'objective-c']
+    self.cxxflags = self.cflags + ['-x', 'c++']
     self.cflags += ['-x', 'c']
 
     self.cmcmd = self.cccmd.replace('$cflags', '$mflags')
@@ -257,6 +276,7 @@ class ClangToolchain(toolchain.Toolchain):
     self.linker = self.ccompiler
     self.finalizer = os.path.join('bin', 'pnacl-finalize' + shsuffix)
     self.nmfer = os.path.join('tools', 'create_nmf.py')
+    self.cxxflags = self.cflags
 
     self.finalizecmd = '$toolchain$finalize -o $out $in'
     self.nmfcmd = self.python + ' ' + os.path.join('$sdkpath', '$nmf') + ' -o $out $in'
@@ -394,7 +414,7 @@ class ClangToolchain(toolchain.Toolchain):
         libpaths += [os.path.join(libpath, self.libpath, config, arch) for libpath in extralibpaths]
     return self.make_libpaths(libpaths)
 
-  def cc_variables(self, config, arch, targettype, variables):
+  def cc_variables(self, config, arch, targettype, variables, externalsources):
     localvariables = []
     if 'includepaths' in variables:
       moreincludepaths = self.make_includepaths(variables['includepaths'])
@@ -408,6 +428,8 @@ class ClangToolchain(toolchain.Toolchain):
       localvariables += [('cconfigflags', cconfigflags)]
     if self.target.is_android():
       localvariables += [('sysroot', self.android.make_sysroot_path(arch))]
+    if externalsources:
+      localvariables += [('cflags', self.cexternflags), ('cxxflags', self.cxxexternflags)]
     return localvariables
 
   def ar_variables(self, config, arch, targettype, variables):
@@ -445,36 +467,39 @@ class ClangToolchain(toolchain.Toolchain):
       localvariables += [('archlibs', self.make_libs(archlibs))]
     return localvariables
 
-  def builder_cc(self, writer, config, arch, targettype, infile, outfile, variables):
-    return writer.build(outfile, 'cc', infile, implicit = self.implicit_deps(config, variables), variables = self.cc_variables(config, arch, targettype, variables))
+  def builder_cc(self, writer, config, arch, targettype, infile, outfile, variables, externalsources):
+    return writer.build(outfile, 'cc', infile, implicit = self.implicit_deps(config, variables), variables = self.cc_variables(config, arch, targettype, variables, externalsources))
 
-  def builder_cm(self, writer, config, arch, targettype, infile, outfile, variables):
-    return writer.build(outfile, 'cm', infile, implicit = self.implicit_deps(config, variables), variables = self.cc_variables(config, arch, targettype, variables))
+  def builder_cxx(self, writer, config, arch, targettype, infile, outfile, variables, externalsources):
+    return writer.build(outfile, 'cxx', infile, implicit = self.implicit_deps(config, variables), variables = self.cc_variables(config, arch, targettype, variables, externalsources))
 
-  def builder_lib(self, writer, config, arch, targettype, infiles, outfile, variables):
+  def builder_cm(self, writer, config, arch, targettype, infile, outfile, variables, externalsources):
+    return writer.build(outfile, 'cm', infile, implicit = self.implicit_deps(config, variables), variables = self.cc_variables(config, arch, targettype, variables, externalsources))
+
+  def builder_lib(self, writer, config, arch, targettype, infiles, outfile, variables, externalsources):
     return writer.build(outfile, 'ar', infiles, implicit = self.implicit_deps(config, variables), variables = self.ar_variables(config, arch, targettype, variables))
 
-  def builder_sharedlib(self, writer, config, arch, targettype, infiles, outfile, variables):
+  def builder_sharedlib(self, writer, config, arch, targettype, infiles, outfile, variables, externalsources):
     return writer.build(outfile, 'so', infiles, implicit = self.implicit_deps(config, variables), variables = self.link_variables(config, arch, targettype, variables))
 
-  def builder_bin(self, writer, config, arch, targettype, infiles, outfile, variables):
+  def builder_bin(self, writer, config, arch, targettype, infiles, outfile, variables, externalsources):
     return writer.build(outfile, 'link', infiles, implicit = self.implicit_deps(config, variables), variables = self.link_variables(config, arch, targettype, variables))
 
   #Apple universal targets
-  def builder_apple_multilib(self, writer, config, arch, targettype, infiles, outfile, variables):
+  def builder_apple_multilib(self, writer, config, arch, targettype, infiles, outfile, variables, externalsources):
     localvariables = [('arflags', '-static -no_warning_for_no_symbols')]
     if variables != None:
       localvariables = variables + localvariables
     return writer.build(os.path.join(outfile, self.buildtarget), 'ar', infiles, variables = localvariables);
 
-  def builder_apple_multisharedlib(self, writer, config, arch, targettype, infiles, outfile, variables):
+  def builder_apple_multisharedlib(self, writer, config, arch, targettype, infiles, outfile, variables, externalsources):
     return writer.build(outfile, 'so', infiles, implicit = self.implicit_deps(config, variables), variables = self.link_variables(config, arch, targettype, variables))
 
-  def builder_apple_multibin(self, writer, config, arch, targettype, infiles, outfile, variables):
+  def builder_apple_multibin(self, writer, config, arch, targettype, infiles, outfile, variables, externalsources):
     return writer.build(os.path.join(outfile, self.buildtarget), 'lipo', infiles, variables = variables)
 
   #PNaCl finalizer
-  def builder_pnacl_multibin(self, writer, config, arch, targettype, infiles, outfile, variables):
+  def builder_pnacl_multibin(self, writer, config, arch, targettype, infiles, outfile, variables, externalsources):
     binfile = os.path.splitext(self.buildtarget)[0]
     pexe = writer.build(os.path.join(outfile, binfile + '.pexe'), 'finalize', infiles)
     nmf = writer.build(os.path.join(outfile, binfile + '.nmf'), 'nmf', pexe + infiles)

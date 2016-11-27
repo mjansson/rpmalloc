@@ -323,7 +323,7 @@ namespace Hoard {
       }
     private:
       inline static void checkInvariant (HoardManager * h) {
-	h;
+	(void)h;
 	assert (h->isValid());
       }
     };

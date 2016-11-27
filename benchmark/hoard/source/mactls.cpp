@@ -178,5 +178,19 @@ extern "C" int xxpthread_create(pthread_t *thread,
 MAC_INTERPOSE(xxpthread_create, pthread_create);
 MAC_INTERPOSE(xxpthread_exit, pthread_exit);
 
+extern "C" void hoardInitialize(void) {
+	getCustomHeap();
+}
 
+extern "C" void hoardFinalize(void) {
+	exitRoutine();
+}
+
+extern "C" void hoardThreadInitialize(void) {
+	getCustomHeap();
+}
+
+extern "C" void hoardThreadFinalize(void) {
+	exitRoutine();
+}
 

@@ -1,7 +1,10 @@
 
 #include <benchmark.h>
 #include <string.h>
+#include <stdlib.h>
+#ifdef _WIN32
 #include <malloc.h>
+#endif
 
 int
 benchmark_initialize() {

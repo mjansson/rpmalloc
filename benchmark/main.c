@@ -52,7 +52,7 @@ allocate_fixed_size(void* argptr) {
 		if (iter) {
 			arg->mops += num_loops * num_pointers * 2;
 			arg->ticks += ticks_elapsed;
-			if (timer_ticks_to_seconds(arg->ticks) > 60)
+			if (timer_ticks_to_seconds(arg->ticks) > 300)
 				break;
 		}
 	}
@@ -156,9 +156,13 @@ allocate_random_size(void* argptr) {
 		}
 		size_t ticks_elapsed = timer_current() - tick_start;
 		arg->accumulator += ticks_elapsed;
+		printf(".");
+		fflush(stdout);
 		if (iter) {
 			arg->ticks += ticks_elapsed;
-			if (timer_ticks_to_seconds(arg->ticks) > 60)
+			printf(" %.2f ", timer_ticks_to_seconds(arg->ticks));
+			fflush(stdout);
+			if (timer_ticks_to_seconds(arg->ticks) > 300)
 				break;
 		}
 	}

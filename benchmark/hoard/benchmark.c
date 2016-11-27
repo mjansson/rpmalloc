@@ -1,7 +1,11 @@
 
 #include <benchmark.h>
 
+#ifdef _WIN32
 #include <malloc.h>
+#else
+#include <memory.h>
+#endif
 
 extern void
 hoardInitialize(void);

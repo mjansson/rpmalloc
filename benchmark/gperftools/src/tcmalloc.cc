@@ -1790,6 +1790,8 @@ extern "C" PERFTOOLS_DLL_DECL int tc_posix_memalign(
 
 static size_t pagesize = 0;
 
+extern "C" int getpagesize(void);
+
 extern "C" PERFTOOLS_DLL_DECL void* tc_valloc(size_t size) PERFTOOLS_THROW {
   // Allocate page-aligned object of length >= size bytes
   if (pagesize == 0) pagesize = getpagesize();
