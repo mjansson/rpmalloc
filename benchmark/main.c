@@ -41,8 +41,11 @@ allocate_fixed_size(void* argptr) {
 			for (size_t iptr = 0; iptr < num_pointers; ++iptr) {
 				pointers[iptr] = benchmark_malloc(arg->size);
 				arg->accumulator += (uintptr_t)pointers[iptr];
+				*((uintptr_t*)pointers[iptr]) = (uintptr_t)pointers[iptr] + (uintptr_t)trigger;
 			}
 			for (size_t iptr = 0; iptr < num_pointers; ++iptr) {
+				if (*((uintptr_t*)pointers[iptr]) == ((uintptr_t)pointers[iptr] + (uintptr_t)trigger))
+					++arg->accumulator;
 				benchmark_free((void*)pointers[iptr]);
 				arg->accumulator += (uintptr_t)pointers[iptr];
 			}
@@ -130,7 +133,7 @@ allocate_random_size(void* argptr) {
 	arg->mops = 0;
 	for (size_t iter = 0; iter < 4; ++iter) {
 		size_t tick_start = timer_current();
-		for (size_t iloop = 0; iloop < (iter ? num_loops : num_loops / 4); ++iloop) {
+		for (size_t iloop = 0; iloop < num_loops; ++iloop) {
 			for (size_t iptr = 0; iptr < num_pointers; ++iptr) {
 				size_t size_index = (iter + iloop + iptr) % random_size_count;
 				size_t size = random_size[size_index];
@@ -138,16 +141,21 @@ allocate_random_size(void* argptr) {
 					size = size % arg->size;
 				//Interleave alloc and free calls
 				if (pointers[iptr]) {
+					//if (*((uintptr_t*)pointers[iptr]) == ((uintptr_t)pointers[iptr] + (uintptr_t)pointers))
+					//	++arg->accumulator;
 					benchmark_free((void*)pointers[iptr]);
 					++arg->mops;
 				}
 				pointers[iptr] = benchmark_malloc(size);
+				//*((uintptr_t*)pointers[iptr]) = (uintptr_t)pointers[iptr] + (uintptr_t)pointers;
 				arg->accumulator += (uintptr_t)pointers[iptr];
 				++arg->mops;
 			}
 		}
 		for (size_t iptr = 0; iptr < num_pointers; ++iptr) {
 			if (pointers[iptr]) {
+				//if (*((uintptr_t*)pointers[iptr]) == ((uintptr_t)pointers[iptr] + (uintptr_t)pointers))
+				//	++arg->accumulator;
 				benchmark_free((void*)pointers[iptr]);
 				++arg->mops;
 			}

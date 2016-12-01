@@ -230,3 +230,4 @@ msvs/benchmark-single.txt
 benchmark/gperftools/vsprojects
 benchmark/gperftools/packages
 benchmark/gperftools/doc
+.deps
