@@ -1,34 +1,34 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <ClCompile Include="..\benchmark\main.c" />
-    <ClCompile Include="..\benchmark\ptmalloc3\benchmark.c" />
-    <ClCompile Include="..\test\thread.c" />
-    <ClCompile Include="..\test\timer.c" />
-    <ClCompile Include="..\benchmark\ptmalloc3\ptmalloc3.c">
+    <ClCompile Include="..\..\benchmark\main.c" />
+    <ClCompile Include="..\..\benchmark\ptmalloc3\benchmark.c" />
+    <ClCompile Include="..\..\test\thread.c" />
+    <ClCompile Include="..\..\test\timer.c" />
+    <ClCompile Include="..\..\benchmark\ptmalloc3\ptmalloc3.c">
       <Filter>ptmalloc3</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\ptmalloc3\malloc.c">
+    <ClCompile Include="..\..\benchmark\ptmalloc3\malloc.c">
       <Filter>ptmalloc3</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="..\benchmark\benchmark.h" />
-    <ClInclude Include="..\test\thread.h" />
-    <ClInclude Include="..\test\timer.h" />
-    <ClInclude Include="..\benchmark\ptmalloc3\malloc-2.8.3.h">
+    <ClInclude Include="..\..\benchmark\benchmark.h" />
+    <ClInclude Include="..\..\test\thread.h" />
+    <ClInclude Include="..\..\test\timer.h" />
+    <ClInclude Include="..\..\benchmark\ptmalloc3\malloc-2.8.3.h">
       <Filter>ptmalloc3</Filter>
     </ClInclude>
-    <ClInclude Include="..\benchmark\ptmalloc3\malloc-private.h">
+    <ClInclude Include="..\..\benchmark\ptmalloc3\malloc-private.h">
       <Filter>ptmalloc3</Filter>
     </ClInclude>
-    <ClInclude Include="..\benchmark\ptmalloc3\sysdeps\windows\atomic.h">
+    <ClInclude Include="..\..\benchmark\ptmalloc3\sysdeps\windows\atomic.h">
       <Filter>ptmalloc3\sysdeps</Filter>
     </ClInclude>
-    <ClInclude Include="..\benchmark\ptmalloc3\sysdeps\windows\malloc-machine.h">
+    <ClInclude Include="..\..\benchmark\ptmalloc3\sysdeps\windows\malloc-machine.h">
       <Filter>ptmalloc3\sysdeps</Filter>
     </ClInclude>
-    <ClInclude Include="..\benchmark\ptmalloc3\sysdeps\windows\thread-st.h">
+    <ClInclude Include="..\..\benchmark\ptmalloc3\sysdeps\windows\thread-st.h">
       <Filter>ptmalloc3\sysdeps</Filter>
     </ClInclude>
   </ItemGroup>

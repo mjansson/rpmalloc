@@ -113,7 +113,7 @@ static void
 allocate_random_size(void* argptr) {
 	benchmark_arg* arg = argptr;
 	void** pointers;
-	const size_t num_pointers = 8192;
+	const size_t num_pointers = 8192*2;
 	const size_t num_loops = 8192*4;
 	const size_t random_size_count = (sizeof(random_size) / sizeof(random_size[0]));
 
@@ -130,7 +130,7 @@ allocate_random_size(void* argptr) {
 	arg->mops = 0;
 	for (size_t iter = 0; iter < 4; ++iter) {
 		size_t tick_start = timer_current();
-		for (size_t iloop = 0; iloop < (iter ? num_loops : num_loops / 4); ++iloop) {
+		for (size_t iloop = 0; iloop < num_loops; ++iloop) {
 			for (size_t iptr = 0; iptr < num_pointers; ++iptr) {
 				size_t size_index = (iter + iloop + iptr) % random_size_count;
 				size_t size = random_size[size_index];

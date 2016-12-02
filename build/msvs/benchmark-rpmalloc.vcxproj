@@ -19,20 +19,20 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\benchmark\main.c" />
-    <ClCompile Include="..\benchmark\rpmalloc\benchmark.c" />
-    <ClCompile Include="..\test\thread.c" />
-    <ClCompile Include="..\test\timer.c" />
-  </ItemGroup>
-  <ItemGroup>
     <ProjectReference Include="rpmalloc.vcxproj">
       <Project>{65dc4291-954e-4b91-8889-4f3adcc9d2d5}</Project>
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="..\benchmark\benchmark.h" />
-    <ClInclude Include="..\test\thread.h" />
-    <ClInclude Include="..\test\timer.h" />
+    <ClCompile Include="..\..\benchmark\main.c" />
+    <ClCompile Include="..\..\benchmark\rpmalloc\benchmark.c" />
+    <ClCompile Include="..\..\test\thread.c" />
+    <ClCompile Include="..\..\test\timer.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\..\benchmark\benchmark.h" />
+    <ClInclude Include="..\..\test\thread.h" />
+    <ClInclude Include="..\..\test\timer.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{A077097A-FCD4-4523-B39B-80B2F3FF522E}</ProjectGuid>
@@ -112,7 +112,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS=1;NDEBUG=1</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\rpmalloc;..\test;..\benchmark</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\..;..\..\test;..\..\benchmark</AdditionalIncludeDirectories>
       <ExceptionHandling>false</ExceptionHandling>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -144,7 +144,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS=1;NDEBUG=1</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\rpmalloc;..\test;..\benchmark</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\..;..\..\test;..\..\benchmark</AdditionalIncludeDirectories>
       <ExceptionHandling>false</ExceptionHandling>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -177,7 +177,7 @@
       <FunctionLevelLinking>false</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS=1;NDEBUG=1</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\rpmalloc;..\test;..\benchmark</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\..;..\..\test;..\..\benchmark</AdditionalIncludeDirectories>
       <ExceptionHandling>false</ExceptionHandling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <BufferSecurityCheck>false</BufferSecurityCheck>
@@ -214,7 +214,7 @@
       <FunctionLevelLinking>false</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS=1;NDEBUG=1</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\rpmalloc;..\test;..\benchmark</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\..;..\..\test;..\..\benchmark</AdditionalIncludeDirectories>
       <ExceptionHandling>false</ExceptionHandling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <BufferSecurityCheck>false</BufferSecurityCheck>

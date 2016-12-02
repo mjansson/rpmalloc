@@ -19,46 +19,46 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\benchmark\gperftools\src\base\dynamic_annotations.c" />
-    <ClCompile Include="..\benchmark\gperftools\src\base\logging.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\base\low_level_alloc.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\base\spinlock.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\base\spinlock_internal.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\base\sysinfo.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\central_freelist.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\common.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\fake_stacktrace_scope.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\heap-profile-table.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\internal_logging.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\malloc_extension.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\malloc_hook.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\memory_region_map.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\page_heap.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\raw_printer.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\sampler.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\span.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\stacktrace.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\stack_trace_table.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\static_vars.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\symbolize.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\thread_cache.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\windows\ia32_modrm_map.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\windows\ia32_opcode_map.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\windows\mini_disassembler.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\windows\override_functions.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\windows\port.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\windows\preamble_patcher.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\windows\preamble_patcher_with_stub.cc" />
-    <ClCompile Include="..\benchmark\gperftools\src\windows\system-alloc.cc" />
-    <ClCompile Include="..\benchmark\main.c" />
-    <ClCompile Include="..\benchmark\gperftools\benchmark.c" />
-    <ClCompile Include="..\test\thread.c" />
-    <ClCompile Include="..\test\timer.c" />
+    <ClCompile Include="..\..\benchmark\gperftools\benchmark.c" />
+    <ClCompile Include="..\..\benchmark\main.c" />
+    <ClCompile Include="..\..\test\thread.c" />
+    <ClCompile Include="..\..\test\timer.c" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\base\dynamic_annotations.c" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\base\logging.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\base\low_level_alloc.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\base\spinlock.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\base\spinlock_internal.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\base\sysinfo.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\central_freelist.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\common.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\fake_stacktrace_scope.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\heap-profile-table.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\internal_logging.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\malloc_extension.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\malloc_hook.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\memory_region_map.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\page_heap.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\raw_printer.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\sampler.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\span.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\stacktrace.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\stack_trace_table.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\static_vars.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\symbolize.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\thread_cache.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\windows\ia32_modrm_map.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\windows\ia32_opcode_map.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\windows\mini_disassembler.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\windows\override_functions.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\windows\port.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\windows\preamble_patcher.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\windows\preamble_patcher_with_stub.cc" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\windows\system-alloc.cc" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="..\benchmark\benchmark.h" />
-    <ClInclude Include="..\test\thread.h" />
-    <ClInclude Include="..\test\timer.h" />
+    <ClInclude Include="..\..\benchmark\benchmark.h" />
+    <ClInclude Include="..\..\test\thread.h" />
+    <ClInclude Include="..\..\test\timer.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <Keyword>Win32Proj</Keyword>
@@ -138,7 +138,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS=1;NDEBUG=1;PERFTOOLS_DLL_DECL=</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\test;..\benchmark;..\benchmark\gperftools\src;..\benchmark\gperftools\src\windows</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\..\test;..\..\benchmark;..\..\benchmark\gperftools\src;..\..\benchmark\gperftools\src\windows</AdditionalIncludeDirectories>
       <ExceptionHandling>Async</ExceptionHandling>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -168,7 +168,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS=1;NDEBUG=1;PERFTOOLS_DLL_DECL=</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\test;..\benchmark;..\benchmark\gperftools\src;..\benchmark\gperftools\src\windows</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\..\test;..\..\benchmark;..\..\benchmark\gperftools\src;..\..\benchmark\gperftools\src\windows</AdditionalIncludeDirectories>
       <ExceptionHandling>Async</ExceptionHandling>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -199,7 +199,7 @@
       <FunctionLevelLinking>false</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS=1;NDEBUG=1;PERFTOOLS_DLL_DECL=</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\test;..\benchmark;..\benchmark\gperftools\src;..\benchmark\gperftools\src\windows</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\..\test;..\..\benchmark;..\..\benchmark\gperftools\src;..\..\benchmark\gperftools\src\windows</AdditionalIncludeDirectories>
       <ExceptionHandling>Async</ExceptionHandling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <BufferSecurityCheck>false</BufferSecurityCheck>
@@ -234,7 +234,7 @@
       <FunctionLevelLinking>false</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS=1;NDEBUG=1;PERFTOOLS_DLL_DECL=</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\test;..\benchmark;..\benchmark\gperftools\src;..\benchmark\gperftools\src\windows</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\..\test;..\..\benchmark;..\..\benchmark\gperftools\src;..\..\benchmark\gperftools\src\windows</AdditionalIncludeDirectories>
       <ExceptionHandling>Async</ExceptionHandling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <BufferSecurityCheck>false</BufferSecurityCheck>
