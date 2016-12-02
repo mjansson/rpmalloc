@@ -209,14 +209,14 @@ _Static_assert(sizeof(span_t) <= SPAN_HEADER_SIZE, "span size mismatch");
 struct heap_t {
 	//! Heap ID
 	int32_t     id;
-	//! Next heap
-	heap_t*     next_heap;
+	//! Deferred deallocation
+	atomicptr_t defer_deallocate;
 	//! List of spans with free blocks for each size class
 	span_t*     size_cache[SIZE_CLASS_COUNT];
 	//! List of free spans for each page count
 	span_t*     span_cache[SPAN_CLASS_COUNT];
-	//! Deferred deallocation
-	atomicptr_t defer_deallocate;
+	//! Next heap
+	heap_t*     next_heap;
 };
 _Static_assert(sizeof(heap_t) <= PAGE_SIZE, "heap size mismatch");
 
@@ -512,14 +512,10 @@ _memory_list_remove(span_t** head, span_t* span) {
 static void
 _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 	size_class_t* size_class = _memory_size_class + span->data.block.size_class;
-	uint32_t* block = p;
 
-	++span->data.block.free_count;
-	*block = span->data.block.free_list;
-
-	if (span->data.block.free_count == size_class->block_count) {
+	if (span->data.block.free_count == (size_class->block_count - 1)) {
 		//Remove from free list (present if we had a previous free block)
-		if (span->data.block.free_count > 1)
+		if (span->data.block.free_count > 0)
 			_memory_list_remove(&heap->size_cache[span->data.block.size_class], span);
 
 		//Add to span cache
@@ -541,22 +537,26 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 		}
 	}
 	else {
+		uint32_t* block = p;
 		intptr_t block_offset = pointer_diff(block, span) - (intptr_t)SPAN_HEADER_SIZE;
 		intptr_t block_idx = block_offset / (intptr_t)size_class->size;
-		if (span->data.block.free_count == 1) {
+		if (span->data.block.free_count == 0) {
 			//Add to free list
 			_memory_list_add(&heap->size_cache[span->data.block.size_class], span);
 		}
+		*block = span->data.block.free_list;
 		span->data.block.free_list = (count_t)block_idx;
+		++span->data.block.free_count;
 	}
 }
 
-static void
+static FORCEINLINE void
 _memory_deallocate_deferred(heap_t* heap) {
-	//TODO: More direct implementation instead of reusing _memory_deallocate
 	atomic_thread_fence_acquire();
 	void* p = atomic_load_ptr(&heap->defer_deallocate);
-	if (p && atomic_cas_ptr(&heap->defer_deallocate, 0, p)) {
+	if (!p)
+		return;
+	if (atomic_cas_ptr(&heap->defer_deallocate, 0, p)) {
 		while (p) {
 			void* next = *(void**)p;
 			span_t* span = (void*)((uintptr_t)p & (uintptr_t)SPAN_MASK);
@@ -580,29 +580,34 @@ _memory_deallocate_defer(int32_t heap_id, void* p) {
 
 static void*
 _memory_allocate(size_t size) {
-	if (size > MEDIUM_SIZE_LIMIT) {
-		size += SPAN_HEADER_SIZE;
-		size_t num_pages = size / PAGE_SIZE;
-		if (size % PAGE_SIZE)
-			++num_pages;
-		span_t* span = _memory_map(num_pages);
-		atomic_store32(&span->heap_id, 0);
-		//Store page count in next_span
-		span->next_span = (offset_t)num_pages;
-		return pointer_offset(span, SPAN_HEADER_SIZE);
-	}
+	if (size <= MEDIUM_SIZE_LIMIT) {
+		heap_t* heap = _memory_thread_heap;
+		if (heap) {
+			//_memory_deallocate_deferred(heap);
+			return _memory_allocate_from_heap(heap, size);
+		}
 
-	heap_t* heap = _memory_thread_heap;
-	if (!heap) {
 		heap = _memory_allocate_heap();
 		if (!heap)
 			return 0;
 		_memory_thread_heap = heap;
+		
+		_memory_deallocate_deferred(heap);
+		
+		return _memory_allocate_from_heap(heap, size);
 	}
 
-	_memory_deallocate_deferred(heap);
+	//Oversized, allocate pages directly
+	size += SPAN_HEADER_SIZE;
+	size_t num_pages = size / PAGE_SIZE;
+	if (size % PAGE_SIZE)
+		++num_pages;
+	span_t* span = _memory_map(num_pages);
+	atomic_store32(&span->heap_id, 0);
+	//Store page count in next_span
+	span->next_span = (offset_t)num_pages;
 
-	return _memory_allocate_from_heap(heap, size);
+	return pointer_offset(span, SPAN_HEADER_SIZE);
 }
 
 static void
