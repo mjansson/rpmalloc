@@ -386,6 +386,22 @@ extern "C" int pthread_create (pthread_t *thread,
   return result;
 }
 
+extern "C" void hoardInitialize(void) {
+  getCustomHeap();
+}
+
+extern "C" void hoardFinalize(void) {
+  exitRoutine();
+}
+
+extern "C" void hoardThreadInitialize(void) {
+  getCustomHeap();
+}
+
+extern "C" void hoardThreadFinalize(void) {
+  exitRoutine();
+}
+
 #if defined(__clang__)
 #pragma clang diagnostic pop
 #endif

@@ -14,11 +14,13 @@ class GCCToolchain(toolchain.Toolchain):
     self.includepaths = includepaths
     self.libpaths = libpaths
     self.ccompiler = 'gcc'
+    self.cxxompiler = 'g++'
     self.archiver = 'ar'
     self.linker = 'gcc'
 
     #Command definitions
     self.cccmd = '$toolchain$cc -MMD -MT $out -MF $out.d -I. $includepaths $moreincludepaths $cflags $carchflags $cconfigflags -c $in -o $out'
+    self.cxxcmd = '$toolchain$cxx -MMD -MT $out -MF $out.d -I. $includepaths $moreincludepaths $cxxflags $carchflags $cconfigflags -c $in -o $out'
     self.ccdeps = 'gcc'
     self.ccdepfile = '$out.d'
     self.arcmd = self.rmcmd('$out') + ' && $toolchain$ar crsD $ararchflags $arflags $out $in'
@@ -26,10 +28,10 @@ class GCCToolchain(toolchain.Toolchain):
 
     #Base flags
     self.cflags = ['-D' + project.upper() + '_COMPILE=1',
-                   '-Wextra', '-Wall', '-Werror',
                    '-funit-at-a-time', '-fstrict-aliasing',
                    '-fno-math-errno','-ffinite-math-only', '-funsafe-math-optimizations',
                    '-fno-trapping-math', '-ffast-math']
+    self.cwarnflags = ['-Wextra', '-Wall', '-Werror']
     self.mflags = []
     self.arflags = []
     self.linkflags = []
@@ -58,6 +60,8 @@ class GCCToolchain(toolchain.Toolchain):
 
     #Builders
     self.builders['c'] = self.builder_cc
+    self.builders['cc'] = self.builder_cxx
+    self.builders['cpp'] = self.builder_cxx
     self.builders['lib'] = self.builder_lib
     self.builders['multilib'] = self.builder_multicopy
     self.builders['sharedlib'] = self.builder_sharedlib
@@ -67,6 +71,14 @@ class GCCToolchain(toolchain.Toolchain):
 
     #Setup target platform
     self.build_target_toolchain(self.target)
+
+    self.cexternflags = []
+    self.cxxexternflags = []
+    self.cexternflags += self.cflags
+    self.cxxexternflags += self.cxxflags
+
+    self.cflags += self.cwarnflags
+    self.cxxflags += self.cwarnflags
 
   def name(self):
     return 'gcc'
@@ -84,11 +96,13 @@ class GCCToolchain(toolchain.Toolchain):
     super(GCCToolchain, self).write_variables(writer)
     writer.variable('toolchain', self.toolchain)
     writer.variable('cc', self.ccompiler)
+    writer.variable('cxx', self.cxxompiler)
     writer.variable('ar', self.archiver)
     writer.variable('link', self.linker)
     writer.variable('includepaths', self.make_includepaths(self.includepaths))
     writer.variable('moreincludepaths', '')
     writer.variable('cflags', self.cflags)
+    writer.variable('cxxflags', self.cxxflags)
     writer.variable('carchflags', '')
     writer.variable('cconfigflags', '')
     writer.variable('arflags', self.arflags)
@@ -107,6 +121,7 @@ class GCCToolchain(toolchain.Toolchain):
   def write_rules(self, writer):
     super(GCCToolchain, self).write_rules(writer)
     writer.rule('cc', command = self.cccmd, depfile = self.ccdepfile, deps = self.ccdeps, description = 'CC $in')
+    writer.rule('cxx', command = self.cxxcmd, depfile = self.ccdepfile, deps = self.ccdeps, description = 'CXX $in')
     writer.rule('ar', command = self.arcmd, description = 'LIB $out')
     writer.rule('link', command = self.linkcmd, description = 'LINK $out')
     writer.rule('so', command = self.linkcmd, description = 'SO $out')
@@ -115,10 +130,18 @@ class GCCToolchain(toolchain.Toolchain):
   def build_target_toolchain(self, target):
     if target.is_windows():
       self.build_windows_toolchain()
+    else:
+      self.build_default_toolchain()
     if self.toolchain != '' and not self.toolchain.endswith('/') and not self.toolchain.endswith('\\'):
       self.toolchain += os.sep
 
+  def build_default_toolchain(self):
+    self.cxxflags = self.cflags + ['-std=c++11', '-D_GNU_SOURCE=1']
+    self.cflags += ['-std=c11', '-D_GNU_SOURCE=1']
+
   def build_windows_toolchain(self):
+    self.cxxflags = self.cflags
+    self.cxxflags += ['-U__STRICT_ANSI__', '-std=c++11']
     self.cflags += ['-U__STRICT_ANSI__', '-std=c11']
     self.oslibs = ['kernel32', 'user32', 'shell32', 'advapi32']
 
@@ -195,7 +218,7 @@ class GCCToolchain(toolchain.Toolchain):
       libpaths += [os.path.join(libpath, self.libpath, config, arch) for libpath in extralibpaths]
     return self.make_libpaths(libpaths)
 
-  def cc_variables(self, config, arch, targettype, variables):
+  def cc_variables(self, config, arch, targettype, variables, externalsources):
     localvariables = []
     if 'includepaths' in variables:
       moreincludepaths = self.make_includepaths(variables['includepaths'])
@@ -207,6 +230,8 @@ class GCCToolchain(toolchain.Toolchain):
     cconfigflags = self.make_cconfigflags(config, targettype)
     if cconfigflags != []:
       localvariables += [('cconfigflags', cconfigflags)]
+    if externalsources:
+      localvariables += [('cflags', self.cexternflags), ('cxxflags', self.cxxexternflags)]
     return localvariables
 
   def ar_variables(self, config, arch, targettype, variables):
@@ -237,16 +262,19 @@ class GCCToolchain(toolchain.Toolchain):
     localvariables += [('configlibpaths', self.make_configlibpaths(config, arch, libpaths))]
     return localvariables
 
-  def builder_cc(self, writer, config, arch, targettype, infile, outfile, variables):
-    return writer.build(outfile, 'cc', infile, implicit = self.implicit_deps(config, variables), variables = self.cc_variables(config, arch, targettype, variables))
+  def builder_cc(self, writer, config, arch, targettype, infile, outfile, variables, externalsources):
+    return writer.build(outfile, 'cc', infile, implicit = self.implicit_deps(config, variables), variables = self.cc_variables(config, arch, targettype, variables, externalsources))
 
-  def builder_lib(self, writer, config, arch, targettype, infiles, outfile, variables):
+  def builder_cxx(self, writer, config, arch, targettype, infile, outfile, variables, externalsources):
+    return writer.build(outfile, 'cxx', infile, implicit = self.implicit_deps(config, variables), variables = self.cc_variables(config, arch, targettype, variables, externalsources))
+
+  def builder_lib(self, writer, config, arch, targettype, infiles, outfile, variables, externalsources):
     return writer.build(outfile, 'ar', infiles, implicit = self.implicit_deps(config, variables), variables = self.ar_variables(config, arch, targettype, variables))
 
-  def builder_sharedlib(self, writer, config, arch, targettype, infiles, outfile, variables):
+  def builder_sharedlib(self, writer, config, arch, targettype, infiles, outfile, variables, externalsources):
     return writer.build(outfile, 'so', infiles, implicit = self.implicit_deps(config, variables), variables = self.link_variables(config, arch, targettype, variables))
 
-  def builder_bin(self, writer, config, arch, targettype, infiles, outfile, variables):
+  def builder_bin(self, writer, config, arch, targettype, infiles, outfile, variables, externalsources):
     return writer.build(outfile, 'link', infiles, implicit = self.implicit_deps(config, variables), variables = self.link_variables(config, arch, targettype, variables))
 
 def create(host, target, toolchain):

@@ -33,12 +33,26 @@ hoardincludepaths = [
 	os.path.join('benchmark', 'hoard'),
 	os.path.join('benchmark', 'hoard', 'Heap-Layers')
 ]
-hoard_lib = generator.lib(module = 'hoard', sources = ['source/libhoard.cpp', 'source/mactls.cpp', 'Heap-Layers/wrappers/macwrapper.cpp'], basepath = 'benchmark', includepaths = includepaths + hoardincludepaths, externalsources = True)
+hoardsources = ['source/libhoard.cpp']
+if target.is_macosx() or target.is_ios():
+	hoardsources += ['Heap-Layers/wrappers/macwrapper.cpp']
+elif target.is_windows():
+	hoardsources += ['Heap-Layers/wrappers/winwrapper.cpp']
+else:
+	hoardsources += ['Heap-Layers/wrappers/gnuwrapper.cpp']
+if target.is_macosx() or target.is_ios():
+	hoardsources += ['source/mactls.cpp']
+elif target.is_windows():
+	hoardsources += ['source/wintls.cpp']
+else:
+	hoardsources += ['source/unixtls.cpp']
+hoard_lib = generator.lib(module = 'hoard', sources = hoardsources, basepath = 'benchmark', includepaths = includepaths + hoardincludepaths, externalsources = True)
 generator.bin(module = 'hoard', sources = ['benchmark.c'], binname = 'benchmark-hoard', basepath = 'benchmark', implicit_deps = [hoard_lib, benchmark_lib, test_lib], libs = ['hoard', 'benchmark', 'test', 'stdc++'], includepaths = includepaths)
 
 gperftoolsincludepaths = [
 	os.path.join('benchmark', 'gperftools', 'src'),
 	os.path.join('benchmark', 'gperftools', 'src', 'base'),
+	os.path.join('benchmark', 'gperftools', 'src', target.get())
 ]
 gperftoolsbasesources = [
 	'dynamic_annotations.c', 'linuxthreads.cc', 'logging.cc', 'low_level_alloc.cc', 'spinlock.cc',

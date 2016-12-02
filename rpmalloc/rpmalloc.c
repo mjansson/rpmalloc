@@ -11,9 +11,6 @@
 
 #include "rpmalloc.h"
 
-#include <stdint.h>
-#include <string.h>
-
 // Build time configurable limits
 
 //! Can be defined to 0 to reduce 16 byte overhead per memory page on 64 bit systems (will require total memory use of process to be less than 2^48)
@@ -36,8 +33,12 @@
 #  define atomic_thread_fence_acquire() //_ReadWriteBarrier()
 #  define atomic_thread_fence_release() //_ReadWriteBarrier()
 #else
+#  define _BSD_SOURCE 1
 #  define ALIGNED_STRUCT(name, alignment) struct __attribute__((__aligned__(alignment))) name
 #  define FORCEINLINE inline __attribute__((__always_inline__))
+#  ifdef __GNUC__
+#    define _Thread_local __thread
+#  endif
 #  ifdef __arm__
 #    define atomic_thread_fence_acquire() __asm volatile("dmb sy" ::: "memory")
 #    define atomic_thread_fence_release() __asm volatile("dmb st" ::: "memory")
@@ -58,6 +59,9 @@
 #else
 #  define PLATFORM_POSIX 1
 #endif
+
+#include <stdint.h>
+#include <string.h>
 
 // Atomic access abstraction
 
@@ -513,7 +517,7 @@ static void
 _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 	size_class_t* size_class = _memory_size_class + span->data.block.size_class;
 
-	if (span->data.block.free_count == (size_class->block_count - 1)) {
+	if (span->data.block.free_count == ((count_t)size_class->block_count - 1)) {
 		//Remove from free list (present if we had a previous free block)
 		if (span->data.block.free_count > 0)
 			_memory_list_remove(&heap->size_cache[span->data.block.size_class], span);
@@ -725,9 +729,6 @@ _memory_adjust_size_class(size_t iclass) {
 #  include <errno.h>
 #  ifndef MAP_UNINITIALIZED
 #    define MAP_UNINITIALIZED 0
-#  endif
-#  ifndef MAP_ANONYMOUS
-#    define MAP_ANONYMOUS MAP_ANON
 #  endif
 #endif
 

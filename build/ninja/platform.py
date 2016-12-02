@@ -62,3 +62,6 @@ class Platform(object):
 
   def is_tizen(self):
     return self.platform == 'tizen'
+
+  def get(self):
+    return self.platform

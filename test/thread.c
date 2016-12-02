@@ -13,6 +13,7 @@ thread_entry(void* argptr) {
 }
 
 #else
+#  include <time.h>
 #  include <pthread.h>
 #  include <sched.h>
 

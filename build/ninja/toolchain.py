@@ -262,7 +262,7 @@ class Toolchain(object):
   def copy(self, writer, src, dst, implicit = None, order_only = None):
     return writer.build(dst, 'copy', src, implicit = implicit, order_only = order_only)
 
-  def builder_multicopy(self, writer, config, archs, targettype, infiles, outpath, variables):
+  def builder_multicopy(self, writer, config, archs, targettype, infiles, outpath, variables, externalsources):
     output = []
     rootdir = self.mkdir(writer, outpath)
     for file in infiles:

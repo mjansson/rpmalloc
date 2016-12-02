@@ -194,8 +194,13 @@ class ClangToolchain(toolchain.Toolchain):
       self.build_xcode_toolchain()
     elif self.target.is_pnacl():
       self.build_pnacl_toolchain()
+    else:
+      self.build_default_toolchain()
     if self.toolchain != '' and not self.toolchain.endswith('/') and not self.toolchain.endswith('\\'):
       self.toolchain += os.sep
+
+  def build_default_toolchain(self):
+    self.cxxflags = self.cflags    
 
   def build_windows_toolchain(self):
     self.cflags += ['-U__STRICT_ANSI__', '-Wno-reserved-id-macro']
