@@ -19,17 +19,17 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\benchmark\main.c" />
-    <ClCompile Include="..\benchmark\nedmalloc\benchmark.c" />
-    <ClCompile Include="..\benchmark\nedmalloc\nedmalloc.c" />
-    <ClCompile Include="..\test\thread.c" />
-    <ClCompile Include="..\test\timer.c" />
+    <ClCompile Include="..\..\benchmark\main.c" />
+    <ClCompile Include="..\..\benchmark\nedmalloc\benchmark.c" />
+    <ClCompile Include="..\..\benchmark\nedmalloc\nedmalloc.c" />
+    <ClCompile Include="..\..\test\thread.c" />
+    <ClCompile Include="..\..\test\timer.c" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="..\benchmark\benchmark.h" />
-    <ClInclude Include="..\benchmark\nedmalloc\nedmalloc.h" />
-    <ClInclude Include="..\test\thread.h" />
-    <ClInclude Include="..\test\timer.h" />
+    <ClInclude Include="..\..\benchmark\benchmark.h" />
+    <ClInclude Include="..\..\benchmark\nedmalloc\nedmalloc.h" />
+    <ClInclude Include="..\..\test\thread.h" />
+    <ClInclude Include="..\..\test\timer.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <Keyword>Win32Proj</Keyword>
@@ -109,7 +109,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS=1;NDEBUG=1;WIN32</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\test;..\benchmark;..\benchmark\nedmalloc</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\..\\test;..\..\\benchmark;..\..\\benchmark\nedmalloc</AdditionalIncludeDirectories>
       <ExceptionHandling>false</ExceptionHandling>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -141,7 +141,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS=1;NDEBUG=1;WIN32</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\test;..\benchmark;..\benchmark\nedmalloc</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\..\\test;..\..\\benchmark;..\..\\benchmark\nedmalloc</AdditionalIncludeDirectories>
       <ExceptionHandling>false</ExceptionHandling>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -174,7 +174,7 @@
       <FunctionLevelLinking>false</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS=1;NDEBUG=1;WIN32</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\test;..\benchmark;..\benchmark\nedmalloc</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\..\\test;..\..\\benchmark;..\..\\benchmark\nedmalloc</AdditionalIncludeDirectories>
       <ExceptionHandling>false</ExceptionHandling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <BufferSecurityCheck>false</BufferSecurityCheck>
@@ -211,7 +211,7 @@
       <FunctionLevelLinking>false</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS=1;NDEBUG=1;WIN32</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\test;..\benchmark;..\benchmark\nedmalloc</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\..\\test;..\..\\benchmark;..\..\\benchmark\nedmalloc</AdditionalIncludeDirectories>
       <ExceptionHandling>false</ExceptionHandling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <BufferSecurityCheck>false</BufferSecurityCheck>

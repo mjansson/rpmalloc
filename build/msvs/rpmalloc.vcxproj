@@ -19,10 +19,10 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\rpmalloc\rpmalloc.c" />
+    <ClCompile Include="..\..\rpmalloc\rpmalloc.c" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="..\rpmalloc\rpmalloc.h" />
+    <ClInclude Include="..\..\rpmalloc\rpmalloc.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{65DC4291-954E-4B91-8889-4F3ADCC9D2D5}</ProjectGuid>

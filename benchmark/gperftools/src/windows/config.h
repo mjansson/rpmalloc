@@ -297,7 +297,7 @@
 /* Define to `__inline__' or `__inline' if that's what the C compiler
    calls it, or to nothing if 'inline' is not supported under any name.  */
 #ifndef __cplusplus
-#undef inline
+#define inline __forceinline
 #endif
 
 // ---------------------------------------------------------------------
@@ -313,6 +313,8 @@
 
 // We want to make sure not to ever try to #include heap-checker.h
 #define NO_HEAP_CHECK 1
+
+#define NO_TCMALLOC_SAMPLES 1
 
 // TODO(csilvers): include windows/port.h in every relevant source file instead?
 #include "windows/port.h"

@@ -1,112 +1,112 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <ClCompile Include="..\benchmark\main.c" />
-    <ClCompile Include="..\benchmark\gperftools\benchmark.c" />
-    <ClCompile Include="..\test\thread.c" />
-    <ClCompile Include="..\test\timer.c" />
-    <ClCompile Include="..\benchmark\gperftools\src\central_freelist.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\central_freelist.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\common.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\common.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\base\dynamic_annotations.c">
+    <ClCompile Include="..\..\benchmark\gperftools\src\base\dynamic_annotations.c">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\fake_stacktrace_scope.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\fake_stacktrace_scope.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\heap-profile-table.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\heap-profile-table.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\windows\ia32_modrm_map.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\windows\ia32_modrm_map.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\windows\ia32_opcode_map.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\windows\ia32_opcode_map.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\internal_logging.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\internal_logging.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\base\logging.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\base\logging.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\base\low_level_alloc.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\base\low_level_alloc.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\malloc_extension.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\malloc_extension.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\malloc_hook.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\malloc_hook.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\memory_region_map.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\memory_region_map.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\windows\mini_disassembler.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\windows\mini_disassembler.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\page_heap.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\page_heap.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\windows\port.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\windows\port.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\windows\preamble_patcher.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\windows\preamble_patcher.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\windows\preamble_patcher_with_stub.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\windows\preamble_patcher_with_stub.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\raw_printer.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\raw_printer.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\sampler.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\sampler.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\span.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\span.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\base\spinlock.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\base\spinlock.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\base\spinlock_internal.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\base\spinlock_internal.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\stack_trace_table.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\stack_trace_table.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\stacktrace.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\stacktrace.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\static_vars.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\static_vars.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\symbolize.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\symbolize.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\base\sysinfo.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\base\sysinfo.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\windows\system-alloc.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\windows\system-alloc.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\thread_cache.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\thread_cache.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\benchmark\gperftools\src\windows\override_functions.cc">
+    <ClCompile Include="..\..\benchmark\gperftools\src\windows\override_functions.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-  </ItemGroup>
-  <ItemGroup>
-    <ClInclude Include="..\benchmark\benchmark.h" />
-    <ClInclude Include="..\test\thread.h" />
-    <ClInclude Include="..\test\timer.h" />
+    <ClCompile Include="..\..\benchmark\main.c" />
+    <ClCompile Include="..\..\test\thread.c" />
+    <ClCompile Include="..\..\test\timer.c" />
+    <ClCompile Include="..\..\benchmark\gperftools\benchmark.c" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="gperftools">
       <UniqueIdentifier>{8d293931-26b2-4985-9f90-aa9559572b1e}</UniqueIdentifier>
     </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\..\benchmark\benchmark.h" />
+    <ClInclude Include="..\..\test\thread.h" />
+    <ClInclude Include="..\..\test\timer.h" />
   </ItemGroup>
 </Project>

@@ -116,7 +116,7 @@ static void
 allocate_random_size(void* argptr) {
 	benchmark_arg* arg = argptr;
 	void** pointers;
-	const size_t num_pointers = 8192;
+	const size_t num_pointers = 8192*2;
 	const size_t num_loops = 8192*4;
 	const size_t random_size_count = (sizeof(random_size) / sizeof(random_size[0]));
 
