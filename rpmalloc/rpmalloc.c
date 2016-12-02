@@ -19,9 +19,9 @@
 //! Can be defined to 0 to reduce 16 byte overhead per memory page on 64 bit systems (will require total memory use of process to be less than 2^48)
 #define USE_FULL_ADDRESS_RANGE    1
 //! Limit of thread cache (total sum of thread cache for all page counts will be 16 * THREAD_SPAN_CACHE_LIMIT)
-#define THREAD_SPAN_CACHE_LIMIT   (4*1024*1024)
+#define THREAD_SPAN_CACHE_LIMIT   (16*1024*1024)
 //! Limit of global cache (total sum of global cache for all page counts will be 16 * GLOBAL_SPAN_CACHE_LIMIT)
-#define GLOBAL_SPAN_CACHE_LIMIT   (64*1024*1024)
+#define GLOBAL_SPAN_CACHE_LIMIT   (128*1024*1024)
 //! Size of heap hashmap
 #define HEAP_ARRAY_SIZE           79
 
@@ -259,7 +259,7 @@ _memory_map(size_t page_count);
 static void
 _memory_unmap(void* ptr, size_t page_count);
 
-static heap_t*
+static FORCEINLINE heap_t*
 _memory_heap_lookup(int32_t id) {
 	uint32_t list_idx = id % HEAP_ARRAY_SIZE;
 	heap_t* heap = atomic_load_ptr(&_memory_heaps[list_idx]);
@@ -459,7 +459,7 @@ _memory_allocate_heap(void) {
 	return heap;
 }
 
-static void
+static FORCEINLINE void
 _memory_sized_list_add(span_t** head, span_t* span) {
 	if (*head) {
 		offset_t next_offset = pointer_diff_span(*head, span);
@@ -474,7 +474,7 @@ _memory_sized_list_add(span_t** head, span_t* span) {
 	*head = span;
 }
 
-static void
+static FORCEINLINE void
 _memory_list_add(span_t** head, span_t* span) {
 	if (*head) {
 		offset_t next_offset = pointer_diff_span(*head, span);
@@ -487,7 +487,7 @@ _memory_list_add(span_t** head, span_t* span) {
 	*head = span;
 }
 
-static void
+static FORCEINLINE void
 _memory_list_remove(span_t** head, span_t* span) {
 	if (*head == span) {
 		if (span->next_span)
@@ -566,7 +566,7 @@ _memory_deallocate_deferred(heap_t* heap) {
 	}
 }
 
-static void
+static FORCEINLINE void
 _memory_deallocate_defer(int32_t heap_id, void* p) {
 	//Delegate to heap
 	heap_t* heap = _memory_heap_lookup(heap_id);
@@ -583,7 +583,7 @@ _memory_allocate(size_t size) {
 	if (size <= MEDIUM_SIZE_LIMIT) {
 		heap_t* heap = _memory_thread_heap;
 		if (heap) {
-			//_memory_deallocate_deferred(heap);
+			_memory_deallocate_deferred(heap);
 			return _memory_allocate_from_heap(heap, size);
 		}
 
