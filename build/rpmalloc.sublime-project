@@ -1,0 +1,49 @@
+{
+	"folders":
+	[
+		{
+			"follow_symlinks": true,
+			"path": "../rpmalloc"
+		},
+		{
+			"follow_symlinks": true,
+			"path": "../test"
+		},
+		{
+			"follow_symlinks": true,
+			"path": "../benchmark"
+		}
+	],
+	"build_systems":
+	[
+		{
+			"name": "Ninja",
+			"shell_cmd": "ninja",
+			"working_dir": "${project_path:${folder:${file_path}}}/..",
+			"file_regex": "^(.+):([0-9]+):([0-9]+):(.+)$"
+		}
+	],
+	"use_tab_stops": true,
+	"translate_tabs_to_spaces": false,
+	"trim_trailing_white_space_on_save": true,
+	"settings":
+	{
+		"AStyleFormatter":
+		{
+			"options_default":
+			{
+				"style" : "attach",
+				"pad-oper": false,
+				"pad-header": true,
+				"indent-switches" : false,
+				"indent-cases" : true,
+				"unpad-paren": true,
+				"break-closing-brackets": true,
+				"align-pointer": "type",
+				"max-code-length": 100,
+				"max-instatement-indent": 60,
+				"break-after-logical": true
+			}
+		}
+	}
+}

@@ -1,4 +1,8 @@
 
+#ifndef _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS
+#endif
+
 #include <benchmark.h>
 #include <thread.h>
 #include <timer.h>
@@ -18,16 +22,35 @@ typedef struct benchmark_arg benchmark_arg;
 
 static int benchmark_start;
 
+#ifdef _WIN32
+#include <Windows.h>
+#include <Psapi.h>
+#endif
+
+static size_t
+get_process_memory_usage(void) {
+#ifdef _WIN32
+	PROCESS_MEMORY_COUNTERS counters;
+	memset(&counters, 0, sizeof(counters));
+	counters.cb = sizeof(counters);
+	GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters));
+	return counters.WorkingSetSize;
+#else
+	return 0;
+#endif
+}
+
 static void
 allocate_fixed_size(void* argptr) {
 	benchmark_arg* arg = argptr;
 	void* pointers[1024];
 	const size_t num_pointers = sizeof(pointers) / sizeof(pointers[0]);
 	const size_t num_loops = 8192*4;
+	const size_t alignment[3] = { 0, 8, 16 };
 
 	benchmark_thread_initialize();
 
-	void* trigger = benchmark_malloc(arg->size);
+	void* trigger = benchmark_malloc(16, arg->size);
 
 	while (!benchmark_start)
 		thread_yield();
@@ -39,7 +62,7 @@ allocate_fixed_size(void* argptr) {
 		size_t tick_start = timer_current();
 		for (size_t iloop = 0; iloop < (iter ? num_loops : num_loops / 4); ++iloop) {
 			for (size_t iptr = 0; iptr < num_pointers; ++iptr) {
-				pointers[iptr] = benchmark_malloc(arg->size);
+				pointers[iptr] = benchmark_malloc(alignment[iptr%3], arg->size);
 				arg->accumulator += (uintptr_t)pointers[iptr];
 				*((uintptr_t*)pointers[iptr]) = (uintptr_t)pointers[iptr] + (uintptr_t)trigger;
 			}
@@ -119,11 +142,12 @@ allocate_random_size(void* argptr) {
 	const size_t num_pointers = 8192*2;
 	const size_t num_loops = 8192*4;
 	const size_t random_size_count = (sizeof(random_size) / sizeof(random_size[0]));
+	const size_t alignment[3] = { 0, 8, 16 };
 
 	benchmark_thread_initialize();
 
 	size_t pointers_size = sizeof(void*) * num_pointers;
-	pointers = benchmark_malloc(pointers_size);
+	pointers = benchmark_malloc(16, pointers_size);
 	memset(pointers, 0, pointers_size);
 
 	while (!benchmark_start)
@@ -146,7 +170,7 @@ allocate_random_size(void* argptr) {
 					benchmark_free((void*)pointers[iptr]);
 					++arg->mops;
 				}
-				pointers[iptr] = benchmark_malloc(size);
+				pointers[iptr] = benchmark_malloc(alignment[iptr % 3], size);
 				//*((uintptr_t*)pointers[iptr]) = (uintptr_t)pointers[iptr] + (uintptr_t)pointers;
 				arg->accumulator += (uintptr_t)pointers[iptr];
 				++arg->mops;
@@ -209,7 +233,9 @@ int main(int argc, char** argv) {
 	uintptr_t thread_handle[16];
 	FILE* fd;
 
-	fd = fopen("benchmark-random-small.txt", "w+b");
+	char filebuf[32];
+	sprintf(filebuf, "benchmark-random-small-%s.txt", benchmark_name());
+	fd = fopen(filebuf, "w+b");
 
 	for (size_t num_threads = 1; num_threads <= 12; ++num_threads) {
 		benchmark_start = 0;
@@ -245,8 +271,8 @@ int main(int argc, char** argv) {
 		double time_elapsed = timer_ticks_to_seconds(ticks);
 		double average_mops = (double)mops / time_elapsed;
 		char linebuf[128];
-		int len = snprintf(linebuf, sizeof(linebuf), "%u,%u\n", (unsigned int)num_threads,
-		                   (unsigned int)average_mops);
+		int len = snprintf(linebuf, sizeof(linebuf), "%u,%u,%u\n", (unsigned int)num_threads,
+		                   (unsigned int)average_mops, (unsigned int)get_process_memory_usage());
 		fwrite(linebuf, (len > 0) ? (size_t)len : 0, 1, fd);
 		fflush(fd);
 
@@ -255,8 +281,9 @@ int main(int argc, char** argv) {
 	}
 
 	fclose(fd);
-
-	fd = fopen("benchmark-random-large.txt", "w+b");
+#if 0
+	sprintf(filebuf, "benchmark-random-large-%s.txt", benchmark_name());
+	fd = fopen(filebuf, "w+b");
 
 	for (size_t num_threads = 1; num_threads <= 12; ++num_threads) {
 		benchmark_start = 0;
@@ -292,8 +319,8 @@ int main(int argc, char** argv) {
 		double time_elapsed = timer_ticks_to_seconds(ticks);
 		double average_mops = (double)mops / time_elapsed;
 		char linebuf[128];
-		int len = snprintf(linebuf, sizeof(linebuf), "%u,%u\n", (unsigned int)num_threads,
-		                   (unsigned int)average_mops);
+		int len = snprintf(linebuf, sizeof(linebuf), "%u,%u,%u\n", (unsigned int)num_threads,
+		                   (unsigned int)average_mops, (unsigned int)get_process_memory_usage());
 		fwrite(linebuf, (len > 0) ? (size_t)len : 0, 1, fd);
 		fflush(fd);
 
@@ -303,7 +330,8 @@ int main(int argc, char** argv) {
 
 	fclose(fd);
 
-	fd = fopen("benchmark-single.txt", "w+b");
+	sprintf(filebuf, "benchmark-single-%s.txt", benchmark_name());
+	fd = fopen(filebuf, "w+b");
 
 	for (size_t num_threads = 1; num_threads <= 12; ++num_threads) {
 		char linebuf[128];
@@ -346,8 +374,8 @@ int main(int argc, char** argv) {
 
 			double time_elapsed = timer_ticks_to_seconds(ticks);
 			double average_mops = (double)mops / time_elapsed;
-			len = snprintf(linebuf, sizeof(linebuf), "%u,%u\n",
-			               (unsigned int)size, (unsigned int)average_mops);
+			len = snprintf(linebuf, sizeof(linebuf), "%u,%u,%u\n",
+			               (unsigned int)size, (unsigned int)average_mops, (unsigned int)get_process_memory_usage());
 			fwrite(linebuf, (len > 0) ? (size_t)len : 0, 1, fd);
 			fflush(fd);
 
@@ -360,6 +388,7 @@ int main(int argc, char** argv) {
 
 	if (benchmark_finalize() < 0)
 		return -4;
+#endif
 
 	return 0;
 }

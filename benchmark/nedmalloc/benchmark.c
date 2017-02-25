@@ -23,11 +23,16 @@ benchmark_thread_finalize(void) {
 }
 
 void*
-benchmark_malloc(size_t size) {
-	return nedmalloc(size);
+benchmark_malloc(size_t alignment, size_t size) {
+	return nedmemalign(alignment, size);
 }
 
 extern void
 benchmark_free(void* ptr) {
 	nedfree(ptr);
+}
+
+const char*
+benchmark_name(void) {
+	return "nedmalloc";
 }

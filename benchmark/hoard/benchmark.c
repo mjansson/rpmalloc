@@ -50,11 +50,17 @@ benchmark_thread_finalize(void) {
 }
 
 void*
-benchmark_malloc(size_t size) {
+benchmark_malloc(size_t alignment, size_t size) {
+	//TODO: Alignment
 	return xxmalloc(size);
 }
 
 extern void
 benchmark_free(void* ptr) {
 	xxfree(ptr);
+}
+
+const char*
+benchmark_name(void) {
+	return "hoard";
 }

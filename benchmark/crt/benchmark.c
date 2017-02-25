@@ -27,11 +27,26 @@ benchmark_thread_finalize(void) {
 }
 
 void*
-benchmark_malloc(size_t size) {
-	return malloc(size);
+benchmark_malloc(size_t alignment, size_t size) {
+#ifdef _WIN32
+	return _aligned_malloc(size, alignment ? alignment : 4);
+#else
+	void* ptr;
+	posix_memalign(&ptr, alignment, size);
+	return ptr;
+#endif
 }
 
 extern void
 benchmark_free(void* ptr) {
+#ifdef _WIN32
+	_aligned_free(ptr);
+#else
 	free(ptr);
+#endif
+}
+
+const char*
+benchmark_name(void) {
+	return "crt";
 }

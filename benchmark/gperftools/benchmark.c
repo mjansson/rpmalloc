@@ -4,6 +4,9 @@
 extern void*
 tc_malloc(size_t size);
 
+extern void*
+tc_memalign(size_t alignment, size_t size);
+
 extern void
 tc_free(void* ptr);
 
@@ -28,11 +31,16 @@ benchmark_thread_finalize(void) {
 }
 
 void*
-benchmark_malloc(size_t size) {
-	return tc_malloc(size);
+benchmark_malloc(size_t alignment, size_t size) {
+	return tc_memalign(alignment, size);
 }
 
-extern void
+void
 benchmark_free(void* ptr) {
 	tc_free(ptr);
+}
+
+const char*
+benchmark_name(void) {
+	return "tcmalloc";
 }

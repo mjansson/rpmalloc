@@ -25,11 +25,16 @@ benchmark_thread_finalize(void) {
 }
 
 void*
-benchmark_malloc(size_t size) {
-	return rpmalloc(size);
+benchmark_malloc(size_t alignment, size_t size) {
+	return rpaligned_alloc(alignment, size);
 }
 
 extern void
 benchmark_free(void* ptr) {
 	rpfree(ptr);
+}
+
+const char*
+benchmark_name(void) {
+	return "rpmalloc";
 }

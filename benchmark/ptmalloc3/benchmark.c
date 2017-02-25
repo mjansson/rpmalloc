@@ -2,7 +2,7 @@
 #include <benchmark.h>
 
 extern void*
-ptmalloc(size_t bytes);
+ptmemalign(size_t alignment, size_t bytes);
 
 extern void
 ptfree(void* ptr);
@@ -28,11 +28,16 @@ benchmark_thread_finalize(void) {
 }
 
 void*
-benchmark_malloc(size_t size) {
-	return ptmalloc(size);
+benchmark_malloc(size_t alignment, size_t size) {
+	return ptmemalign(alignment, size);
 }
 
 extern void
 benchmark_free(void* ptr) {
 	ptfree(ptr);
+}
+
+const char*
+benchmark_name(void) {
+	return "ptmalloc3";
 }
