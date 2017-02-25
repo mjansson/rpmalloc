@@ -363,7 +363,7 @@ _memory_allocate_from_heap(heap_t* heap, size_t size) {
 	span_t* span = heap->size_cache[class_idx];
 	if (span) {
 		//Happy path, we have a span with at least one free block
-		size_t offset = (size_t)size_class->size * span->data.block.free_list;
+		count_t offset = (count_t)size_class->size * span->data.block.free_list;
 		uint32_t* block = pointer_offset(span, SPAN_HEADER_SIZE + offset);
 		if (!(*block & BLOCK_AUTOLINK)) {
 			span->data.block.free_list = (count_t)(*block);
@@ -541,16 +541,16 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 		}
 	}
 	else {
-		uint32_t* block = p;
-		intptr_t block_offset = pointer_diff(block, span) - (intptr_t)SPAN_HEADER_SIZE;
-		intptr_t block_idx = block_offset / (intptr_t)size_class->size;
 		if (span->data.block.free_count == 0) {
 			//Add to free list
 			_memory_list_add(&heap->size_cache[span->data.block.size_class], span);
 		}
+		uint32_t* block = p;
 		*block = span->data.block.free_list;
-		span->data.block.free_list = (count_t)block_idx;
 		++span->data.block.free_count;
+		count_t block_offset = (count_t)pointer_diff(block, span) - SPAN_HEADER_SIZE;
+		count_t block_idx = block_offset / (count_t)size_class->size;
+		span->data.block.free_list = block_idx;
 	}
 }
 
