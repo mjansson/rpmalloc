@@ -24,7 +24,7 @@ class ClangToolchain(toolchain.Toolchain):
     #Default variables
     self.sysroot = ''
     if self.target.is_ios():
-      self.deploymenttarget = '8.0'
+      self.deploymenttarget = '9.0'
     if self.target.is_macosx():
       self.deploymenttarget = '10.7'
 
@@ -34,7 +34,7 @@ class ClangToolchain(toolchain.Toolchain):
     self.ccdeps = 'gcc'
     self.ccdepfile = '$out.d'
     self.arcmd = self.rmcmd('$out') + ' && $toolchain$ar crsD $ararchflags $arflags $out $in'
-    self.linkcmd = '$toolchain$cc $libpaths $configlibpaths $linkflags $linkarchflags $linkconfigflags -o $out $in $libs $archlibs $oslibs'
+    self.linkcmd = '$toolchain$cc $libpaths $configlibpaths $linkflags $linkarchflags $linkconfigflags -o $out $in $libs $archlibs $oslibs $frameworks'
 
     #Base flags
     self.cflags = ['-D' + project.upper() + '_COMPILE=1',
@@ -47,6 +47,7 @@ class ClangToolchain(toolchain.Toolchain):
     self.arflags = []
     self.linkflags = []
     self.oslibs = []
+    self.frameworks = []
 
     if self.target.is_linux() or self.target.is_bsd() or self.target.is_raspberrypi():
       self.linkflags += ['-pthread']
@@ -167,6 +168,7 @@ class ClangToolchain(toolchain.Toolchain):
     writer.variable('configlibpaths', '')
     writer.variable('archlibs', '')
     writer.variable('oslibs', self.make_libs(self.oslibs))
+    writer.variable('frameworks', '')
     writer.newline()
 
   def write_rules(self, writer):
@@ -262,9 +264,9 @@ class ClangToolchain(toolchain.Toolchain):
     self.lipocmd = '$lipo $in -create -output $out'
 
     if self.target.is_macosx():
-      self.linkflags += [ '-framework', 'Cocoa', '-framework', 'CoreFoundation' ]
+      self.frameworks = ['Cocoa', 'CoreFoundation']
     if self.target.is_ios():
-      self.linkflags += [ '-framework', 'CoreGraphics', '-framework', 'UIKit', '-framework', 'Foundation' ]
+      self.frameworks = ['CoreGraphics', 'UIKit', 'Foundation']
 
   def build_pnacl_toolchain(self):
     if self.sdkpath == '':
@@ -406,6 +408,11 @@ class ClangToolchain(toolchain.Toolchain):
       return ['-l' + lib for lib in libs]
     return []
 
+  def make_frameworks(self, frameworks):
+    if frameworks != None:
+      return ['-framework ' + framework for framework in frameworks]
+    return []
+
   def make_configlibpaths(self, config, arch, extralibpaths):
     libpaths = [self.libpath, os.path.join(self.libpath, config)]
     if not self.target.is_macosx() and not self.target.is_ios():
@@ -461,6 +468,13 @@ class ClangToolchain(toolchain.Toolchain):
       libvar = self.make_libs(variables['libs'])
       if libvar != []:
         localvariables += [('libs', libvar)]
+
+    localframeworks = self.frameworks or []
+    if 'frameworks' in variables and variables['frameworks'] != None:
+      localframeworks += list(variables['frameworks'])
+    if len(localframeworks) > 0:
+      localvariables += [('frameworks', self.make_frameworks(list(localframeworks)))]
+      
     libpaths = []
     if 'libpaths' in variables:
       libpaths = variables['libpaths']

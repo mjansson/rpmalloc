@@ -320,7 +320,7 @@ class Toolchain(object):
       return self.builders[nodetype](writer, config, arch, nodetype, infiles, outfile, variables, externalsources)
     return []
 
-  def build_sources(self, writer, nodetype, multitype, module, sources, binfile, basepath, outpath, configs, includepaths, libpaths, libs, implicit_deps, variables, externalsources):
+  def build_sources(self, writer, nodetype, multitype, module, sources, binfile, basepath, outpath, configs, includepaths, libpaths, libs, implicit_deps, variables, frameworks, externalsources):
     if module != '':
       decoratedmodule = module + make_pathhash(module, nodetype)
     else:
@@ -335,7 +335,8 @@ class Toolchain(object):
     nodevariables.update({
                      'libs': libs,
                      'implicit_deps': implicit_deps,
-                     'libpaths': self.depend_libpaths + list(libpaths)})
+                     'libpaths': self.depend_libpaths + list(libpaths),
+                     'frameworks': frameworks})
     self.module = module
     self.buildtarget = binfile
     for config in configs:
@@ -374,7 +375,7 @@ class Toolchain(object):
     libfile = self.libprefix + module + self.staticlibext
     if outpath is None:
       outpath = self.libpath
-    return self.build_sources(writer, 'lib', 'multilib', module, sources, libfile, basepath, outpath, configs, includepaths, None, None, None, variables, externalsources)
+    return self.build_sources(writer, 'lib', 'multilib', module, sources, libfile, basepath, outpath, configs, includepaths, None, None, None, variables, None, externalsources)
 
   def sharedlib(self, writer, module, sources, basepath, configs, includepaths, libpaths, implicit_deps, libs, frameworks, variables, outpath, externalsources):
     built = {}
@@ -385,7 +386,7 @@ class Toolchain(object):
     libfile = self.libprefix + module + self.dynamiclibext
     if outpath is None:
       outpath = self.binpath
-    return self.build_sources(writer, 'sharedlib', 'multisharedlib', module, sources, libfile, basepath, outpath, configs, includepaths, libpaths, libs, implicit_deps, variables, externalsources)
+    return self.build_sources(writer, 'sharedlib', 'multisharedlib', module, sources, libfile, basepath, outpath, configs, includepaths, libpaths, libs, implicit_deps, variables, frameworks, externalsources)
 
   def bin(self, writer, module, sources, binname, basepath, configs, includepaths, libpaths, implicit_deps, libs, frameworks, variables, outpath, externalsources):
     built = {}
@@ -396,7 +397,7 @@ class Toolchain(object):
     binfile = self.binprefix + binname + self.binext
     if outpath is None:
       outpath = self.binpath
-    return self.build_sources(writer, 'bin', 'multibin', module, sources, binfile, basepath, outpath, configs, includepaths, libpaths, libs, implicit_deps, variables, externalsources)
+    return self.build_sources(writer, 'bin', 'multibin', module, sources, binfile, basepath, outpath, configs, includepaths, libpaths, libs, implicit_deps, variables, frameworks, externalsources)
 
   def app(self, writer, module, sources, binname, basepath, configs, includepaths, libpaths, implicit_deps, libs, frameworks, variables, resources):
     builtbin = []

@@ -9,34 +9,58 @@ import time
 import shutil
 import json
 
-parser = argparse.ArgumentParser( description = 'Codesign utility for Ninja builds' )
-parser.add_argument( 'file', type=str,
-                     help = 'Bundle/package to sign' )
-parser.add_argument( '--target', type=str,
-                     help = 'Target',
-                     choices = [ 'macosx', 'ios', 'android' ],
-                     default = '' )
-parser.add_argument( '--bundle', type=str,
-                     help = 'Bundle identifier (OSX/iOS)',
-                     default = '' )
-parser.add_argument( '--organisation', type=str,
-                     help = 'Organisation identifier (OSX/iOS)',
-                     default = '' )
-parser.add_argument( '--provisioning', type=str,
-                     help = 'Provisioning profile (OSX/iOS)',
-                     default = '' )
-parser.add_argument( '--binname', type=str,
-                     help = 'Binary name (OSX/iOS)',
-                     default = '' )
-parser.add_argument( '--prefs', type=str,
-                     help = 'Preferences file',
-                     default = '' )
-parser.add_argument( '--builddir', type=str,
-                     help = 'Build directory',
-                     default = '' )
-parser.add_argument( '--config', type=str,
-                     help = 'Build configuration',
-                     default = '' )
+parser = argparse.ArgumentParser(description = 'Codesign utility for Ninja builds')
+parser.add_argument('file', type=str,
+                    help = 'Bundle/package to sign')
+parser.add_argument('--target', type=str,
+                    help = 'Target',
+                    choices = ['macosx', 'ios', 'android'],
+                    default = '')
+parser.add_argument('--bundle', type=str,
+                    help = 'Bundle identifier (OSX/iOS)',
+                    default = '')
+parser.add_argument('--organisation', type=str,
+                    help = 'Organisation identifier (OSX/iOS)',
+                    default = '')
+parser.add_argument('--provisioning', type=str,
+                    help = 'Provisioning profile (OSX/iOS)',
+                    default = '')
+parser.add_argument('--builddir', type=str,
+                    help = 'Build directory (OSX/iOS)',
+                    default = '')
+parser.add_argument('--binname', type=str,
+                    help = 'Binary name (OSX/iOS)',
+                    default = '')
+parser.add_argument('--zipfile', type=str,
+                    help = 'Zip file (Android)',
+                    default = '')
+parser.add_argument('--tsacert', type=str,
+                    help = 'TSA cert (Android)',
+                    default = '')
+parser.add_argument('--tsa', type=str,
+                    help = 'TSA (Android)',
+                    default = '')
+parser.add_argument('--keystore', type=str,
+                    help = 'Keystore (Android)',
+                    default = '')
+parser.add_argument('--keystorepass', type=str,
+                    help = 'Keystore password (Android)',
+                    default = '')
+parser.add_argument('--keyalias', type=str,
+                    help = 'Key alias (Android)',
+                    default = '')
+parser.add_argument('--keypass', type=str,
+                    help = 'Key password (Android)',
+                    default = '')
+parser.add_argument('--jarsigner', type=str,
+                    help = 'JAR signer (Android)',
+                    default = 'jarsigner')
+parser.add_argument('--prefs', type=str,
+                    help = 'Preferences file',
+                    default = '')
+parser.add_argument('--config', type=str,
+                    help = 'Build configuration',
+                    default = '')
 options = parser.parse_args()
 
 androidprefs = {}
@@ -126,7 +150,8 @@ def codesign_macosx():
   if os.path.isfile( os.path.join( options.file, 'Contents', '_CodeSignature', 'CodeResources' ) ):
     os.remove( os.path.join( options.file, 'Contents', '_CodeSignature', 'CodeResources' ) )
 
-  os.system( 'export CODESIGN_ALLOCATE=' + codesign_allocate + '; /usr/bin/codesign --force --sign ' + macosxprefs['signature'] + ' ' + options.file )
+  if 'signature' in macosxprefs:
+    os.system( 'export CODESIGN_ALLOCATE=' + codesign_allocate + '; /usr/bin/codesign --force --sign ' + macosxprefs['signature'] + ' ' + options.file )
 
   if os.path.isfile( os.path.join( options.file, 'Contents', '_CodeSignature', 'CodeResources' ) ):
     os.utime( os.path.join( options.file, 'Contents', '_CodeSignature', 'CodeResources' ), None )
@@ -136,7 +161,54 @@ def codesign_macosx():
 
 
 def codesign_android():
-  pass
+  if not 'tsacert' in androidprefs:
+    androidprefs['tsacert'] = options.tsacert
+  if not 'tsa' in androidprefs:
+    androidprefs['tsa'] = options.tsa
+  if not 'keystore' in androidprefs:
+    androidprefs['keystore'] = options.keystore
+  if not 'keystorepass' in androidprefs:
+    androidprefs['keystorepass'] = options.keystorepass
+  if not 'keyalias' in androidprefs:
+    androidprefs['keyalias'] = options.keyalias
+  if not 'keypass' in androidprefs:
+    androidprefs['keypass'] = options.keypass
+  if not 'jarsigner' in androidprefs:
+    androidprefs['jarsigner'] = options.jarsigner
+
+  timestamp = ''
+  if androidprefs['tsacert'] != '':
+    timestamp = '-tsacert ' + androidprefs['tsacert']
+  elif androidprefs['tsa'] != '':
+    timestamp = '-tsa ' + androidprefs['tsa']
+
+  proxy = ''
+  if 'proxy' in androidprefs and androidprefs['proxy'] != '' and androidprefs['proxy'] != 'None':
+    proxy = androidprefs['proxy']
+    if proxy != '' and proxy != 'None':
+      defstr = "-J-Dhttp.proxy"
+      url = urlparse.urlparse(proxy)
+      if url.scheme == 'https':
+        defstr = "-J-Dhttps.proxy"
+      host = url.netloc
+      port = ''
+      username = ''
+      password = ''
+      if '@' in host:
+        username, host = host.split(':', 1)
+        password, host = host.split('@', 1)
+      if ':' in host:
+        host, port = host.split(':', 1)
+      proxy = defstr + "Host=" + host
+      if port != '':
+        proxy += " " + defstr + "Port=" + port
+      if username != '':
+        proxy += " " + defstr + "User=" + username
+      if password != '':
+        proxy += " " + defstr + "Password=" + password
+
+  signcmd = androidprefs['jarsigner'] + ' ' + timestamp + ' -sigalg SHA1withRSA -digestalg SHA1 -keystore ' + androidprefs['keystore'] + ' -storepass ' + androidprefs['keystorepass'] + ' -keypass ' + androidprefs['keypass'] + ' -signedjar ' + options.file + ' ' + options.zipfile + ' ' + androidprefs['keyalias'] + ' ' + proxy
+  os.system(signcmd)
 
 
 parse_prefs( options.prefs )

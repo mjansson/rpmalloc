@@ -47,7 +47,10 @@ elif target.is_windows():
 else:
 	hoardsources += ['source/unixtls.cpp']
 hoard_lib = generator.lib(module = 'hoard', sources = hoardsources, basepath = 'benchmark', includepaths = includepaths + hoardincludepaths, externalsources = True)
-generator.bin(module = 'hoard', sources = ['benchmark.c'], binname = 'benchmark-hoard', basepath = 'benchmark', implicit_deps = [hoard_lib, benchmark_lib, test_lib], libs = ['hoard', 'benchmark', 'test', 'stdc++'], includepaths = includepaths)
+hoard_depend_libs = ['hoard', 'benchmark', 'test']
+if target.is_macosx() or target.is_ios():
+	hoard_depend_libs += ['stdc++']
+generator.bin(module = 'hoard', sources = ['benchmark.c'], binname = 'benchmark-hoard', basepath = 'benchmark', implicit_deps = [hoard_lib, benchmark_lib, test_lib], libs = hoard_depend_libs, includepaths = includepaths)
 
 gperftoolsincludepaths = [
 	os.path.join('benchmark', 'gperftools', 'src'),
@@ -56,16 +59,23 @@ gperftoolsincludepaths = [
 ]
 gperftoolsbasesources = [
 	'dynamic_annotations.c', 'linuxthreads.cc', 'logging.cc', 'low_level_alloc.cc', 'spinlock.cc',
-	'spinlock_internal.cc', 'sysinfo.cc', 'thread_lister.c'
+	'spinlock_internal.cc', 'sysinfo.cc'
 ]
+if not target.is_windows():
+	gperftoolsbasesources += ['thread_lister.c']
 gperftoolsbasesources = [os.path.join('src', 'base', path) for path in gperftoolsbasesources]
 gperftoolssources = [
-	'central_freelist.cc', 'common.cc', 'emergency_malloc_for_stacktrace.cc', 'heap-checker-bcad.cc',
+	'central_freelist.cc', 'common.cc', 'heap-checker-bcad.cc',
 	'heap-checker.cc', 'heap-profile-table.cc', 'heap-profiler.cc', 'internal_logging.cc',
-	'malloc_extension.cc', 'malloc_hook.cc', 'maybe_threads.cc', 'memfs_malloc.cc', 'memory_region_map.cc',
+	'malloc_extension.cc', 'malloc_hook.cc', 'memfs_malloc.cc', 'memory_region_map.cc',
 	'page_heap.cc', 'raw_printer.cc', 'stacktrace.cc', 'sampler.cc', 'stack_trace_table.cc',
 	'static_vars.cc', 'span.cc', 'symbolize.cc', 'system-alloc.cc', 'tcmalloc.cc', 'thread_cache.cc'
 ]
+if not target.is_windows():
+	gperftoolssources += ['emergency_malloc_for_stacktrace.cc', 'maybe_threads.cc']
 gperftoolssources = [os.path.join('src', path) for path in gperftoolssources]
 gperftools_lib = generator.lib(module = 'gperftools', sources = gperftoolsbasesources + gperftoolssources, basepath = 'benchmark', includepaths = includepaths + gperftoolsincludepaths, externalsources = True)
-generator.bin(module = 'gperftools', sources = ['benchmark.c'], binname = 'benchmark-tcmalloc', basepath = 'benchmark', implicit_deps = [gperftools_lib, benchmark_lib, test_lib], libs = ['gperftools', 'benchmark', 'test', 'stdc++'], includepaths = includepaths)
+gperftools_depend_libs = ['gperftools', 'benchmark', 'test']
+if target.is_macosx() or target.is_ios():
+	hoard_depend_libs += ['stdc++']
+generator.bin(module = 'gperftools', sources = ['benchmark.c'], binname = 'benchmark-tcmalloc', basepath = 'benchmark', implicit_deps = [gperftools_lib, benchmark_lib, test_lib], libs = gperftools_depend_libs, includepaths = includepaths)
