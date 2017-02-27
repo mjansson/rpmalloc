@@ -263,7 +263,7 @@ _memory_map(size_t page_count);
 static void
 _memory_unmap(void* ptr, size_t page_count);
 
-static FORCEINLINE heap_t*
+static heap_t*
 _memory_heap_lookup(int32_t id) {
 	uint32_t list_idx = id % HEAP_ARRAY_SIZE;
 	heap_t* heap = atomic_load_ptr(&_memory_heaps[list_idx]);
@@ -353,17 +353,19 @@ _memory_global_cache_extract(size_t page_count) {
 static void*
 _memory_allocate_from_heap(heap_t* heap, size_t size) {
 	size_t class_idx;
+	count_t class_size;
 	if (size <= SMALL_SIZE_LIMIT)
 		class_idx = ((size + (SMALL_GRANULARITY - 1)) >> SMALL_GRANULARITY_SHIFT) - 1;
 	else
 		class_idx = SMALL_CLASS_COUNT + ((size - SMALL_SIZE_LIMIT + (MEDIUM_GRANULARITY - 1)) >> MEDIUM_GRANULARITY_SHIFT) - 1;
 
 	size_class_t* size_class = _memory_size_class + class_idx;
-
 	span_t* span = heap->size_cache[class_idx];
+	class_size = size_class->size;
+
 	if (span) {
 		//Happy path, we have a span with at least one free block
-		count_t offset = (count_t)size_class->size * span->data.block.free_list;
+		count_t offset = class_size * span->data.block.free_list;
 		uint32_t* block = pointer_offset(span, SPAN_HEADER_SIZE + offset);
 		if (!(*block & BLOCK_AUTOLINK)) {
 			span->data.block.free_list = (count_t)(*block);
@@ -378,7 +380,7 @@ _memory_allocate_from_heap(heap_t* heap, size_t size) {
 		}
 		else {
 			if (*block & BLOCK_AUTOLINK) {
-				size_t next_offset = (size_t)size_class->size * span->data.block.free_list;
+				count_t next_offset = class_size * span->data.block.free_list;
 				uint32_t* next_block = pointer_offset(span, SPAN_HEADER_SIZE + next_offset);
 				*next_block = BLOCK_AUTOLINK;
 			}
@@ -417,7 +419,7 @@ _memory_allocate_from_heap(heap_t* heap, size_t size) {
 	if (size_class->block_count > 1) {
 		span->data.block.free_list = 1;
 
-		uint32_t* next_block = pointer_offset(span, (size_t)SPAN_HEADER_SIZE + (size_t)size_class->size);
+		uint32_t* next_block = pointer_offset(span, (size_t)SPAN_HEADER_SIZE + class_size);
 		*next_block = BLOCK_AUTOLINK;
 
 		heap->size_cache[class_idx] = span;
@@ -463,7 +465,7 @@ _memory_allocate_heap(void) {
 	return heap;
 }
 
-static FORCEINLINE void
+static void
 _memory_sized_list_add(span_t** head, span_t* span) {
 	if (*head) {
 		offset_t next_offset = pointer_diff_span(*head, span);
@@ -478,7 +480,7 @@ _memory_sized_list_add(span_t** head, span_t* span) {
 	*head = span;
 }
 
-static FORCEINLINE void
+static void
 _memory_list_add(span_t** head, span_t* span) {
 	if (*head) {
 		offset_t next_offset = pointer_diff_span(*head, span);
@@ -491,7 +493,7 @@ _memory_list_add(span_t** head, span_t* span) {
 	*head = span;
 }
 
-static FORCEINLINE void
+static void
 _memory_list_remove(span_t** head, span_t* span) {
 	if (*head == span) {
 		if (span->next_span)
@@ -554,7 +556,7 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 	}
 }
 
-static FORCEINLINE void
+static void
 _memory_deallocate_deferred(heap_t* heap) {
 	atomic_thread_fence_acquire();
 	void* p = atomic_load_ptr(&heap->defer_deallocate);
@@ -570,7 +572,7 @@ _memory_deallocate_deferred(heap_t* heap) {
 	}
 }
 
-static FORCEINLINE void
+static void
 _memory_deallocate_defer(int32_t heap_id, void* p) {
 	//Delegate to heap
 	heap_t* heap = _memory_heap_lookup(heap_id);
@@ -592,13 +594,12 @@ _memory_allocate(size_t size) {
 		}
 
 		heap = _memory_allocate_heap();
-		if (!heap)
-			return 0;
-		_memory_thread_heap = heap;
-		
-		_memory_deallocate_deferred(heap);
-		
-		return _memory_allocate_from_heap(heap, size);
+		if (heap) {
+			_memory_thread_heap = heap;
+			return _memory_allocate_from_heap(heap, size);
+		}
+
+		return 0;
 	}
 
 	//Oversized, allocate pages directly
