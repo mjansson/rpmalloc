@@ -21,7 +21,7 @@
 #ifndef _GENERIC_MALLOC_MACHINE_H
 #define _GENERIC_MALLOC_MACHINE_H
 
-#include <atomic.h>
+#include "atomic.h"
 
 #ifndef mutex_init /* No threads, provide dummy macros */
 

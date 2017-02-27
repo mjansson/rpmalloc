@@ -51,8 +51,13 @@ benchmark_thread_finalize(void) {
 
 void*
 benchmark_malloc(size_t alignment, size_t size) {
-	//TODO: Alignment
-	return xxmalloc(size);
+	void* ptr = xxmalloc(size + alignment);
+	if (alignment) {
+		uintptr_t ofs = (uintptr_t)ptr % alignment;
+		if (ofs)
+			return (char*)ptr + (alignment - (size_t)ofs);
+	}
+	return ptr;
 }
 
 extern void

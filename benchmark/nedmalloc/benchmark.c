@@ -1,6 +1,6 @@
 
 #include <benchmark.h>
-#include <nedmalloc.h>
+#include "nedmalloc.h"
 
 int
 benchmark_initialize() {
@@ -24,7 +24,7 @@ benchmark_thread_finalize(void) {
 
 void*
 benchmark_malloc(size_t alignment, size_t size) {
-	return nedmemalign(alignment, size);
+	return alignment ? nedmemalign(alignment, size) : nedmalloc(size);
 }
 
 extern void

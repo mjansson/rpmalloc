@@ -1,6 +1,6 @@
 
-#ifndef _CRT_SECURE_NO_WARNINGS
-#define _CRT_SECURE_NO_WARNINGS
+#if defined(_WIN32) && !defined(_CRT_SECURE_NO_WARNINGS)
+#  define _CRT_SECURE_NO_WARNINGS
 #endif
 
 #include <benchmark.h>
@@ -40,6 +40,7 @@ get_process_memory_usage(void) {
 #endif
 }
 
+/*
 static void
 allocate_fixed_size(void* argptr) {
 	benchmark_arg* arg = argptr;
@@ -89,6 +90,7 @@ allocate_fixed_size(void* argptr) {
 
 	arg->accumulator += arg->mops;
 }
+*/
 
 static const size_t random_size[] = {
 	18, 3032, 336, 3774, 552, 961, 662, 5727, 56986, 6923, 4714, 625, 929, 344, 104, 2021, 426, 924,
@@ -215,25 +217,11 @@ int main(int argc, char** argv) {
 	(void)sizeof(argc);
 	(void)sizeof(argv);
 
-	size_t size_table[] = {
-		16, 32, 48, 64, 96, 128,
-		160, 192, 256,
-		320, 384, 512,
-		640, 768, 1024,
-		1280, 1536, 2048,
-		2560, 3072, 4096,
-		5120, 6144, 8192,
-		10240, 12288, 16384,
-		20480, 24576, 32768,
-		40960, 49152, 65536
-	};
-	const size_t num_sizes = sizeof(size_table) / sizeof(size_table[0]);
-
 	benchmark_arg arg[16];
 	uintptr_t thread_handle[16];
 	FILE* fd;
 
-	char filebuf[32];
+	char filebuf[64];
 	sprintf(filebuf, "benchmark-random-small-%s.txt", benchmark_name());
 	fd = fopen(filebuf, "w+b");
 
@@ -332,6 +320,20 @@ int main(int argc, char** argv) {
 
 	sprintf(filebuf, "benchmark-single-%s.txt", benchmark_name());
 	fd = fopen(filebuf, "w+b");
+
+	size_t size_table[] = {
+		16, 32, 48, 64, 96, 128,
+		160, 192, 256,
+		320, 384, 512,
+		640, 768, 1024,
+		1280, 1536, 2048,
+		2560, 3072, 4096,
+		5120, 6144, 8192,
+		10240, 12288, 16384,
+		20480, 24576, 32768,
+		40960, 49152, 65536
+	};
+	const size_t num_sizes = sizeof(size_table) / sizeof(size_table[0]);
 
 	for (size_t num_threads = 1; num_threads <= 12; ++num_threads) {
 		char linebuf[128];

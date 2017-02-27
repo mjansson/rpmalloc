@@ -31,7 +31,7 @@ benchmark_malloc(size_t alignment, size_t size) {
 #ifdef _WIN32
 	return _aligned_malloc(size, alignment ? alignment : 4);
 #else
-	void* ptr;
+	void* ptr = 0;
 	posix_memalign(&ptr, alignment, size);
 	return ptr;
 #endif

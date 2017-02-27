@@ -1679,7 +1679,7 @@ static FORCEINLINE void* posix_direct_mmap(size_t size) {
 #elif defined(MAP_STACK)
   flags |= MAP_STACK;
 #else
-#warning Cannot figure out how to request memory from the top of the address space!
+//#warning Cannot figure out how to request memory from the top of the address space!
 #endif
   ptr = mmap(0, size, MMAP_PROT, flags, fd, 0);
 #if DEBUG && 0

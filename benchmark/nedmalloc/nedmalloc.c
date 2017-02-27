@@ -32,6 +32,9 @@ DEALINGS IN THE SOFTWARE.
 #define DEFAULTMAXTHREADSINPOOL 1
 #endif
 
+#define NDEBUG
+#undef DEBUG
+
 #ifdef _MSC_VER
 /* Enable full aliasing on MSVC */
 /*#pragma optimize("a", on)*/
@@ -51,6 +54,10 @@ DEALINGS IN THE SOFTWARE.
 #endif
 #else
 #include <stdio.h>
+#endif
+
+#ifdef __APPLE__
+#include <stdint.h>
 #endif
 
 /*#define NEDMALLOC_DEBUG 1*/
@@ -79,20 +86,22 @@ DEALINGS IN THE SOFTWARE.
 #include <errno.h>
 #if defined(WIN32)
  #include <malloc.h>
-#else
+#elif defined(__linux__) || defined(__FreeBSD__) || defined(__APPLE__)
+/* Sadly we can't include <malloc.h> as it causes a redefinition error */
  #if defined(__cplusplus)
 extern "C"
  #else
 extern
  #endif
- #if defined(__linux__) || defined(__FreeBSD__)
-/* Sadly we can't include <malloc.h> as it causes a redefinition error */
 size_t malloc_usable_size(void *);
- #elif defined(__APPLE__)
-  #include <malloc.h>
+ #if defined(__cplusplus)
+extern "C"
  #else
-  #error Do not know what to do here
+extern
  #endif
+size_t malloc_size(void *);
+#else
+ #error Do not know what to do here
 #endif
 
 #if USE_ALLOCATOR==1

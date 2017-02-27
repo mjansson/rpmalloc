@@ -22,8 +22,15 @@ benchmark_lib = generator.lib(module = 'benchmark', sources = ['main.c'], includ
 
 #Build one binary per benchmark
 generator.bin(module = 'rpmalloc', sources = ['benchmark.c'], binname = 'benchmark-rpmalloc', basepath = 'benchmark', implicit_deps = [benchmark_lib, test_lib, rpmalloc_lib], libs = ['benchmark', 'test', 'rpmalloc'], includepaths = includepaths)
-
 generator.bin(module = 'crt', sources = ['benchmark.c'], binname = 'benchmark-crt', basepath = 'benchmark', implicit_deps = [benchmark_lib, test_lib], libs = ['benchmark', 'test'], includepaths = includepaths)
+generator.bin(module = 'nedmalloc', sources = ['benchmark.c', 'nedmalloc.c'], binname = 'benchmark-nedmalloc', basepath = 'benchmark', implicit_deps = [benchmark_lib, test_lib], libs = ['benchmark', 'test'], includepaths = includepaths, externalsources = True)
+
+platform_includepaths = [os.path.join('benchmark', 'ptmalloc3')]
+if target.is_windows():
+	platform_includepaths += [os.path.join('benchmark', 'ptmalloc3', 'sysdeps', 'window')]
+else:
+	platform_includepaths += [os.path.join('benchmark', 'ptmalloc3', 'sysdeps', 'pthread')]
+generator.bin(module = 'ptmalloc3', sources = ['benchmark.c', 'ptmalloc3.c', 'malloc.c'], binname = 'benchmark-ptmalloc3', basepath = 'benchmark', implicit_deps = [benchmark_lib, test_lib], libs = ['benchmark', 'test'], includepaths = includepaths + platform_includepaths, externalsources = True)
 
 hoardincludepaths = [
 	os.path.join('benchmark', 'hoard', 'include'),
@@ -77,5 +84,5 @@ gperftoolssources = [os.path.join('src', path) for path in gperftoolssources]
 gperftools_lib = generator.lib(module = 'gperftools', sources = gperftoolsbasesources + gperftoolssources, basepath = 'benchmark', includepaths = includepaths + gperftoolsincludepaths, externalsources = True)
 gperftools_depend_libs = ['gperftools', 'benchmark', 'test']
 if target.is_macosx() or target.is_ios():
-	hoard_depend_libs += ['stdc++']
+	gperftools_depend_libs += ['stdc++']
 generator.bin(module = 'gperftools', sources = ['benchmark.c'], binname = 'benchmark-tcmalloc', basepath = 'benchmark', implicit_deps = [gperftools_lib, benchmark_lib, test_lib], libs = gperftools_depend_libs, includepaths = includepaths)

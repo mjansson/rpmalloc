@@ -33,10 +33,10 @@
 #  define atomic_thread_fence_acquire() //_ReadWriteBarrier()
 #  define atomic_thread_fence_release() //_ReadWriteBarrier()
 #else
-#  define _BSD_SOURCE 1
+//#  define _BSD_SOURCE 1
 #  define ALIGNED_STRUCT(name, alignment) struct __attribute__((__aligned__(alignment))) name
 #  define FORCEINLINE inline __attribute__((__always_inline__))
-#  ifdef __GNUC__
+#  if !defined(__clang__) && defined(__GNUC__)
 #    define _Thread_local __thread
 #  endif
 #  ifdef __arm__

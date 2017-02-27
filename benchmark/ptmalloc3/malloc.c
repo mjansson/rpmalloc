@@ -522,7 +522,7 @@ MAX_RELEASE_CHECK_RATE   default: 255 unless not HAVE_MMAP
 #define MAX_SIZE_T           (~(size_t)0)
 
 #ifndef ONLY_MSPACES
-#define ONLY_MSPACES 0
+#define ONLY_MSPACES 1
 #endif  /* ONLY_MSPACES */
 #ifndef MSPACES
 #if ONLY_MSPACES

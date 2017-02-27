@@ -34,6 +34,13 @@ PERFORMANCE OF THIS SOFTWARE.
  *       better mstats
  */
 
+#ifndef _WIN32
+#include <sys/mman.h>
+#define HAVE_MMAP 1
+#define MSPACES 1
+#define ONLY_MSPACES 1
+#endif
+
 #include <sys/types.h>   /* For size_t */
 #include <errno.h>
 #include <stdlib.h>
