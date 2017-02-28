@@ -147,6 +147,7 @@ allocate_fixed_size(void* argptr) {
 	size_t alloc_idx = 0;
 	size_t free_idx = 0;
 	size_t iop;
+	size_t tick_start, ticks_elapsed;
 
 	benchmark_thread_initialize();
 
@@ -160,7 +161,6 @@ allocate_fixed_size(void* argptr) {
 	arg->ticks = 0;
 	arg->mops = 0;
 	for (size_t iter = 0; iter < 4; ++iter) {
-		size_t tick_start, ticks_elapsed;
 		for (size_t iloop = 0; iloop < (iter ? num_loops : num_loops / 4); ++iloop) {
 			tick_start = timer_current();
 
@@ -214,7 +214,17 @@ allocate_fixed_size(void* argptr) {
 		}
 	}
 
+	tick_start = timer_current();
+
 	benchmark_free(trigger);
+
+	trigger = benchmark_malloc(16, arg->size);
+	benchmark_free(trigger);
+
+	arg->mops += 3;
+
+	ticks_elapsed = timer_current() - tick_start;
+	arg->ticks += ticks_elapsed;
 
 	benchmark_thread_finalize();
 
@@ -235,6 +245,7 @@ allocate_random_size(void* argptr) {
 	size_t alloc_idx = 0;
 	size_t free_idx = 0;
 	size_t iop;
+	size_t tick_start, ticks_elapsed;
 
 	benchmark_thread_initialize();
 
@@ -248,7 +259,6 @@ allocate_random_size(void* argptr) {
 	arg->ticks = 0;
 	arg->mops = 0;
 	for (size_t iter = 0; iter < 4; ++iter) {
-		size_t tick_start, ticks_elapsed;
 		for (size_t iloop = 0; iloop < num_loops; ++iloop) {
 			size_t size_index = (iter * 3 + iloop * 7) % random_size_count;
 			size_t size = random_size[size_index];
@@ -307,7 +317,17 @@ allocate_random_size(void* argptr) {
 		}
 	}
 
+	tick_start = timer_current();
+
 	benchmark_free(pointers);
+
+	pointers = benchmark_malloc(16, 64);
+	benchmark_free(pointers);
+	
+	arg->mops += 3;
+
+	ticks_elapsed = timer_current() - tick_start;
+	arg->ticks += ticks_elapsed;
 
 	benchmark_thread_finalize();
 
