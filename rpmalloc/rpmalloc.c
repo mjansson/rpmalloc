@@ -630,7 +630,6 @@ _memory_deallocate(void* p) {
 		//Large allocation, page count is stored in next_span
 		size_t num_pages = (size_t)span->next_span;
 		_memory_unmap(span, num_pages);
-		return;
 	}
 }
 

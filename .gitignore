@@ -82,7 +82,10 @@ cov-int.*
 *.lastbuildstate
 *.unsuccessfulbuild
 *.opendb
+*.vc
 *.VC.db
+*.db-shm
+*.db-wal
 
 ## TODO: If you have NuGet Package Restore enabled, uncomment this
 #packages/
@@ -225,9 +228,3 @@ coveralls.json
 coverallsreport.json
 codecov.json
 codecovreport.json
-msvs/benchmark-random.txt
-msvs/benchmark-single.txt
-benchmark/gperftools/vsprojects
-benchmark/gperftools/packages
-benchmark/gperftools/doc
-.deps

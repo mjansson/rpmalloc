@@ -376,7 +376,13 @@ int main(int argc, char** argv) {
 
 	fclose(fd);
 
+	if (benchmark_finalize() < 0)
+		return -4;
+
 #if 0
+	if (benchmark_initialize() < 0)
+		return -2;
+
 	sprintf(filebuf, "benchmark-random-large-%s.txt", benchmark_name());
 	fd = fopen(filebuf, "w+b");
 
@@ -424,7 +430,14 @@ int main(int argc, char** argv) {
 	}
 
 	fclose(fd);
+
+	if (benchmark_finalize() < 0)
+		return -4;
 #endif
+
+#if 0
+	if (benchmark_initialize() < 0)
+		return -2;
 
 	size_t size_table[] = {
 		16, 32, 48, 64, 96, 128,
@@ -447,11 +460,6 @@ int main(int argc, char** argv) {
 		fd = fopen(filebuf, "w+b");
 
 		for (size_t num_threads = 1; num_threads <= MAX_THREAD_COUNT; ++num_threads) {
-			char linebuf[128];
-			int len = snprintf(linebuf, sizeof(linebuf), "%u threads\n", (unsigned int)num_threads);
-			fwrite(linebuf, (len > 0) ? (size_t)len : 0, 1, fd);
-			fflush(fd);
-
 			benchmark_start = 0;
 
 			printf("Running %u threads allocating size %u: ", (unsigned int)num_threads, (unsigned int)size);
@@ -484,12 +492,14 @@ int main(int argc, char** argv) {
 
 			double time_elapsed = timer_ticks_to_seconds(ticks);
 			double average_mops = (double)mops / time_elapsed;
-			len = snprintf(linebuf, sizeof(linebuf), "%u,%u,%u\n",
-			               (unsigned int)size, (unsigned int)average_mops, (unsigned int)get_process_memory_usage());
+			char linebuf[128];
+			int len = snprintf(linebuf, sizeof(linebuf), "%u,%u,%u,%u\n", (unsigned int)size,
+			                   (unsigned int)num_threads, (unsigned int)average_mops,
+			                   (unsigned int)get_process_memory_usage());
 			fwrite(linebuf, (len > 0) ? (size_t)len : 0, 1, fd);
 			fflush(fd);
 
-			printf("%u memory ops\n", (unsigned int)average_mops);
+			printf("%u memory ops/CPU second\n", (unsigned int)average_mops);
 			fflush(stdout);
 		}
 
@@ -498,6 +508,7 @@ int main(int argc, char** argv) {
 
 	if (benchmark_finalize() < 0)
 		return -4;
+#endif
 
 	return 0;
 }
