@@ -352,16 +352,13 @@ _memory_global_cache_extract(size_t page_count) {
 
 static void*
 _memory_allocate_from_heap(heap_t* heap, size_t size) {
-	size_t class_idx;
-	count_t class_size;
-	if (size <= SMALL_SIZE_LIMIT)
-		class_idx = ((size + (SMALL_GRANULARITY - 1)) >> SMALL_GRANULARITY_SHIFT) - 1;
-	else
-		class_idx = SMALL_CLASS_COUNT + ((size - SMALL_SIZE_LIMIT + (MEDIUM_GRANULARITY - 1)) >> MEDIUM_GRANULARITY_SHIFT) - 1;
+	const size_t class_idx = (size <= SMALL_SIZE_LIMIT) ?
+		((size + (SMALL_GRANULARITY - 1)) >> SMALL_GRANULARITY_SHIFT) - 1 :
+		SMALL_CLASS_COUNT + ((size - SMALL_SIZE_LIMIT + (MEDIUM_GRANULARITY - 1)) >> MEDIUM_GRANULARITY_SHIFT) - 1;
 
 	size_class_t* size_class = _memory_size_class + class_idx;
 	span_t* span = heap->size_cache[class_idx];
-	class_size = size_class->size;
+	const count_t class_size = size_class->size;
 
 	if (span) {
 		//Happy path, we have a span with at least one free block
@@ -950,6 +947,13 @@ rprealloc(void* ptr, size_t size) {
 
 void*
 rpaligned_alloc(size_t alignment, size_t size) {
+	if (alignment > 16)
+		return 0;
+	return _memory_allocate(size);
+}
+
+void*
+rpmemalign(size_t alignment, size_t size) {
 	if (alignment > 16)
 		return 0;
 	return _memory_allocate(size);

@@ -32,7 +32,9 @@ DEALINGS IN THE SOFTWARE.
 #define DEFAULTMAXTHREADSINPOOL 1
 #endif
 
-#define NDEBUG
+#ifndef NDEBUG
+#define NDEBUG 1
+#endif
 #undef DEBUG
 
 #ifdef _MSC_VER
