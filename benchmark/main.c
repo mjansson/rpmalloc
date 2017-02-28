@@ -10,6 +10,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#define MAX_THREAD_COUNT 8
+
 struct benchmark_arg {
 	size_t size;
 	size_t accumulator;
@@ -22,75 +24,6 @@ typedef struct benchmark_arg benchmark_arg;
 
 static int benchmark_start;
 
-#ifdef _WIN32
-#include <Windows.h>
-#include <Psapi.h>
-#endif
-
-static size_t
-get_process_memory_usage(void) {
-#ifdef _WIN32
-	PROCESS_MEMORY_COUNTERS counters;
-	memset(&counters, 0, sizeof(counters));
-	counters.cb = sizeof(counters);
-	GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters));
-	return counters.WorkingSetSize;
-#else
-	return 0;
-#endif
-}
-
-/*
-static void
-allocate_fixed_size(void* argptr) {
-	benchmark_arg* arg = argptr;
-	void* pointers[1024];
-	const size_t num_pointers = sizeof(pointers) / sizeof(pointers[0]);
-	const size_t num_loops = 8192*4;
-	const size_t alignment[3] = { 0, 8, 16 };
-
-	benchmark_thread_initialize();
-
-	void* trigger = benchmark_malloc(16, arg->size);
-
-	while (!benchmark_start)
-		thread_yield();
-
-	arg->ticks = 0;
-	arg->mops = 0;
-	for (size_t iter = 0; iter < 4; ++iter) {
-		arg->accumulator += (uintptr_t)trigger;
-		size_t tick_start = timer_current();
-		for (size_t iloop = 0; iloop < (iter ? num_loops : num_loops / 4); ++iloop) {
-			for (size_t iptr = 0; iptr < num_pointers; ++iptr) {
-				pointers[iptr] = benchmark_malloc(alignment[iptr%3], arg->size);
-				arg->accumulator += (uintptr_t)pointers[iptr];
-				*((uintptr_t*)pointers[iptr]) = (uintptr_t)pointers[iptr] + (uintptr_t)trigger;
-			}
-			for (size_t iptr = 0; iptr < num_pointers; ++iptr) {
-				if (*((uintptr_t*)pointers[iptr]) == ((uintptr_t)pointers[iptr] + (uintptr_t)trigger))
-					++arg->accumulator;
-				benchmark_free((void*)pointers[iptr]);
-				arg->accumulator += (uintptr_t)pointers[iptr];
-			}
-		}
-		size_t ticks_elapsed = timer_current() - tick_start;
-		arg->accumulator += ticks_elapsed;
-		if (iter) {
-			arg->mops += num_loops * num_pointers * 2;
-			arg->ticks += ticks_elapsed;
-			if (timer_ticks_to_seconds(arg->ticks) > 300)
-				break;
-		}
-	}
-
-	benchmark_free(trigger);
-
-	benchmark_thread_finalize();
-
-	arg->accumulator += arg->mops;
-}
-*/
 
 static const size_t random_size[] = {
 	18, 3032, 336, 3774, 552, 961, 662, 5727, 56986, 6923, 4714, 625, 929, 344, 104, 2021, 426, 924,
@@ -137,14 +70,171 @@ static const size_t random_size[] = {
 	553
 };
 
+static const size_t num_alloc_ops[] = {
+	13,	18,	12,	16,	27,
+	34,	24,	24,	18,	14,
+	12,	18,	33,	16,	27,
+	27,	5,	12,	28,	7,
+	25,	27,	7,	8,	23,
+	26,	25,	13,	23,	6,
+	11,	35,	28,	10,	14,
+	23,	14,	21,	30,	29,
+	21,	12,	6,	8,	30,
+	32,	14,	33,	32,	16,
+	27,	10,	26,	21,	10,
+	17,	20,	30,	6,	26,
+	33,	22,	35,	21,	28,
+	9,	31,	15,	10,	19,
+	32,	28,	25,	10,	16,
+	25,	20,	19,	27,	19,
+	23,	29,	14,	10,	21,
+	33,	18,	35,	11,	6,
+	32,	19,	28,	28,	24,
+	31,	7,	31,	19,	29
+};
+
+static const size_t num_free_ops[] = {
+	8,	6,	5,	23,	24,
+	22,	21,	13,	18,	13,
+	5,	7,	11,	10,	17,
+	11,	21,	11,	11,	25,
+	13,	23,	20,	14,	25,
+	15,	20,	25,	20,	24,
+	16,	3,	24,	14,	23,
+	10,	25,	16,	18,	22,
+	3,	6,	4,	4,	14,
+	11,	16,	12,	12,	6,
+	18,	7,	14,	21,	8,
+	8,	9,	11,	14,	11,
+	13,	5,	23,	14,	22,
+	23,	14,	15,	6,	10,
+	6,	11,	3,	4,	8,
+	24,	8,	22,	25,	13,
+	14,	23,	21,	5,	5,
+	13,	14,	18,	13,	18,
+	15,	7,	14,	7,	22,
+	13,	6,	9,	23,	16
+};
+
+#ifdef _WIN32
+#include <Windows.h>
+#include <Psapi.h>
+#endif
+
+static size_t
+get_process_memory_usage(void) {
+#ifdef _WIN32
+	PROCESS_MEMORY_COUNTERS counters;
+	memset(&counters, 0, sizeof(counters));
+	counters.cb = sizeof(counters);
+	GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters));
+	return counters.WorkingSetSize;
+#else
+	return 0;
+#endif
+}
+
+static void
+allocate_fixed_size(void* argptr) {
+	benchmark_arg* arg = argptr;
+	void* pointers[1024];
+	const size_t num_pointers = sizeof(pointers) / sizeof(pointers[0]);
+	const size_t num_loops = 8192*1024;
+	const size_t alignment[3] = { 0, 8, 16 };
+	const size_t alloc_ops_count = (sizeof(num_alloc_ops) / sizeof(num_alloc_ops[0]));
+	const size_t free_ops_count = (sizeof(num_free_ops) / sizeof(num_free_ops[0]));
+
+	size_t alloc_idx = 0;
+	size_t free_idx = 0;
+	size_t iop;
+
+	benchmark_thread_initialize();
+
+	void* trigger = benchmark_malloc(16, arg->size);
+
+	while (!benchmark_start)
+		thread_yield();
+
+	memset(pointers, 0, sizeof(pointers));
+
+	arg->ticks = 0;
+	arg->mops = 0;
+	for (size_t iter = 0; iter < 4; ++iter) {
+		size_t tick_start, ticks_elapsed;
+		for (size_t iloop = 0; iloop < (iter ? num_loops : num_loops / 4); ++iloop) {
+			tick_start = timer_current();
+
+			const size_t alloc_op_count = num_alloc_ops[(iter + iloop) % alloc_ops_count];
+			for (iop = 0; iop < alloc_op_count; ++iop) {
+				if (pointers[alloc_idx]) {
+					benchmark_free((void*)pointers[alloc_idx]);
+					++arg->mops;
+				}
+				pointers[alloc_idx] = benchmark_malloc(alignment[iloop % 3], arg->size);
+				++arg->mops;
+
+				alloc_idx = (alloc_idx + 1) % num_pointers;
+			}
+
+			const size_t free_op_count = num_free_ops[(iter + iloop) % free_ops_count];
+			for (iop = 0; iop < free_op_count; ++iop) {
+				if (pointers[free_idx]) {
+					benchmark_free((void*)pointers[free_idx]);
+					++arg->mops;
+					pointers[free_idx] = 0;
+				}
+
+				free_idx = (free_idx + 1) % num_pointers;
+			}
+
+			ticks_elapsed = timer_current() - tick_start;
+			if (iter)
+				arg->ticks += ticks_elapsed;
+		}
+
+		tick_start = timer_current();
+		for (size_t iptr = 0; iptr < num_pointers; ++iptr) {
+			if (pointers[iptr]) {
+				benchmark_free((void*)pointers[iptr]);
+				++arg->mops;
+				pointers[iptr] = 0;
+			}
+		}
+		ticks_elapsed = timer_current() - tick_start;
+		if (iter)
+			arg->ticks += ticks_elapsed;
+
+		printf(".");
+		fflush(stdout);
+		if (iter) {
+			printf(" %.2f ", timer_ticks_to_seconds(arg->ticks));
+			fflush(stdout);
+			if (timer_ticks_to_seconds(arg->ticks) > 300)
+				break;
+		}
+	}
+
+	benchmark_free(trigger);
+
+	benchmark_thread_finalize();
+
+	arg->accumulator += arg->mops;
+}
+
 static void
 allocate_random_size(void* argptr) {
 	benchmark_arg* arg = argptr;
 	void** pointers;
-	const size_t num_pointers = 8192*2;
-	const size_t num_loops = 8192*4;
+	const size_t num_pointers = 8192*4;
+	const size_t num_loops = 8192*1024;
 	const size_t random_size_count = (sizeof(random_size) / sizeof(random_size[0]));
+	const size_t alloc_ops_count = (sizeof(num_alloc_ops) / sizeof(num_alloc_ops[0]));
+	const size_t free_ops_count = (sizeof(num_free_ops) / sizeof(num_free_ops[0]));
 	const size_t alignment[3] = { 0, 8, 16 };
+
+	size_t alloc_idx = 0;
+	size_t free_idx = 0;
+	size_t iop;
 
 	benchmark_thread_initialize();
 
@@ -158,34 +248,58 @@ allocate_random_size(void* argptr) {
 	arg->ticks = 0;
 	arg->mops = 0;
 	for (size_t iter = 0; iter < 4; ++iter) {
-		size_t tick_start = timer_current();
+		size_t tick_start, ticks_elapsed;
 		for (size_t iloop = 0; iloop < num_loops; ++iloop) {
-			for (size_t iptr = 0; iptr < num_pointers; ++iptr) {
-				size_t size_index = (iter + iloop + iptr) % random_size_count;
-				size_t size = random_size[size_index];
-				if (arg->size)
-					size = size % arg->size;
-				//Interleave alloc and free calls
-				if (pointers[iptr]) {
-					benchmark_free((void*)pointers[iptr]);
+			size_t size_index = (iter * 3 + iloop * 7) % random_size_count;
+			size_t size = random_size[size_index];
+			if (arg->size)
+				size = size % arg->size;
+
+			tick_start = timer_current();
+
+			const size_t alloc_op_count = num_alloc_ops[(iter + iloop) % alloc_ops_count];
+			for (iop = 0; iop < alloc_op_count; ++iop) {
+				if (pointers[alloc_idx]) {
+					benchmark_free((void*)pointers[alloc_idx]);
 					++arg->mops;
 				}
-				pointers[iptr] = benchmark_malloc(alignment[iptr % 3], size);
+				pointers[alloc_idx] = benchmark_malloc(alignment[size_index % 3], size);
 				++arg->mops;
+
+				alloc_idx = (alloc_idx + 1) % num_pointers;
 			}
+
+			const size_t free_op_count = num_free_ops[(iter + iloop) % free_ops_count];
+			for (iop = 0; iop < free_op_count; ++iop) {
+				if (pointers[free_idx]) {
+					benchmark_free((void*)pointers[free_idx]);
+					++arg->mops;
+					pointers[free_idx] = 0;
+				}
+
+				free_idx = (free_idx + 1) % num_pointers;
+			}
+
+			ticks_elapsed = timer_current() - tick_start;
+			if (iter)
+				arg->ticks += ticks_elapsed;
 		}
+
+		tick_start = timer_current();
 		for (size_t iptr = 0; iptr < num_pointers; ++iptr) {
 			if (pointers[iptr]) {
 				benchmark_free((void*)pointers[iptr]);
 				++arg->mops;
+				pointers[iptr] = 0;
 			}
-			pointers[iptr] = 0;
 		}
-		size_t ticks_elapsed = timer_current() - tick_start;
+		ticks_elapsed = timer_current() - tick_start;
+		if (iter)
+			arg->ticks += ticks_elapsed;
+
 		printf(".");
 		fflush(stdout);
 		if (iter) {
-			arg->ticks += ticks_elapsed;
 			printf(" %.2f ", timer_ticks_to_seconds(arg->ticks));
 			fflush(stdout);
 			if (timer_ticks_to_seconds(arg->ticks) > 300)
@@ -217,7 +331,7 @@ int main(int argc, char** argv) {
 	sprintf(filebuf, "benchmark-random-small-%s.txt", benchmark_name());
 	fd = fopen(filebuf, "w+b");
 
-	for (size_t num_threads = 1; num_threads <= 10; ++num_threads) {
+	for (size_t num_threads = 1; num_threads <= MAX_THREAD_COUNT; ++num_threads) {
 		benchmark_start = 0;
 
 		printf("Running %u threads alloc/free random size <4096: ", (unsigned int)num_threads);
@@ -261,11 +375,12 @@ int main(int argc, char** argv) {
 	}
 
 	fclose(fd);
+
 #if 0
 	sprintf(filebuf, "benchmark-random-large-%s.txt", benchmark_name());
 	fd = fopen(filebuf, "w+b");
 
-	for (size_t num_threads = 1; num_threads <= 12; ++num_threads) {
+	for (size_t num_threads = 1; num_threads <= MAX_THREAD_COUNT; ++num_threads) {
 		benchmark_start = 0;
 
 		printf("Running %u threads alloc/free random size <65536: ", (unsigned int)num_threads);
@@ -309,9 +424,7 @@ int main(int argc, char** argv) {
 	}
 
 	fclose(fd);
-
-	sprintf(filebuf, "benchmark-single-%s.txt", benchmark_name());
-	fd = fopen(filebuf, "w+b");
+#endif
 
 	size_t size_table[] = {
 		16, 32, 48, 64, 96, 128,
@@ -327,14 +440,17 @@ int main(int argc, char** argv) {
 	};
 	const size_t num_sizes = sizeof(size_table) / sizeof(size_table[0]);
 
-	for (size_t num_threads = 1; num_threads <= 12; ++num_threads) {
-		char linebuf[128];
-		int len = snprintf(linebuf, sizeof(linebuf), "%u threads\n", (unsigned int)num_threads);
-		fwrite(linebuf, (len > 0) ? (size_t)len : 0, 1, fd);
-		fflush(fd);
+	for (size_t isize = 0; isize < num_sizes; ++isize) {
+		size_t size = size_table[isize];
 
-		for (size_t isize = 0; isize < num_sizes; ++isize) {
-			size_t size = size_table[isize];
+		sprintf(filebuf, "benchmark-fixed-%u-%s.txt", (unsigned int)size, benchmark_name());
+		fd = fopen(filebuf, "w+b");
+
+		for (size_t num_threads = 1; num_threads <= MAX_THREAD_COUNT; ++num_threads) {
+			char linebuf[128];
+			int len = snprintf(linebuf, sizeof(linebuf), "%u threads\n", (unsigned int)num_threads);
+			fwrite(linebuf, (len > 0) ? (size_t)len : 0, 1, fd);
+			fflush(fd);
 
 			benchmark_start = 0;
 
@@ -376,13 +492,12 @@ int main(int argc, char** argv) {
 			printf("%u memory ops\n", (unsigned int)average_mops);
 			fflush(stdout);
 		}
-	}
 
-	fclose(fd);
+		fclose(fd);
+	}
 
 	if (benchmark_finalize() < 0)
 		return -4;
-#endif
 
 	return 0;
 }
