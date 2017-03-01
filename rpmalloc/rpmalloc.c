@@ -33,7 +33,6 @@
 #  define atomic_thread_fence_acquire() //_ReadWriteBarrier()
 #  define atomic_thread_fence_release() //_ReadWriteBarrier()
 #else
-//#  define _BSD_SOURCE 1
 #  define ALIGNED_STRUCT(name, alignment) struct __attribute__((__aligned__(alignment))) name
 #  define FORCEINLINE inline __attribute__((__always_inline__))
 #  if !defined(__clang__) && defined(__GNUC__)
@@ -364,13 +363,15 @@ _memory_allocate_from_heap(heap_t* heap, size_t size) {
 		//Happy path, we have a span with at least one free block
 		count_t offset = class_size * span->data.block.free_list;
 		uint32_t* block = pointer_offset(span, SPAN_HEADER_SIZE + offset);
+
+		--span->data.block.free_count;
 		if (!(*block & BLOCK_AUTOLINK)) {
 			span->data.block.free_list = (count_t)(*block);
 		}
 		else {
 			++span->data.block.free_list;
 		}
-		--span->data.block.free_count;
+
 		if (!span->data.block.free_count) {
 			span_t* next_span = span->next_span ? pointer_offset_span(span, span->next_span) : 0;
 			heap->size_cache[class_idx] = next_span;

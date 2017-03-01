@@ -19,11 +19,18 @@ struct benchmark_arg {
 	uint64_t mops;
 	thread_arg thread_arg;
 };
-
 typedef struct benchmark_arg benchmark_arg;
 
-static int benchmark_start;
+struct thread_pointers {
+	void** pointers;
+	size_t count;
+	void* next;
+};
+typedef struct thread_pointers thread_pointers;
 
+static int benchmark_start;
+static atomicptr_t cross_thread_memory;
+static atomic32_t cross_thread_counter;
 
 static const size_t random_size[] = {
 	18, 3032, 336, 3774, 552, 961, 662, 5727, 56986, 6923, 4714, 625, 929, 344, 104, 2021, 426, 924,
@@ -135,6 +142,26 @@ get_process_memory_usage(void) {
 }
 
 static void
+put_cross_thread_memory(thread_pointers* pointers) {
+	void* prev;
+	uintptr_t newval;
+	do {
+		prev = atomic_load_ptr(&cross_thread_memory);
+		pointers->next = (void*)((uintptr_t)prev & ~(uintptr_t)0xF);
+		newval = (uintptr_t)pointers | (atomic_incr32(&cross_thread_counter) & 0xF);
+	} while (!atomic_cas_ptr(&cross_thread_memory, (void*)newval, prev));
+}
+
+static thread_pointers*
+get_cross_thread_memory(void) {
+	thread_pointers* current;
+	do {
+		current = atomic_load_ptr(&cross_thread_memory);
+	} while (current && !atomic_cas_ptr(&cross_thread_memory, 0, current));
+	return (void*)((uintptr_t)current & ~(uintptr_t)0xF);
+}
+
+static void
 allocate_fixed_size(void* argptr) {
 	benchmark_arg* arg = argptr;
 	void* pointers[1024];
@@ -167,7 +194,7 @@ allocate_fixed_size(void* argptr) {
 			const size_t alloc_op_count = num_alloc_ops[(iter + iloop) % alloc_ops_count];
 			for (iop = 0; iop < alloc_op_count; ++iop) {
 				if (pointers[alloc_idx]) {
-					benchmark_free((void*)pointers[alloc_idx]);
+					benchmark_free(pointers[alloc_idx]);
 					++arg->mops;
 				}
 				pointers[alloc_idx] = benchmark_malloc(alignment[iloop % 3], arg->size);
@@ -179,7 +206,7 @@ allocate_fixed_size(void* argptr) {
 			const size_t free_op_count = num_free_ops[(iter + iloop) % free_ops_count];
 			for (iop = 0; iop < free_op_count; ++iop) {
 				if (pointers[free_idx]) {
-					benchmark_free((void*)pointers[free_idx]);
+					benchmark_free(pointers[free_idx]);
 					++arg->mops;
 					pointers[free_idx] = 0;
 				}
@@ -195,7 +222,7 @@ allocate_fixed_size(void* argptr) {
 		tick_start = timer_current();
 		for (size_t iptr = 0; iptr < num_pointers; ++iptr) {
 			if (pointers[iptr]) {
-				benchmark_free((void*)pointers[iptr]);
+				benchmark_free(pointers[iptr]);
 				++arg->mops;
 				pointers[iptr] = 0;
 			}
@@ -234,8 +261,9 @@ allocate_fixed_size(void* argptr) {
 static void
 allocate_random_size(void* argptr) {
 	benchmark_arg* arg = argptr;
+	thread_pointers* foreign = 0;
 	void** pointers;
-	const size_t num_pointers = 8192*4;
+	const size_t num_pointers = 8192*2;
 	const size_t num_loops = 8192*1024;
 	const size_t random_size_count = (sizeof(random_size) / sizeof(random_size[0]));
 	const size_t alloc_ops_count = (sizeof(num_alloc_ops) / sizeof(num_alloc_ops[0]));
@@ -246,6 +274,7 @@ allocate_random_size(void* argptr) {
 	size_t free_idx = 0;
 	size_t iop;
 	size_t tick_start, ticks_elapsed;
+	int aborted = 0;
 
 	benchmark_thread_initialize();
 
@@ -270,10 +299,10 @@ allocate_random_size(void* argptr) {
 			const size_t alloc_op_count = num_alloc_ops[(iter + iloop) % alloc_ops_count];
 			for (iop = 0; iop < alloc_op_count; ++iop) {
 				if (pointers[alloc_idx]) {
-					benchmark_free((void*)pointers[alloc_idx]);
+					benchmark_free(pointers[alloc_idx]);
 					++arg->mops;
 				}
-				pointers[alloc_idx] = benchmark_malloc(alignment[size_index % 3], size);
+				pointers[alloc_idx] = benchmark_malloc(alignment[(size_index + iop) % 3], size + iop);
 				++arg->mops;
 
 				alloc_idx = (alloc_idx + 1) % num_pointers;
@@ -282,7 +311,7 @@ allocate_random_size(void* argptr) {
 			const size_t free_op_count = num_free_ops[(iter + iloop) % free_ops_count];
 			for (iop = 0; iop < free_op_count; ++iop) {
 				if (pointers[free_idx]) {
-					benchmark_free((void*)pointers[free_idx]);
+					benchmark_free(pointers[free_idx]);
 					++arg->mops;
 					pointers[free_idx] = 0;
 				}
@@ -290,15 +319,57 @@ allocate_random_size(void* argptr) {
 				free_idx = (free_idx + 1) % num_pointers;
 			}
 
+			for (iop = 0; iop < alloc_op_count; ++iop) {
+				if (pointers[alloc_idx]) {
+					benchmark_free(pointers[alloc_idx]);
+					++arg->mops;
+				}
+				pointers[alloc_idx] = benchmark_malloc(alignment[(size_index + iop) % 3], size + iop);
+				++arg->mops;
+
+				alloc_idx = (alloc_idx + 1) % num_pointers;
+			}
+
+			foreign = get_cross_thread_memory();
+			while (foreign) {
+				for (iop = 0; iop < foreign->count; ++iop) {
+					benchmark_free(foreign->pointers[iop]);
+					++arg->mops;
+				}
+
+				void* next = foreign->next;
+				benchmark_free(foreign->pointers);
+				benchmark_free(foreign);
+				arg->mops += 2;
+				foreign = next;
+			}
+
+			/*foreign = benchmark_malloc(16, sizeof(thread_pointers));
+			foreign->count = alloc_op_count;
+			foreign->pointers = benchmark_malloc(16, sizeof(void*) * alloc_op_count);
+			arg->mops += 2;
+
+			for (iop = 0; iop < alloc_op_count; ++iop) {
+				foreign->pointers[iop] = benchmark_malloc(alignment[(size_index + iop) % 3], size + iop);
+				++arg->mops;
+			}*/
+
 			ticks_elapsed = timer_current() - tick_start;
 			if (iter)
 				arg->ticks += ticks_elapsed;
+
+			//put_cross_thread_memory(foreign);
+
+			if (timer_ticks_to_seconds(arg->ticks) > 300) {
+				aborted = 1;
+				break;
+			}
 		}
 
 		tick_start = timer_current();
 		for (size_t iptr = 0; iptr < num_pointers; ++iptr) {
 			if (pointers[iptr]) {
-				benchmark_free((void*)pointers[iptr]);
+				benchmark_free(pointers[iptr]);
 				++arg->mops;
 				pointers[iptr] = 0;
 			}
@@ -311,6 +382,8 @@ allocate_random_size(void* argptr) {
 		fflush(stdout);
 		if (iter) {
 			printf(" %.2f ", timer_ticks_to_seconds(arg->ticks));
+			if (aborted)
+				printf("(aborted) ");
 			fflush(stdout);
 			if (timer_ticks_to_seconds(arg->ticks) > 300)
 				break;
@@ -319,11 +392,23 @@ allocate_random_size(void* argptr) {
 
 	tick_start = timer_current();
 
-	benchmark_free(pointers);
+	foreign = get_cross_thread_memory();
+	while (foreign) {
+		for (iop = 0; iop < foreign->count; ++iop) {
+			benchmark_free(foreign->pointers[iop]);
+			++arg->mops;
+		}
 
+		void* next = foreign->next;
+		benchmark_free(foreign->pointers);
+		benchmark_free(foreign);
+		arg->mops += 2;
+		foreign = next;
+	}
+
+	benchmark_free(pointers);
 	pointers = benchmark_malloc(16, 64);
 	benchmark_free(pointers);
-	
 	arg->mops += 3;
 
 	ticks_elapsed = timer_current() - tick_start;
@@ -351,7 +436,7 @@ int main(int argc, char** argv) {
 	sprintf(filebuf, "benchmark-random-small-%s.txt", benchmark_name());
 	fd = fopen(filebuf, "w+b");
 
-	for (size_t num_threads = 1; num_threads <= MAX_THREAD_COUNT; ++num_threads) {
+	for (size_t num_threads = 2; num_threads <= MAX_THREAD_COUNT; ++num_threads) {
 		benchmark_start = 0;
 
 		printf("Running %u threads alloc/free random size <4096: ", (unsigned int)num_threads);
