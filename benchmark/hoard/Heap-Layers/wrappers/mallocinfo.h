@@ -36,13 +36,13 @@ namespace HL {
     // Prevent integer overflows by restricting allocation size (usually 2GB).
     enum { MaxSize = UINT_MAX / 2 };
 
-#if defined(__LP64__) || defined(_LP64) || defined(__APPLE__) || defined(_WIN64) || defined(__x86_64__)
+//#if defined(__LP64__) || defined(_LP64) || defined(__APPLE__) || defined(_WIN64) || defined(__x86_64__)
     enum { MinSize = 16UL };
     enum { Alignment = 16UL };
-#else
-    enum { MinSize   = sizeof(double) };
-    enum { Alignment = sizeof(double) };
-#endif
+//#else
+//    enum { MinSize   = sizeof(double) };
+//    enum { Alignment = sizeof(double) };
+//#endif
   };
 
 }
