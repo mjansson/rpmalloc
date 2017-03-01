@@ -182,8 +182,6 @@ typedef struct span_block_t span_block_t;
 typedef union span_data_t span_data_t;
 
 struct span_block_t {
-	//! Size class
-	count_t    size_class;
 	//! Free list
 	count_t    free_list;
 	//! Free count
@@ -200,6 +198,8 @@ union span_data_t {
 struct span_t {
 	//!	Heap ID
 	atomic32_t  heap_id;
+	//! Size class
+	count_t     size_class;
 	//! Span data
 	span_data_t data;
 	//! Next span
@@ -408,9 +408,10 @@ _memory_allocate_from_heap(heap_t* heap, size_t size) {
 	atomic_store32(&span->heap_id, heap->id);
 	atomic_thread_fence_release();
 
-	span->data.block.size_class = (count_t)class_idx;
-	span->data.block.free_count = (count_t)(size_class->block_count - 1);
+	span->size_class = (count_t)class_idx;
 	span->next_span = 0;
+
+	span->data.block.free_count = (count_t)(size_class->block_count - 1);
 
 	//If we only have one block we will grab it, otherwise
 	//set span as new span to use for next allocation
@@ -515,12 +516,12 @@ _memory_list_remove(span_t** head, span_t* span) {
 
 static void
 _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
-	size_class_t* size_class = _memory_size_class + span->data.block.size_class;
+	size_class_t* size_class = _memory_size_class + span->size_class;
 
 	if (span->data.block.free_count == ((count_t)size_class->block_count - 1)) {
 		//Remove from free list (present if we had a previous free block)
 		if (span->data.block.free_count > 0)
-			_memory_list_remove(&heap->size_cache[span->data.block.size_class], span);
+			_memory_list_remove(&heap->size_cache[span->size_class], span);
 
 		//Add to span cache
 		span_t** cache = &heap->span_cache[size_class->page_count-1];
@@ -543,7 +544,7 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 	else {
 		if (span->data.block.free_count == 0) {
 			//Add to free list
-			_memory_list_add(&heap->size_cache[span->data.block.size_class], span);
+			_memory_list_add(&heap->size_cache[span->size_class], span);
 		}
 		uint32_t* block = p;
 		*block = span->data.block.free_list;
@@ -639,8 +640,8 @@ _memory_reallocate(void* p, size_t size, size_t oldsize) {
 	span_t* span = 0;
 	if (p) {
 		span = (void*)((uintptr_t)p & (uintptr_t)SPAN_MASK);
-		if (span->data.block.size_class != 0xFF) {
-			size_class_t* size_class = _memory_size_class + span->data.block.size_class;
+		if (span->size_class != 0xFF) {
+			size_class_t* size_class = _memory_size_class + span->size_class;
 			if ((size_t)size_class->size >= size)
 				return p; //Still fits in block
 			if (!oldsize)
