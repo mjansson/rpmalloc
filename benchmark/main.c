@@ -436,7 +436,7 @@ int main(int argc, char** argv) {
 	sprintf(filebuf, "benchmark-random-small-%s.txt", benchmark_name());
 	fd = fopen(filebuf, "w+b");
 
-	for (size_t num_threads = 2; num_threads <= MAX_THREAD_COUNT; ++num_threads) {
+	for (size_t num_threads = 1; num_threads <= MAX_THREAD_COUNT; ++num_threads) {
 		benchmark_start = 0;
 
 		printf("Running %u threads alloc/free random size <4096: ", (unsigned int)num_threads);
