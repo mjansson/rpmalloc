@@ -154,7 +154,6 @@ thread_yield(void);
 
 #define SIZE_CLASS_COUNT          (SMALL_CLASS_COUNT + MEDIUM_CLASS_COUNT)
 
-#define BLOCK_AUTOLINK            0x80000000
 #define SPAN_LIST_LOCK_TOKEN      ((void*)1)
 
 #define pointer_offset(ptr, ofs) (void*)((char*)(ptr) + (ptrdiff_t)(ofs))
@@ -167,10 +166,12 @@ thread_yield(void);
 #define SPAN_HEADER_SIZE          32
 typedef int64_t offset_t;
 typedef uint32_t count_t;
+typedef uint16_t half_count_t;
 #else
 #define SPAN_HEADER_SIZE          16
 typedef int32_t offset_t;
 typedef uint8_t count_t;
+typedef uint8_t half_count_t;
 #endif
 
 // Data types
@@ -183,9 +184,11 @@ typedef union span_data_t span_data_t;
 
 struct span_block_t {
 	//! Free list
-	count_t    free_list;
+	half_count_t    free_list;
 	//! Free count
-	count_t    free_count;
+	half_count_t    free_count;
+	//! First autolinked block
+	half_count_t    first_autolink;
 };
 
 union span_data_t {
@@ -365,22 +368,19 @@ _memory_allocate_from_heap(heap_t* heap, size_t size) {
 		uint32_t* block = pointer_offset(span, SPAN_HEADER_SIZE + offset);
 
 		--span->data.block.free_count;
-		if (!(*block & BLOCK_AUTOLINK)) {
-			span->data.block.free_list = (count_t)(*block);
-		}
-		else {
-			++span->data.block.free_list;
-		}
 
 		if (!span->data.block.free_count) {
 			span_t* next_span = span->next_span ? pointer_offset_span(span, span->next_span) : 0;
 			heap->size_cache[class_idx] = next_span;
+			span->data.block.first_autolink = size_class->block_count;
 		}
 		else {
-			if (*block & BLOCK_AUTOLINK) {
-				count_t next_offset = class_size * span->data.block.free_list;
-				uint32_t* next_block = pointer_offset(span, SPAN_HEADER_SIZE + next_offset);
-				*next_block = BLOCK_AUTOLINK;
+			if (span->data.block.free_list < span->data.block.first_autolink) {
+				span->data.block.free_list = (count_t)(*block);
+			}
+			else {
+				++span->data.block.free_list;
+				++span->data.block.first_autolink;
 			}
 		}
 
@@ -411,18 +411,14 @@ _memory_allocate_from_heap(heap_t* heap, size_t size) {
 	span->size_class = (count_t)class_idx;
 	span->next_span = 0;
 
-	span->data.block.free_count = (count_t)(size_class->block_count - 1);
+	span->data.block.free_count = (half_count_t)(size_class->block_count - 1);
+	span->data.block.free_list = 1;
+	span->data.block.first_autolink = 1;
 
 	//If we only have one block we will grab it, otherwise
 	//set span as new span to use for next allocation
-	if (size_class->block_count > 1) {
-		span->data.block.free_list = 1;
-
-		uint32_t* next_block = pointer_offset(span, (size_t)SPAN_HEADER_SIZE + class_size);
-		*next_block = BLOCK_AUTOLINK;
-
+	if (size_class->block_count > 1)
 		heap->size_cache[class_idx] = span;
-	}
 
 	//Return first block
 	return pointer_offset(span, SPAN_HEADER_SIZE);
