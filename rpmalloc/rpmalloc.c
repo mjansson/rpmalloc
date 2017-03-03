@@ -184,11 +184,13 @@ typedef union span_data_t span_data_t;
 
 struct span_block_t {
 	//! Free list
-	half_count_t    free_list;
-	//! Free count
-	half_count_t    free_count;
+	uint8_t    free_list;
 	//! First autolinked block
-	half_count_t    first_autolink;
+	uint8_t    first_autolink;
+	//! Free count
+	uint8_t    free_count;
+	//! Padding
+	uint8_t    padding;
 };
 
 union span_data_t {
@@ -214,15 +216,19 @@ _Static_assert(sizeof(span_t) <= SPAN_HEADER_SIZE, "span size mismatch");
 
 struct heap_t {
 	//! Heap ID
-	int32_t     id;
+	int32_t      id;
 	//! Deferred deallocation
-	atomicptr_t defer_deallocate;
+	atomicptr_t  defer_deallocate;
+	//! Free count for each size class active span
+	span_block_t active_block[SIZE_CLASS_COUNT];
+	//! Active span for each size class
+	span_t*      active_span[SIZE_CLASS_COUNT];
 	//! List of spans with free blocks for each size class
-	span_t*     size_cache[SIZE_CLASS_COUNT];
+	span_t*      size_cache[SIZE_CLASS_COUNT];
 	//! List of free spans for each page count
-	span_t*     span_cache[SPAN_CLASS_COUNT];
+	span_t*      span_cache[SPAN_CLASS_COUNT];
 	//! Next heap
-	heap_t*     next_heap;
+	heap_t*      next_heap;
 };
 _Static_assert(sizeof(heap_t) <= PAGE_SIZE, "heap size mismatch");
 
@@ -358,37 +364,48 @@ _memory_allocate_from_heap(heap_t* heap, size_t size) {
 		((size + (SMALL_GRANULARITY - 1)) >> SMALL_GRANULARITY_SHIFT) - 1 :
 		SMALL_CLASS_COUNT + ((size - SMALL_SIZE_LIMIT + (MEDIUM_GRANULARITY - 1)) >> MEDIUM_GRANULARITY_SHIFT) - 1;
 
+	span_block_t* active_block = heap->active_block + class_idx;
 	size_class_t* size_class = _memory_size_class + class_idx;
-	span_t* span = heap->size_cache[class_idx];
 	const count_t class_size = size_class->size;
 
-	if (span) {
+use_active:
+	if (active_block->free_count) {
 		//Happy path, we have a span with at least one free block
-		count_t offset = class_size * span->data.block.free_list;
+		span_t* span = heap->active_span[class_idx];
+		count_t offset = class_size * active_block->free_list;
 		uint32_t* block = pointer_offset(span, SPAN_HEADER_SIZE + offset);
 
-		--span->data.block.free_count;
-
-		if (!span->data.block.free_count) {
-			span_t* next_span = span->next_span ? pointer_offset_span(span, span->next_span) : 0;
-			heap->size_cache[class_idx] = next_span;
+		--active_block->free_count;
+		if (!active_block->free_count) {
+			span->data.block.free_count = 0;
 			span->data.block.first_autolink = size_class->block_count;
+			heap->active_span[class_idx] = 0;
 		}
 		else {
-			if (span->data.block.free_list < span->data.block.first_autolink) {
-				span->data.block.free_list = (count_t)(*block);
+			if (active_block->free_list < active_block->first_autolink) {
+				active_block->free_list = (count_t)(*block);
 			}
 			else {
-				++span->data.block.free_list;
-				++span->data.block.first_autolink;
+				++active_block->free_list;
+				++active_block->first_autolink;
 			}
 		}
 
 		return block;
 	}
 
+	if (heap->size_cache[class_idx]) {
+		//Promote a pending semi-used span
+		span_t* span = heap->size_cache[class_idx];
+		*active_block = span->data.block;
+		span_t* next_span = span->next_span ? pointer_offset_span(span, span->next_span) : 0;
+		heap->size_cache[class_idx] = next_span;
+		heap->active_span[class_idx] = span;
+		goto use_active;
+	}
+
 	//No span in use, grab a new span from heap cache
-	span = heap->span_cache[size_class->page_count-1];
+	span_t* span = heap->span_cache[size_class->page_count-1];
 	if (!span)
 		span = _memory_global_cache_extract(size_class->page_count);
 	if (span) {
@@ -411,14 +428,18 @@ _memory_allocate_from_heap(heap_t* heap, size_t size) {
 	span->size_class = (count_t)class_idx;
 	span->next_span = 0;
 
-	span->data.block.free_count = (half_count_t)(size_class->block_count - 1);
-	span->data.block.free_list = 1;
-	span->data.block.first_autolink = 1;
-
 	//If we only have one block we will grab it, otherwise
 	//set span as new span to use for next allocation
-	if (size_class->block_count > 1)
-		heap->size_cache[class_idx] = span;
+	if (size_class->block_count > 1) {
+		active_block->free_count = (uint8_t)(size_class->block_count - 1);
+		active_block->free_list = 1;
+		active_block->first_autolink = 1;
+		heap->active_span[class_idx] = span;
+	}
+	else {
+		span->data.block.free_count = 0;
+		span->data.block.first_autolink = size_class->block_count;
+	}
 
 	//Return first block
 	return pointer_offset(span, SPAN_HEADER_SIZE);
@@ -512,12 +533,17 @@ _memory_list_remove(span_t** head, span_t* span) {
 
 static void
 _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
-	size_class_t* size_class = _memory_size_class + span->size_class;
+	const count_t class_idx = span->size_class;
+	size_class_t* size_class = _memory_size_class + class_idx;
+	int is_active = (heap->active_span[class_idx] == span);
+	span_block_t* block_data = is_active ?
+		heap->active_block + class_idx :
+		&span->data.block;
 
-	if (span->data.block.free_count == ((count_t)size_class->block_count - 1)) {
+	if (!is_active && (block_data->free_count == ((count_t)size_class->block_count - 1))) {
 		//Remove from free list (present if we had a previous free block)
-		if (span->data.block.free_count > 0)
-			_memory_list_remove(&heap->size_cache[span->size_class], span);
+		if (block_data->free_count > 0)
+			_memory_list_remove(&heap->size_cache[class_idx], span);
 
 		//Add to span cache
 		span_t** cache = &heap->span_cache[size_class->page_count-1];
@@ -538,16 +564,24 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 		}
 	}
 	else {
-		if (span->data.block.free_count == 0) {
+		if (block_data->free_count == 0) {
 			//Add to free list
-			_memory_list_add(&heap->size_cache[span->size_class], span);
+			_memory_list_add(&heap->size_cache[class_idx], span);
+			block_data->first_autolink = size_class->block_count;
+			block_data->free_count = 0;
 		}
-		uint32_t* block = p;
-		*block = span->data.block.free_list;
-		++span->data.block.free_count;
-		count_t block_offset = (count_t)pointer_diff(block, span) - SPAN_HEADER_SIZE;
-		count_t block_idx = block_offset / (count_t)size_class->size;
-		span->data.block.free_list = block_idx;
+		++block_data->free_count;
+		if (block_data->free_count < size_class->block_count) {
+			uint32_t* block = p;
+			*block = block_data->free_list;
+			count_t block_offset = (count_t)pointer_diff(block, span) - SPAN_HEADER_SIZE;
+			count_t block_idx = block_offset / (count_t)size_class->size;
+			block_data->free_list = block_idx;
+		}
+		else {
+			block_data->free_list = 0;
+			block_data->first_autolink = 0;
+		}
 	}
 }
 
