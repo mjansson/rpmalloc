@@ -16,9 +16,9 @@
 //! Can be defined to 0 to reduce 16 byte overhead per memory page on 64 bit systems (will require total memory use of process to be less than 2^48)
 #define USE_FULL_ADDRESS_RANGE    1
 //! Limit of thread cache (total sum of thread cache for all page counts will be 16 * THREAD_SPAN_CACHE_LIMIT)
-#define THREAD_SPAN_CACHE_LIMIT   (128*1024*1024)
+#define THREAD_SPAN_CACHE_LIMIT   (2*1024*1024)
 //! Limit of global cache (total sum of global cache for all page counts will be 16 * GLOBAL_SPAN_CACHE_LIMIT)
-#define GLOBAL_SPAN_CACHE_LIMIT   (128*1024*1024)
+#define GLOBAL_SPAN_CACHE_LIMIT   (64*1024*1024)
 //! Size of heap hashmap
 #define HEAP_ARRAY_SIZE           79
 
@@ -384,7 +384,7 @@ use_active:
 		}
 		else {
 			if (active_block->free_list < active_block->first_autolink) {
-				active_block->free_list = (count_t)(*block);
+				active_block->free_list = (uint8_t)(*block);
 			}
 			else {
 				++active_block->free_list;
@@ -577,7 +577,7 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 			*block = block_data->free_list;
 			count_t block_offset = (count_t)pointer_diff(block, span) - SPAN_HEADER_SIZE;
 			count_t block_idx = block_offset / (count_t)size_class->size;
-			block_data->free_list = block_idx;
+			block_data->free_list = (uint8_t)block_idx;
 		}
 		else {
 			block_data->free_list = 0;
