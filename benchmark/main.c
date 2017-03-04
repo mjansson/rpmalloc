@@ -290,9 +290,6 @@ allocate_random_size(void* argptr) {
 	for (size_t iter = 0; iter < 4; ++iter) {
 		for (size_t iloop = 0; iloop < num_loops; ++iloop) {
 			size_t size_index = (iter * 3 + iloop * 7) % random_size_count;
-			size_t size = random_size[size_index];
-			if (arg->size)
-				size = size % arg->size;
 
 			tick_start = timer_current();
 
@@ -302,10 +299,14 @@ allocate_random_size(void* argptr) {
 					benchmark_free(pointers[alloc_idx]);
 					++arg->mops;
 				}
+				size_t size = random_size[size_index];
+				if (arg->size)
+					size = size % arg->size;
 				pointers[alloc_idx] = benchmark_malloc(alignment[(size_index + iop) % 3], size + iop);
 				++arg->mops;
 
 				alloc_idx = (alloc_idx + 1) % num_pointers;
+				size_index = (size_index + 1) % random_size_count;
 			}
 
 			const size_t free_op_count = num_free_ops[(iter + iloop) % free_ops_count];
@@ -324,10 +325,14 @@ allocate_random_size(void* argptr) {
 					benchmark_free(pointers[alloc_idx]);
 					++arg->mops;
 				}
+				size_t size = random_size[size_index];
+				if (arg->size)
+					size = size % arg->size;
 				pointers[alloc_idx] = benchmark_malloc(alignment[(size_index + iop) % 3], size + iop);
 				++arg->mops;
 
 				alloc_idx = (alloc_idx + 1) % num_pointers;
+				size_index = (size_index + 1) % random_size_count;
 			}
 
 			foreign = get_cross_thread_memory();
@@ -344,21 +349,26 @@ allocate_random_size(void* argptr) {
 				foreign = next;
 			}
 
-			/*foreign = benchmark_malloc(16, sizeof(thread_pointers));
+			foreign = benchmark_malloc(16, sizeof(thread_pointers));
 			foreign->count = alloc_op_count;
 			foreign->pointers = benchmark_malloc(16, sizeof(void*) * alloc_op_count);
 			arg->mops += 2;
 
 			for (iop = 0; iop < alloc_op_count; ++iop) {
+				size_t size = random_size[size_index];
+				if (arg->size)
+					size = size % arg->size;
 				foreign->pointers[iop] = benchmark_malloc(alignment[(size_index + iop) % 3], size + iop);
 				++arg->mops;
-			}*/
+
+				size_index = (size_index + 1) % random_size_count;
+			}
 
 			ticks_elapsed = timer_current() - tick_start;
 			if (iter)
 				arg->ticks += ticks_elapsed;
 
-			//put_cross_thread_memory(foreign);
+			put_cross_thread_memory(foreign);
 
 			if (timer_ticks_to_seconds(arg->ticks) > 300) {
 				aborted = 1;
