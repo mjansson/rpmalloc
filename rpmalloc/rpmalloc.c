@@ -16,7 +16,7 @@
 //! Can be defined to 0 to reduce 16 byte overhead per memory page on 64 bit systems (will require total memory use of process to be less than 2^48)
 #define USE_FULL_ADDRESS_RANGE    1
 //! Limit of thread cache (total sum of thread cache for all page counts will be 16 * THREAD_SPAN_CACHE_LIMIT)
-#define THREAD_SPAN_CACHE_LIMIT   (16*1024*1024)
+#define THREAD_SPAN_CACHE_LIMIT   (128*1024*1024)
 //! Limit of global cache (total sum of global cache for all page counts will be 16 * GLOBAL_SPAN_CACHE_LIMIT)
 #define GLOBAL_SPAN_CACHE_LIMIT   (128*1024*1024)
 //! Size of heap hashmap
@@ -134,6 +134,7 @@ thread_yield(void);
 #define PAGE_SIZE                 4096
 
 #define SPAN_ADDRESS_GRANULARITY  65536
+#define SPAN_ADDRESS_GRANULARITY_SHIFT 16
 #define SPAN_MAX_SIZE             (SPAN_ADDRESS_GRANULARITY)
 #define SPAN_MASK                 (~(SPAN_MAX_SIZE - 1))
 #define SPAN_MAX_PAGE_COUNT       (SPAN_MAX_SIZE / PAGE_SIZE)
@@ -160,7 +161,7 @@ thread_yield(void);
 #define pointer_diff(first, second) (ptrdiff_t)((const char*)(first) - (const char*)(second))
 
 #define pointer_offset_span(ptr, offset) (pointer_offset((ptr), (intptr_t)(offset) * (intptr_t)SPAN_ADDRESS_GRANULARITY))
-#define pointer_diff_span(a, b) ((offset_t)((intptr_t)pointer_diff((a), (b)) / (intptr_t)SPAN_ADDRESS_GRANULARITY))
+#define pointer_diff_span(a, b) ((offset_t)((intptr_t)pointer_diff((a), (b)) >> (intptr_t)SPAN_ADDRESS_GRANULARITY_SHIFT))
 
 #if ARCH_64BIT && USE_FULL_ADDRESS_RANGE
 #define SPAN_HEADER_SIZE          32
@@ -716,7 +717,7 @@ _memory_adjust_size_class(size_t iclass) {
 	size_t best_page_count = page_size_counter;
 	size_t best_block_count = block_count;
 
-	while ((((float)wasted / (float)block_count) > ((float)block_size / 32.0f))) {
+	while (1) { //(((float)wasted / (float)block_count) > ((float)block_size / 32.0f))) {
 		size_t page_size = PAGE_SIZE * (++page_size_counter);
 		if (page_size > (PAGE_SIZE * SPAN_MAX_PAGE_COUNT))
 			break;
@@ -730,7 +731,17 @@ _memory_adjust_size_class(size_t iclass) {
 		overhead = wasted + header_size;
 
 		current_factor = (float)overhead / ((float)block_count * (float)block_size);
-		if (current_factor < best_factor) {
+		/*if ((current_factor < best_factor) ||
+		    ((best_block_count < 4) && (block_count > 4)) ||
+			((best_block_count < 8) && (block_count > 8)) ||
+			((best_block_count < 16) && (block_count > 16)) ||
+			((best_block_count < 24) && (block_count > 24)) ||
+			((best_block_count < 32) && (block_count > 32))) {
+			best_factor = current_factor;
+			best_page_count = page_size_counter;
+			best_block_count = block_count;
+		}*/
+		if (block_count > best_block_count) {
 			best_factor = current_factor;
 			best_page_count = page_size_counter;
 			best_block_count = block_count;
