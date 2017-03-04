@@ -91,13 +91,13 @@
     <ClCompile Include="..\..\benchmark\gperftools\src\thread_cache.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\benchmark\gperftools\src\windows\override_functions.cc">
-      <Filter>gperftools</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\benchmark\main.c" />
     <ClCompile Include="..\..\test\thread.c" />
     <ClCompile Include="..\..\test\timer.c" />
     <ClCompile Include="..\..\benchmark\gperftools\benchmark.c" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\tcmalloc.cc">
+      <Filter>gperftools</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="gperftools">

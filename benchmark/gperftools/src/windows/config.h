@@ -23,7 +23,7 @@
  * For instructions on how to use this mode, see
  * http://groups.google.com/group/google-perftools/browse_thread/thread/41cd3710af85e57b
  */
-#define WIN32_OVERRIDE_ALLOCATORS
+//#define WIN32_OVERRIDE_ALLOCATORS
 
 /* Define to 1 if your libc has a snprintf implementation */
 #if defined(_MSC_VER) && _MSC_VER >= 1900

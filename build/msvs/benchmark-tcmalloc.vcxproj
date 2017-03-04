@@ -20,6 +20,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\benchmark\gperftools\benchmark.c" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\tcmalloc.cc" />
     <ClCompile Include="..\..\benchmark\main.c" />
     <ClCompile Include="..\..\test\thread.c" />
     <ClCompile Include="..\..\test\timer.c" />
@@ -49,7 +50,6 @@
     <ClCompile Include="..\..\benchmark\gperftools\src\windows\ia32_modrm_map.cc" />
     <ClCompile Include="..\..\benchmark\gperftools\src\windows\ia32_opcode_map.cc" />
     <ClCompile Include="..\..\benchmark\gperftools\src\windows\mini_disassembler.cc" />
-    <ClCompile Include="..\..\benchmark\gperftools\src\windows\override_functions.cc" />
     <ClCompile Include="..\..\benchmark\gperftools\src\windows\port.cc" />
     <ClCompile Include="..\..\benchmark\gperftools\src\windows\preamble_patcher.cc" />
     <ClCompile Include="..\..\benchmark\gperftools\src\windows\preamble_patcher_with_stub.cc" />
