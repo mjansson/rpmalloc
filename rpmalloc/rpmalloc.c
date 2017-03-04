@@ -726,17 +726,12 @@ _memory_adjust_size_class(size_t iclass) {
 		if (block_count > 255)
 			break;
 		if (!block_count)
-			++block_count;
+			continue;
 		wasted = remain_size - (block_size * block_count);
 		overhead = wasted + header_size;
 
 		current_factor = (float)overhead / ((float)block_count * (float)block_size);
-		/*if ((current_factor < best_factor) ||
-		    ((best_block_count < 4) && (block_count > 4)) ||
-			((best_block_count < 8) && (block_count > 8)) ||
-			((best_block_count < 16) && (block_count > 16)) ||
-			((best_block_count < 24) && (block_count > 24)) ||
-			((best_block_count < 32) && (block_count > 32))) {
+		/*if (current_factor < best_factor) {
 			best_factor = current_factor;
 			best_page_count = page_size_counter;
 			best_block_count = block_count;
