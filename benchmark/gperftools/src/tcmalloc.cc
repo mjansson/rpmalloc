@@ -960,6 +960,9 @@ TCMallocGuard::~TCMallocGuard() {
       PrintStats(level);
     }
   }
+#ifdef _WIN32
+  _exit(0);
+#endif
 }
 //#ifndef WIN32_OVERRIDE_ALLOCATORS
 static TCMallocGuard module_enter_exit_hook;
