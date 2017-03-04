@@ -26,6 +26,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\benchmark\benchmark.h" />
+    <ClInclude Include="..\..\test\atomic.h" />
     <ClInclude Include="..\..\test\thread.h" />
     <ClInclude Include="..\..\test\timer.h" />
   </ItemGroup>

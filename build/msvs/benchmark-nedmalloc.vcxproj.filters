@@ -16,6 +16,7 @@
     <ClInclude Include="..\..\benchmark\nedmalloc\nedmalloc.h">
       <Filter>nedmalloc</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\test\atomic.h" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="nedmalloc">

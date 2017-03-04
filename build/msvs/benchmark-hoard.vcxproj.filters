@@ -16,6 +16,7 @@
     <ClInclude Include="..\..\benchmark\benchmark.h" />
     <ClInclude Include="..\..\test\thread.h" />
     <ClInclude Include="..\..\test\timer.h" />
+    <ClInclude Include="..\..\test\atomic.h" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="hoard">

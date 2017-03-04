@@ -31,6 +31,7 @@
     <ClInclude Include="..\..\benchmark\ptmalloc3\sysdeps\windows\thread-st.h">
       <Filter>ptmalloc3\sysdeps</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\test\atomic.h" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="ptmalloc3">

@@ -33,6 +33,7 @@
     <ClInclude Include="..\..\benchmark\ptmalloc3\sysdeps\windows\atomic.h" />
     <ClInclude Include="..\..\benchmark\ptmalloc3\sysdeps\windows\malloc-machine.h" />
     <ClInclude Include="..\..\benchmark\ptmalloc3\sysdeps\windows\thread-st.h" />
+    <ClInclude Include="..\..\test\atomic.h" />
     <ClInclude Include="..\..\test\thread.h" />
     <ClInclude Include="..\..\test\timer.h" />
   </ItemGroup>
