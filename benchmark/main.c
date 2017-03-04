@@ -388,61 +388,59 @@ int main(int argc, char** argv) {
 		        benchmark_name());
 	fd = fopen(filebuf, "w+b");
 
-	for (size_t num_threads = 1; num_threads <= thread_count; ++num_threads) {
-		benchmark_start = 0;
+	benchmark_start = 0;
 
-		if (mode == 0)
-			printf("Running %s %u threads alloc/free random size [%u,%u]: ",
-			       benchmark_name(),
-			       (unsigned int)num_threads, (unsigned int)min_size,
-			       (unsigned int)max_size);
-		else
-			printf("Running %s %u threads alloc/free fixed size [%u]: ",
-			       benchmark_name(),
-			       (unsigned int)num_threads, (unsigned int)min_size);
-		fflush(stdout);
+	if (mode == 0)
+		printf("Running %s %u threads alloc/free random size [%u,%u]: ",
+			    benchmark_name(),
+			    (unsigned int)thread_count, (unsigned int)min_size,
+			    (unsigned int)max_size);
+	else
+		printf("Running %s %u threads alloc/free fixed size [%u]: ",
+			    benchmark_name(),
+			    (unsigned int)thread_count, (unsigned int)min_size);
+	fflush(stdout);
 
-		for (size_t ithread = 0; ithread < num_threads; ++ithread) {
-			arg[ithread].mode = mode;
-			arg[ithread].min_size = min_size;
-			arg[ithread].max_size = max_size;
-			arg[ithread].thread_arg.fn = benchmark_worker;
-			arg[ithread].thread_arg.arg = &arg[ithread];
-			thread_handle[ithread] = thread_run(&arg[ithread].thread_arg);
-		}
-
-		thread_sleep(1000);
-
-		benchmark_start = 1;
-		thread_fence();
-
-		uint64_t mops = 0;
-		uint64_t ticks = 0;
-		for (size_t ithread = 0; ithread < num_threads; ++ithread) {
-			thread_join(thread_handle[ithread]);
-			ticks += arg[ithread].ticks;
-			mops += arg[ithread].mops;
-			if (!arg[ithread].accumulator)
-				exit(-1);
-		}
-
-		if (!ticks)
-			ticks = 1;
-
-		double time_elapsed = timer_ticks_to_seconds(ticks);
-		double average_mops = (double)mops / time_elapsed;
-		size_t memory_usage = get_process_memory_usage();
-		char linebuf[128];
-		int len = snprintf(linebuf, sizeof(linebuf), "%u,%u\n",
-		                   (unsigned int)average_mops,
-		                   (unsigned int)memory_usage);
-		fwrite(linebuf, (len > 0) ? (size_t)len : 0, 1, fd);
-		fflush(fd);
-
-		printf("%u memory ops/CPU second (%u bytes)\n",
-		       (unsigned int)average_mops, (unsigned int)memory_usage);
-		fflush(stdout);
+	for (size_t ithread = 0; ithread < thread_count; ++ithread) {
+		arg[ithread].mode = mode;
+		arg[ithread].min_size = min_size;
+		arg[ithread].max_size = max_size;
+		arg[ithread].thread_arg.fn = benchmark_worker;
+		arg[ithread].thread_arg.arg = &arg[ithread];
+		thread_handle[ithread] = thread_run(&arg[ithread].thread_arg);
 	}
+
+	thread_sleep(1000);
+
+	benchmark_start = 1;
+	thread_fence();
+
+	uint64_t mops = 0;
+	uint64_t ticks = 0;
+	for (size_t ithread = 0; ithread < thread_count; ++ithread) {
+		thread_join(thread_handle[ithread]);
+		ticks += arg[ithread].ticks;
+		mops += arg[ithread].mops;
+		if (!arg[ithread].accumulator)
+			exit(-1);
+	}
+
+	if (!ticks)
+		ticks = 1;
+
+	double time_elapsed = timer_ticks_to_seconds(ticks);
+	double average_mops = (double)mops / time_elapsed;
+	size_t memory_usage = get_process_memory_usage();
+	char linebuf[128];
+	int len = snprintf(linebuf, sizeof(linebuf), "%u,%u\n",
+		                (unsigned int)average_mops,
+		                (unsigned int)memory_usage);
+	fwrite(linebuf, (len > 0) ? (size_t)len : 0, 1, fd);
+	fflush(fd);
+
+	printf("%u memory ops/CPU second (%u bytes)\n",
+		    (unsigned int)average_mops, (unsigned int)memory_usage);
+	fflush(stdout);
 
 	fclose(fd);
 
