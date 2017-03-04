@@ -52,6 +52,7 @@ benchmark_thread_finalize(void) {
 void*
 benchmark_malloc(size_t alignment, size_t size) {
 	//Our Hoard limits are set to 16 byte alignment
+	(void)sizeof(alignment);
 	return xxmalloc(size);
 }
 
