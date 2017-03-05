@@ -139,7 +139,7 @@ get_process_memory_usage(void) {
 	memset(&counters, 0, sizeof(counters));
 	counters.cb = sizeof(counters);
 	GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters));
-	return counters.WorkingSetSize;
+	return counters.PeakWorkingSetSize;
 #else
 	return 0;
 #endif
@@ -438,7 +438,7 @@ int main(int argc, char** argv) {
 	fwrite(linebuf, (len > 0) ? (size_t)len : 0, 1, fd);
 	fflush(fd);
 
-	printf("%u memory ops/CPU second (%u bytes)\n",
+	printf("%u memory ops/CPU second (%u bytes peak)\n",
 		    (unsigned int)average_mops, (unsigned int)memory_usage);
 	fflush(stdout);
 
