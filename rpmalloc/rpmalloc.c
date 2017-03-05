@@ -359,6 +359,9 @@ _memory_global_cache_extract(size_t page_count) {
 	return span;
 }
 
+static int
+_memory_deallocate_deferred(heap_t* heap, size_t size_class);
+
 static void*
 _memory_allocate_from_heap(heap_t* heap, size_t size) {
 	const size_t class_idx = (size <= SMALL_SIZE_LIMIT) ?
@@ -393,6 +396,11 @@ use_active:
 		}
 
 		return block;
+	}
+
+	if (_memory_deallocate_deferred(heap, class_idx)) {
+		if (active_block->free_count)
+			goto use_active;
 	}
 
 	if (heap->size_cache[class_idx]) {
@@ -586,20 +594,23 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 	}
 }
 
-static void
-_memory_deallocate_deferred(heap_t* heap) {
+static int
+_memory_deallocate_deferred(heap_t* heap, size_t size_class) {
+	int got_class = 0;
 	atomic_thread_fence_acquire();
 	void* p = atomic_load_ptr(&heap->defer_deallocate);
 	if (!p)
-		return;
+		return 0;
 	if (atomic_cas_ptr(&heap->defer_deallocate, 0, p)) {
 		while (p) {
 			void* next = *(void**)p;
 			span_t* span = (void*)((uintptr_t)p & (uintptr_t)SPAN_MASK);
+			got_class |= (span->size_class == size_class);
 			_memory_deallocate_to_heap(heap, span, p);
 			p = next;
 		}
 	}
+	return got_class;
 }
 
 static void
@@ -610,18 +621,15 @@ _memory_deallocate_defer(int32_t heap_id, void* p) {
 	do {
 		last_ptr = atomic_load_ptr(&heap->defer_deallocate);
 		*(void**)p = last_ptr;
-	}
-	while (!atomic_cas_ptr(&heap->defer_deallocate, p, last_ptr));
+	} while (!atomic_cas_ptr(&heap->defer_deallocate, p, last_ptr));
 }
 
 static void*
 _memory_allocate(size_t size) {
 	if (size <= MEDIUM_SIZE_LIMIT) {
 		heap_t* heap = _memory_thread_heap;
-		if (heap) {
-			_memory_deallocate_deferred(heap);
+		if (heap)
 			return _memory_allocate_from_heap(heap, size);
-		}
 
 		heap = _memory_allocate_heap();
 		if (heap) {
@@ -806,7 +814,7 @@ rpmalloc_finalize(void) {
 	for (size_t list_idx = 0; list_idx < HEAP_ARRAY_SIZE; ++list_idx) {
 		heap_t* heap = atomic_load_ptr(&_memory_heaps[list_idx]);
 		while (heap) {
-			_memory_deallocate_deferred(heap);
+			_memory_deallocate_deferred(heap, 0);
 
 			for (size_t iclass = 0; iclass < SPAN_CLASS_COUNT; ++iclass) {
 				size_t page_count = iclass + 1;
