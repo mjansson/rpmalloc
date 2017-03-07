@@ -228,3 +228,4 @@ coveralls.json
 coverallsreport.json
 codecov.json
 codecovreport.json
+benchmark-*.txt
