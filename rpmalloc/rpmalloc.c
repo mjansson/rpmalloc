@@ -14,9 +14,9 @@
 // Build time configurable limits
 
 //! Limit of thread cache (total sum of thread cache for all page counts will be 16 * THREAD_SPAN_CACHE_LIMIT)
-#define THREAD_SPAN_CACHE_LIMIT   (8*1024*1024)
+#define THREAD_SPAN_CACHE_LIMIT   (1*1024*1024)
 //! Limit of global cache (total sum of global cache for all page counts will be 16 * GLOBAL_SPAN_CACHE_LIMIT)
-#define GLOBAL_SPAN_CACHE_LIMIT   (128*1024*1024)
+#define GLOBAL_SPAN_CACHE_LIMIT   (16*1024*1024)
 //! Size of heap hashmap
 #define HEAP_ARRAY_SIZE           79
 //! Enable statistics collection
