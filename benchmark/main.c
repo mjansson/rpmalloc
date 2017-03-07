@@ -197,7 +197,6 @@ benchmark_worker(void* argptr) {
 	const size_t alloc_ops_count = (sizeof(num_alloc_ops) / sizeof(num_alloc_ops[0]));
 	const size_t free_ops_count = (sizeof(num_free_ops) / sizeof(num_free_ops[0]));
 	const size_t alignment[3] = { 0, 8, 16 };
-	const size_t size_range = arg->max_size - arg->min_size;
 
 	size_t alloc_idx = 0;
 	size_t free_idx = 0;
@@ -220,7 +219,7 @@ benchmark_worker(void* argptr) {
 	arg->ticks = 0;
 	arg->mops = 0;
 	for (size_t iter = 0; iter < 2; ++iter) {
-		size_t size_index;
+		size_t size_index = 0;
 		size_t iter_ticks_elapsed = 0;
 
 		for (size_t iloop = 0; iloop < num_loops; ++iloop) {
@@ -350,7 +349,7 @@ benchmark_worker(void* argptr) {
 				size_t size = arg->min_size;
 				if (arg->mode == MODE_RANDOM)
 					size += random_size_exp[(size_index + 2) % random_size_count];
-				pointers[iptr] = benchmark_malloc(alignment[(size_index + iop) % 3], size);
+				pointers[iptr] = benchmark_malloc(alignment[size_index % 3], size);
 				*(int32_t*)pointers[iptr] = (int32_t)size;
 				allocated += (int32_t)size;
 				++arg->mops;
@@ -450,7 +449,7 @@ benchmark_worker(void* argptr) {
 		} while (foreign);
 
 		thread_yield();
-	} while (atomic_load32(&benchmark_threads_complete) < arg->numthreads);
+	} while (atomic_load32(&benchmark_threads_complete) < (int32_t)arg->numthreads);
 
 	tick_start = timer_current();
 
@@ -586,7 +585,7 @@ int main(int argc, char** argv) {
 		benchmark_start = 1;
 		thread_fence();
 
-		while (atomic_load32(&benchmark_threads_sync) < thread_count)
+		while (atomic_load32(&benchmark_threads_sync) < (int32_t)thread_count)
 			thread_sleep(100);		
 		
 		cur_allocated = 0;
@@ -601,7 +600,7 @@ int main(int argc, char** argv) {
 		thread_fence();
 
 		thread_sleep(1000);
-		while (atomic_load32(&benchmark_threads_sync) < thread_count)
+		while (atomic_load32(&benchmark_threads_sync) < (int32_t)thread_count)
 			thread_sleep(100);
 
 		cur_allocated = 0;

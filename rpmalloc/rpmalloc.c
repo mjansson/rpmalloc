@@ -112,6 +112,8 @@ atomic_incr32(atomic32_t* val) {
 #endif
 }
 
+#if ENABLE_STATISTICS
+
 static FORCEINLINE int32_t
 atomic_add32(atomic32_t* val, int32_t add) {
 #ifdef _MSC_VER
@@ -121,6 +123,8 @@ atomic_add32(atomic32_t* val, int32_t add) {
 	return __sync_add_and_fetch(&val->nonatomic, add);
 #endif
 }
+
+#endif
 
 static FORCEINLINE void*
 atomic_load_ptr(atomicptr_t* src) {
@@ -143,7 +147,7 @@ thread_yield(void);
 #define PAGE_SIZE                 4096
 
 #define SPAN_ADDRESS_GRANULARITY  65536
-#define SPAN_ADDRESS_GRANULARITY_SHIFT 16
+//#define SPAN_ADDRESS_GRANULARITY_SHIFT 16
 #define SPAN_MAX_SIZE             (SPAN_ADDRESS_GRANULARITY)
 #define SPAN_MASK                 (~(SPAN_MAX_SIZE - 1))
 #define SPAN_MAX_PAGE_COUNT       (SPAN_MAX_SIZE / PAGE_SIZE)
@@ -637,9 +641,8 @@ _memory_deallocate_deferred(heap_t* heap, size_t size_class) {
 	return got_class;
 }
 
-static void
+/*static void
 _memory_deallocate_deferred_single(heap_t* heap) {
-	int got_class = 0;
 	atomic_thread_fence_acquire();
 	void* p = atomic_load_ptr(&heap->defer_deallocate);
 	if (!p)
@@ -651,7 +654,7 @@ _memory_deallocate_deferred_single(heap_t* heap) {
 		span_t* span = (void*)((uintptr_t)next & (uintptr_t)SPAN_MASK);
 		_memory_deallocate_to_heap(heap, span, next);
 	}
-}
+}*/
 
 static void
 _memory_deallocate_defer(int32_t heap_id, void* p) {
