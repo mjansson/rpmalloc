@@ -36,3 +36,7 @@ const char*
 benchmark_name(void) {
 	return "nedmalloc";
 }
+
+void
+benchmark_thread_collect(void) {
+}

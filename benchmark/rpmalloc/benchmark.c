@@ -24,6 +24,11 @@ benchmark_thread_finalize(void) {
 	return 0;
 }
 
+void
+benchmark_thread_collect(void) {
+	rpmalloc_thread_collect();
+}
+
 void*
 benchmark_malloc(size_t alignment, size_t size) {
 	return rpmemalign(alignment, size);

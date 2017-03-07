@@ -175,7 +175,7 @@
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>false</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;MSPACES=1;ONLY_MSPACES;USE_LOCKS=0</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;MSPACES=1;ONLY_MSPACES;USE_LOCKS=0;NDEBUG=1</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>..\..\test;..\..\benchmark;..\..\benchmark\ptmalloc3;..\..\benchmark\ptmalloc3\sysdeps\windows</AdditionalIncludeDirectories>
       <ExceptionHandling>false</ExceptionHandling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -211,7 +211,7 @@
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>false</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;MSPACES=1;ONLY_MSPACES;USE_LOCKS=0</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;MSPACES=1;ONLY_MSPACES;USE_LOCKS=0;NDEBUG=1</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>..\..\test;..\..\benchmark;..\..\benchmark\ptmalloc3;..\..\benchmark\ptmalloc3\sysdeps\windows</AdditionalIncludeDirectories>
       <ExceptionHandling>false</ExceptionHandling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>

@@ -50,3 +50,7 @@ const char*
 benchmark_name(void) {
 	return "crt";
 }
+
+void
+benchmark_thread_collect(void) {
+}

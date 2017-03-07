@@ -44,3 +44,7 @@ const char*
 benchmark_name(void) {
 	return "tcmalloc";
 }
+
+void
+benchmark_thread_collect(void) {
+}

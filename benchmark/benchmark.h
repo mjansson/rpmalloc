@@ -20,6 +20,9 @@ benchmark_thread_initialize(void);
 extern FORCENOINLINE int
 benchmark_thread_finalize(void);
 
+extern FORCENOINLINE void
+benchmark_thread_collect(void);
+
 extern FORCENOINLINE void*
 benchmark_malloc(size_t alignment, size_t size);
 

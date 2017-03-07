@@ -41,3 +41,7 @@ const char*
 benchmark_name(void) {
 	return "ptmalloc3";
 }
+
+void
+benchmark_thread_collect(void) {
+}

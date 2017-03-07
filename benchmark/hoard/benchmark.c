@@ -65,3 +65,7 @@ const char*
 benchmark_name(void) {
 	return "hoard";
 }
+
+void
+benchmark_thread_collect(void) {
+}

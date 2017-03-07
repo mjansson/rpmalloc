@@ -23,17 +23,17 @@ atomic_load_ptr(atomicptr_t* src) {
 	return src->nonatomic;
 }
 
-/*static void
+static void
 atomic_store_ptr(atomicptr_t* dst, void* val) {
 	dst->nonatomic = val;
-}*/
+}
 
 ALIGNED_STRUCT(atomic32_t, 4) {
 	int32_t nonatomic;
 };
 typedef struct atomic32_t atomic32_t;
 
-/*static int32_t
+static int32_t
 atomic_load32(atomic32_t* src) {
 	return src->nonatomic;
 }
@@ -41,7 +41,7 @@ atomic_load32(atomic32_t* src) {
 static void
 atomic_store32(atomic32_t* dst, int32_t val) {
 	dst->nonatomic = val;
-}*/
+}
 
 static int32_t
 atomic_incr32(atomic32_t* val) {
@@ -50,6 +50,16 @@ atomic_incr32(atomic32_t* val) {
 	return (old + 1);
 #else
 	return __sync_add_and_fetch(&val->nonatomic, 1);
+#endif
+}
+
+static int32_t
+atomic_add32(atomic32_t* val, int32_t add) {
+#ifdef _MSC_VER
+	int32_t old = (int32_t)_InterlockedExchangeAdd((volatile long*)&val->nonatomic, add);
+	return (old + add);
+#else
+	return __sync_add_and_fetch(&val->nonatomic, add);
 #endif
 }
 
