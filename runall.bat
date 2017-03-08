@@ -15,5 +15,7 @@ for /f "tokens=1* delims=," %%x in ("%string%") do (
 %executable% 6 0 2 16 16352
 %executable% 7 0 2 16 16352
 %executable% 8 0 2 16 16352
+%executable% 9 0 2 16 16352
+%executable% 10 0 2 16 16352
 
 if not ".%string%"=="." goto again

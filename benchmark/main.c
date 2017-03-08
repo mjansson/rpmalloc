@@ -42,7 +42,6 @@ struct thread_pointers {
 };
 
 static int benchmark_start;
-static atomic32_t benchmark_threads_complete;
 static atomic32_t benchmark_threads_sync;
 static atomic32_t cross_thread_counter;
 
@@ -401,9 +400,10 @@ benchmark_worker(void* argptr) {
 				benchmark_thread_collect();
 				ticks_elapsed = timer_current() - tick_start;
 				arg->ticks += ticks_elapsed;
-			} while (foreign);
+			}
 
 			thread_yield();
+			thread_fence();
 		} while (atomic_load32(&benchmark_threads_sync));
 
 		allocated = 0;
@@ -432,9 +432,8 @@ benchmark_worker(void* argptr) {
 		aborted = 0;
 	}
 
-	atomic_incr32(&benchmark_threads_complete);
-
 	//Sync threads
+	atomic_incr32(&benchmark_threads_sync);
 	do {
 		foreign = get_cross_thread_memory(&arg->foreign);
 		if (foreign) {
@@ -458,10 +457,11 @@ benchmark_worker(void* argptr) {
 			benchmark_thread_collect();
 			ticks_elapsed = timer_current() - tick_start;
 			arg->ticks += ticks_elapsed;
-		} while (foreign);
+		}
 
 		thread_yield();
-	} while (atomic_load32(&benchmark_threads_complete) < (int32_t)arg->numthreads);
+		thread_fence();
+	} while (atomic_load32(&benchmark_threads_sync));
 
 	tick_start = timer_current();
 
@@ -574,7 +574,6 @@ int main(int argc, char** argv) {
 
 	for (size_t iter = 0; iter < 2; ++iter) {
 		benchmark_start = 0;
-		atomic_store32(&benchmark_threads_complete, 0);
 		atomic_store32(&benchmark_threads_sync, 0);
 		thread_fence();
 
@@ -600,12 +599,18 @@ int main(int argc, char** argv) {
 		benchmark_start = 1;
 		thread_fence();
 
-		while (atomic_load32(&benchmark_threads_sync) < (int32_t)thread_count)
-			thread_sleep(100);		
-		
+		while (atomic_load32(&benchmark_threads_sync) < (int32_t)thread_count) {
+			thread_sleep(1000);
+			thread_fence();
+		}
+		thread_sleep(1000);
+		thread_fence();
+
 		cur_allocated = 0;
-		for (size_t ithread = 0; ithread < thread_count; ++ithread)
-			cur_allocated += (size_t)atomic_load32(&arg[ithread].allocated);
+		for (size_t ithread = 0; ithread < thread_count; ++ithread) {
+			size_t thread_allocated = (size_t)atomic_load32(&arg[ithread].allocated);
+			cur_allocated += thread_allocated;
+		}
 		if (cur_allocated > peak_allocated) {
 			peak_allocated = cur_allocated;
 			memory_usage = get_process_memory_usage();
@@ -615,16 +620,33 @@ int main(int argc, char** argv) {
 		thread_fence();
 
 		thread_sleep(1000);
-		while (atomic_load32(&benchmark_threads_sync) < (int32_t)thread_count)
-			thread_sleep(100);
+		while (atomic_load32(&benchmark_threads_sync) < (int32_t)thread_count) {
+			thread_sleep(1000);
+			thread_fence();
+		}
+		thread_sleep(1000);
+		thread_fence();
 
 		cur_allocated = 0;
-		for (size_t ithread = 0; ithread < thread_count; ++ithread)
-			cur_allocated += (size_t)atomic_load32(&arg[ithread].allocated);
+		for (size_t ithread = 0; ithread < thread_count; ++ithread) {
+			size_t thread_allocated = (size_t)atomic_load32(&arg[ithread].allocated);
+			cur_allocated += thread_allocated;
+		}
 		if (cur_allocated > peak_allocated) {
 			peak_allocated = cur_allocated;
 			memory_usage = get_process_memory_usage();
 		}
+
+		atomic_store32(&benchmark_threads_sync, 0);
+		thread_fence();
+
+		thread_sleep(1000);
+		while (atomic_load32(&benchmark_threads_sync) < (int32_t)thread_count) {
+			thread_sleep(1000);
+			thread_fence();
+		}
+		thread_sleep(1000);
+		thread_fence();
 
 		atomic_store32(&benchmark_threads_sync, 0);
 		thread_fence();
