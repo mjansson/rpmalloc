@@ -153,14 +153,26 @@ static const size_t num_free_ops[] = {
 #include <Psapi.h>
 #endif
 
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <mach/task.h>
+#endif
+
 static size_t
 get_process_memory_usage(void) {
-#ifdef _WIN32
+#if defined(_WIN32)
 	PROCESS_MEMORY_COUNTERS counters;
 	memset(&counters, 0, sizeof(counters));
 	counters.cb = sizeof(counters);
 	GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters));
 	return counters.WorkingSetSize;
+#elif defined(__APPLE__)
+	struct task_basic_info info;
+	mach_msg_type_number_t info_count = TASK_BASIC_INFO_COUNT;
+	if (task_info(mach_task_self(), TASK_BASIC_INFO,
+	    (task_info_t)&info, &info_count) != KERN_SUCCESS)
+		return 0;
+	return info.resident_size;
 #else
 	return 0;
 #endif
@@ -523,9 +535,12 @@ int main(int argc, char** argv) {
 		random_size_exp[ir] = (size_t)((double)random_size[(ir + 2) % random_size_count] * (w0 * w1));
 	}
 
-	benchmark_arg arg[64];
-	uintptr_t thread_handle[64];
+	benchmark_arg* arg;
+	uintptr_t* thread_handle;
 	FILE* fd;
+	
+	arg = benchmark_malloc(0, sizeof(benchmark_arg) * thread_count);
+	thread_handle = benchmark_malloc(0, sizeof(thread_handle) * thread_count);
 
 	char filebuf[64];
 	if (mode == 0)
@@ -625,6 +640,9 @@ int main(int argc, char** argv) {
 
 	if (!ticks)
 		ticks = 1;
+	
+	benchmark_free(thread_handle);
+	benchmark_free(arg);
 
 	double time_elapsed = timer_ticks_to_seconds(ticks);
 	double average_mops = (double)mops / time_elapsed;

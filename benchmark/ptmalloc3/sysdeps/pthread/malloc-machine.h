@@ -96,7 +96,7 @@ typedef pthread_mutex_t mutex_t;
 
 /* thread specific data */
 #if defined(__sgi) || defined(USE_TSD_DATA_HACK)
-
+#  error Using TSD data hack
 /* Hack for thread-specific data, e.g. on Irix 6.x.  We can't use
    pthread_setspecific because that function calls malloc() itself.
    The hack only works when pthread_t can be converted to an integral

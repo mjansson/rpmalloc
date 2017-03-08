@@ -481,6 +481,8 @@ MAX_RELEASE_CHECK_RATE   default: 255 unless not HAVE_MMAP
   improvement at the expense of carrying around more memory.
 */
 
+#define ONLY_MSPACES 1
+
 #ifndef WIN32
 #ifdef _WIN32
 #define WIN32 1
@@ -635,6 +637,13 @@ MAX_RELEASE_CHECK_RATE   default: 255 unless not HAVE_MMAP
 #ifndef NO_SEGMENT_TRAVERSAL
 #define NO_SEGMENT_TRAVERSAL 0
 #endif /* NO_SEGMENT_TRAVERSAL */
+
+#if !ONLY_MSPACES
+#  error Bas mspaces defines
+#endif
+#if USE_LOCKS
+#  error Using locks
+#endif
 
 /*
   mallopt tuning options.  SVID/XPG defines four standard parameter

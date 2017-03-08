@@ -37,9 +37,10 @@ PERFORMANCE OF THIS SOFTWARE.
 #ifndef _WIN32
 #include <sys/mman.h>
 #define HAVE_MMAP 1
+#endif
+
 #define MSPACES 1
 #define ONLY_MSPACES 1
-#endif
 
 #include <sys/types.h>   /* For size_t */
 #include <errno.h>

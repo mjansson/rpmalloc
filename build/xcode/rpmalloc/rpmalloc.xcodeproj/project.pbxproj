@@ -7,6 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		CD0E95CE1E6FE78E00F068D8 /* benchmark.c in Sources */ = {isa = PBXBuildFile; fileRef = CD0E95C81E6FE78E00F068D8 /* benchmark.c */; };
+		CD0E95D01E6FE78E00F068D8 /* ptmalloc3.c in Sources */ = {isa = PBXBuildFile; fileRef = CD0E95CD1E6FE78E00F068D8 /* ptmalloc3.c */; };
+		CD0E95D11E6FE79700F068D8 /* main.c in Sources */ = {isa = PBXBuildFile; fileRef = CD3DDFD81DEA306D007D58FA /* main.c */; };
+		CD0E95D21E6FF5D800F068D8 /* malloc.c in Sources */ = {isa = PBXBuildFile; fileRef = CD0E95CC1E6FE78E00F068D8 /* malloc.c */; };
+		CD0E95D31E6FF5F400F068D8 /* thread.c in Sources */ = {isa = PBXBuildFile; fileRef = CD3DDFE31DEAD3D3007D58FA /* thread.c */; };
+		CD0E95D41E6FF5F400F068D8 /* timer.c in Sources */ = {isa = PBXBuildFile; fileRef = CD3DDFE51DEAD3D3007D58FA /* timer.c */; };
 		CD3DDFC81DEA2FC8007D58FA /* rpmalloc.c in Sources */ = {isa = PBXBuildFile; fileRef = CD3DDFC61DEA2FC8007D58FA /* rpmalloc.c */; };
 		CD3DDFC91DEA2FC8007D58FA /* rpmalloc.h in Headers */ = {isa = PBXBuildFile; fileRef = CD3DDFC71DEA2FC8007D58FA /* rpmalloc.h */; };
 		CD3DDFD91DEA306D007D58FA /* benchmark.h in Headers */ = {isa = PBXBuildFile; fileRef = CD3DDFD71DEA306D007D58FA /* benchmark.h */; };
@@ -98,6 +104,15 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
+		CD0E95BE1E6FE6E500F068D8 /* CopyFiles */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = /usr/share/man/man1/;
+			dstSubfolderSpec = 0;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 1;
+		};
 		CD3DDFCD1DEA3036007D58FA /* CopyFiles */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
@@ -137,6 +152,13 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		CD0E95C01E6FE6E500F068D8 /* benchmark-ptmalloc3 */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "benchmark-ptmalloc3"; sourceTree = BUILT_PRODUCTS_DIR; };
+		CD0E95C81E6FE78E00F068D8 /* benchmark.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; name = benchmark.c; path = ../../../../benchmark/ptmalloc3/benchmark.c; sourceTree = "<group>"; };
+		CD0E95C91E6FE78E00F068D8 /* lran2.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = lran2.h; path = ../../../../benchmark/ptmalloc3/lran2.h; sourceTree = "<group>"; };
+		CD0E95CA1E6FE78E00F068D8 /* malloc-2.8.3.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = "malloc-2.8.3.h"; path = "../../../../benchmark/ptmalloc3/malloc-2.8.3.h"; sourceTree = "<group>"; };
+		CD0E95CB1E6FE78E00F068D8 /* malloc-private.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = "malloc-private.h"; path = "../../../../benchmark/ptmalloc3/malloc-private.h"; sourceTree = "<group>"; };
+		CD0E95CC1E6FE78E00F068D8 /* malloc.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; name = malloc.c; path = ../../../../benchmark/ptmalloc3/malloc.c; sourceTree = "<group>"; };
+		CD0E95CD1E6FE78E00F068D8 /* ptmalloc3.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; name = ptmalloc3.c; path = ../../../../benchmark/ptmalloc3/ptmalloc3.c; sourceTree = "<group>"; };
 		CD3DDFBF1DEA2FAF007D58FA /* librpmalloc.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = librpmalloc.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		CD3DDFC61DEA2FC8007D58FA /* rpmalloc.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; name = rpmalloc.c; path = ../../../rpmalloc/rpmalloc.c; sourceTree = "<group>"; };
 		CD3DDFC71DEA2FC8007D58FA /* rpmalloc.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = rpmalloc.h; path = ../../../rpmalloc/rpmalloc.h; sourceTree = "<group>"; };
@@ -215,6 +237,13 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		CD0E95BD1E6FE6E500F068D8 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		CD3DDFBC1DEA2FAF007D58FA /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -257,6 +286,19 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		CD0E95C71E6FE75A00F068D8 /* ptmalloc3 */ = {
+			isa = PBXGroup;
+			children = (
+				CD0E95C81E6FE78E00F068D8 /* benchmark.c */,
+				CD0E95C91E6FE78E00F068D8 /* lran2.h */,
+				CD0E95CA1E6FE78E00F068D8 /* malloc-2.8.3.h */,
+				CD0E95CB1E6FE78E00F068D8 /* malloc-private.h */,
+				CD0E95CC1E6FE78E00F068D8 /* malloc.c */,
+				CD0E95CD1E6FE78E00F068D8 /* ptmalloc3.c */,
+			);
+			name = ptmalloc3;
+			sourceTree = "<group>";
+		};
 		CD3DDFB61DEA2FAF007D58FA = {
 			isa = PBXGroup;
 			children = (
@@ -275,6 +317,7 @@
 				CD3DDFED1DEAD3F8007D58FA /* benchmark-hoard */,
 				CD3DE0061DEADB95007D58FA /* benchmark-crt */,
 				CD3DE01B1DEADC82007D58FA /* benchmark-tcmalloc */,
+				CD0E95C01E6FE6E500F068D8 /* benchmark-ptmalloc3 */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -295,6 +338,7 @@
 				CD3DDFD81DEA306D007D58FA /* main.c */,
 				CD3DE00D1DEADBA0007D58FA /* crt */,
 				CD3DDFF71DEAD418007D58FA /* hoard */,
+				CD0E95C71E6FE75A00F068D8 /* ptmalloc3 */,
 				CD3DDFD61DEA3055007D58FA /* rpmalloc */,
 				CD3DE0161DEADC5E007D58FA /* tcmalloc */,
 			);
@@ -442,6 +486,23 @@
 /* End PBXHeadersBuildPhase section */
 
 /* Begin PBXNativeTarget section */
+		CD0E95BF1E6FE6E500F068D8 /* benchmark-ptmalloc3 */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CD0E95C61E6FE6E500F068D8 /* Build configuration list for PBXNativeTarget "benchmark-ptmalloc3" */;
+			buildPhases = (
+				CD0E95BC1E6FE6E500F068D8 /* Sources */,
+				CD0E95BD1E6FE6E500F068D8 /* Frameworks */,
+				CD0E95BE1E6FE6E500F068D8 /* CopyFiles */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "benchmark-ptmalloc3";
+			productName = "benchmark-ptmalloc3";
+			productReference = CD0E95C01E6FE6E500F068D8 /* benchmark-ptmalloc3 */;
+			productType = "com.apple.product-type.tool";
+		};
 		CD3DDFBE1DEA2FAF007D58FA /* rpmalloc */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = CD3DDFC31DEA2FAF007D58FA /* Build configuration list for PBXNativeTarget "rpmalloc" */;
@@ -537,9 +598,13 @@
 		CD3DDFB71DEA2FAF007D58FA /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
-				LastUpgradeCheck = 0810;
+				LastUpgradeCheck = 0820;
 				ORGANIZATIONNAME = "Rampant Pixels";
 				TargetAttributes = {
+					CD0E95BF1E6FE6E500F068D8 = {
+						CreatedOnToolsVersion = 8.2.1;
+						ProvisioningStyle = Automatic;
+					};
 					CD3DDFBE1DEA2FAF007D58FA = {
 						CreatedOnToolsVersion = 8.1;
 						DevelopmentTeam = TDSNBN44YV;
@@ -584,11 +649,25 @@
 				CD3DDFEC1DEAD3F8007D58FA /* benchmark-hoard */,
 				CD3DE0051DEADB95007D58FA /* benchmark-crt */,
 				CD3DE01A1DEADC82007D58FA /* benchmark-tcmalloc */,
+				CD0E95BF1E6FE6E500F068D8 /* benchmark-ptmalloc3 */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXSourcesBuildPhase section */
+		CD0E95BC1E6FE6E500F068D8 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CD0E95D31E6FF5F400F068D8 /* thread.c in Sources */,
+				CD0E95D41E6FF5F400F068D8 /* timer.c in Sources */,
+				CD0E95D21E6FF5D800F068D8 /* malloc.c in Sources */,
+				CD0E95D11E6FE79700F068D8 /* main.c in Sources */,
+				CD0E95D01E6FE78E00F068D8 /* ptmalloc3.c in Sources */,
+				CD0E95CE1E6FE78E00F068D8 /* benchmark.c in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		CD3DDFBB1DEA2FAF007D58FA /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -701,6 +780,34 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		CD0E95C41E6FE6E500F068D8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				HEADER_SEARCH_PATHS = (
+					../../..,
+					../../../benchmark,
+					../../../test,
+					../../../benchmark/ptmalloc3/sysdeps/pthread,
+					../../../benchmark/ptmalloc3,
+				);
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Debug;
+		};
+		CD0E95C51E6FE6E500F068D8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				HEADER_SEARCH_PATHS = (
+					../../..,
+					../../../benchmark,
+					../../../test,
+					../../../benchmark/ptmalloc3/sysdeps/pthread,
+					../../../benchmark/ptmalloc3,
+				);
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Release;
+		};
 		CD3DDFC11DEA2FAF007D58FA /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -730,6 +837,8 @@
 				ENABLE_TESTABILITY = NO;
 				GCC_C_LANGUAGE_STANDARD = c11;
 				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_ENABLE_CPP_EXCEPTIONS = NO;
+				GCC_ENABLE_CPP_RTTI = NO;
 				GCC_FAST_MATH = YES;
 				GCC_OPTIMIZATION_LEVEL = 0;
 				GCC_PREPROCESSOR_DEFINITIONS = (
@@ -780,6 +889,8 @@
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = NO;
 				GCC_C_LANGUAGE_STANDARD = c11;
+				GCC_ENABLE_CPP_EXCEPTIONS = NO;
+				GCC_ENABLE_CPP_RTTI = NO;
 				GCC_FAST_MATH = YES;
 				GCC_OPTIMIZATION_LEVEL = fast;
 				GCC_PREPROCESSOR_DEFINITIONS = "NDEBUG=1";
@@ -822,8 +933,6 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				DEVELOPMENT_TEAM = TDSNBN44YV;
-				GCC_ENABLE_CPP_EXCEPTIONS = NO;
-				GCC_ENABLE_CPP_RTTI = NO;
 				HEADER_SEARCH_PATHS = (
 					../../..,
 					../../../benchmark,
@@ -837,8 +946,6 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				DEVELOPMENT_TEAM = TDSNBN44YV;
-				GCC_ENABLE_CPP_EXCEPTIONS = NO;
-				GCC_ENABLE_CPP_RTTI = NO;
 				HEADER_SEARCH_PATHS = (
 					../../..,
 					../../../benchmark,
@@ -945,6 +1052,14 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		CD0E95C61E6FE6E500F068D8 /* Build configuration list for PBXNativeTarget "benchmark-ptmalloc3" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CD0E95C41E6FE6E500F068D8 /* Debug */,
+				CD0E95C51E6FE6E500F068D8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+		};
 		CD3DDFBA1DEA2FAF007D58FA /* Build configuration list for PBXProject "rpmalloc" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
