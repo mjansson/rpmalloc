@@ -647,9 +647,10 @@ int main(int argc, char** argv) {
 	double time_elapsed = timer_ticks_to_seconds(ticks);
 	double average_mops = (double)mops / time_elapsed;
 	char linebuf[128];
-	int len = snprintf(linebuf, sizeof(linebuf), "%u,%u\n",
+	int len = snprintf(linebuf, sizeof(linebuf), "%u,%u,%u\n",
 		                (unsigned int)average_mops,
-		                (unsigned int)memory_usage);
+		                (unsigned int)memory_usage,
+	                    (unsigned int)peak_allocated);
 	fwrite(linebuf, (len > 0) ? (size_t)len : 0, 1, fd);
 	fflush(fd);
 
