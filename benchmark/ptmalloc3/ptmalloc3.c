@@ -47,6 +47,7 @@ PERFORMANCE OF THIS SOFTWARE.
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>      /* for memset */
+#include <stdint.h>
 
 #include <malloc-machine.h>
 
