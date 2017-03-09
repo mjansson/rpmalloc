@@ -101,7 +101,7 @@ class ClangToolchain(toolchain.Toolchain):
 
     self.cflags += ['-std=c11']
     self.cxxflags += ['-std=c++11', '-stdlib=libc++']
-    
+
     self.cexternflags = []
     self.cxxexternflags = []
     self.cexternflags += self.cflags
@@ -202,11 +202,11 @@ class ClangToolchain(toolchain.Toolchain):
       self.toolchain += os.sep
 
   def build_default_toolchain(self):
-    self.cxxflags = self.cflags    
+    self.cxxflags = list(self.cflags)
 
   def build_windows_toolchain(self):
     self.cflags += ['-U__STRICT_ANSI__', '-Wno-reserved-id-macro']
-    self.cxxflags = self.cflags
+    self.cxxflags = list(self.cflags)
     self.oslibs = ['kernel32', 'user32', 'shell32', 'advapi32']
 
   def build_android_toolchain(self):
@@ -216,7 +216,7 @@ class ClangToolchain(toolchain.Toolchain):
     self.linkcmd += ' -shared -Wl,-soname,$liblinkname --sysroot=$sysroot'
     self.cflags += ['-fpic', '-ffunction-sections', '-funwind-tables', '-fstack-protector', '-fomit-frame-pointer',
                     '-no-canonical-prefixes', '-Wa,--noexecstack']
-    self.cxxflags = self.cflags
+    self.cxxflags = list(self.cflags)
 
     self.linkflags += ['-no-canonical-prefixes', '-Wl,--no-undefined', '-Wl,-z,noexecstack', '-Wl,-z,relro', '-Wl,-z,now']
 
@@ -283,7 +283,7 @@ class ClangToolchain(toolchain.Toolchain):
     self.linker = self.ccompiler
     self.finalizer = os.path.join('bin', 'pnacl-finalize' + shsuffix)
     self.nmfer = os.path.join('tools', 'create_nmf.py')
-    self.cxxflags = self.cflags
+    self.cxxflags = list(self.cflags)
 
     self.finalizecmd = '$toolchain$finalize -o $out $in'
     self.nmfcmd = self.python + ' ' + os.path.join('$sdkpath', '$nmf') + ' -o $out $in'
@@ -474,7 +474,7 @@ class ClangToolchain(toolchain.Toolchain):
       localframeworks += list(variables['frameworks'])
     if len(localframeworks) > 0:
       localvariables += [('frameworks', self.make_frameworks(list(localframeworks)))]
-      
+
     libpaths = []
     if 'libpaths' in variables:
       libpaths = variables['libpaths']

@@ -1,9 +1,9 @@
 
 #include <timer.h>
 
-#ifdef _WIN32
+#if defined(_WIN32)
 #  include <Windows.h>
-#elif __APPLE__
+#elif defined(__APPLE__)
 #  include <mach/mach_time.h>
 static mach_timebase_info_data_t _time_info;
 static void
@@ -18,12 +18,12 @@ static uint64_t _time_freq;
 
 int
 timer_initialize(void) {
-#ifdef _WIN32
+#if defined(_WIN32)
 	uint64_t unused;
 	if (!QueryPerformanceFrequency((LARGE_INTEGER*)&_time_freq) ||
 		!QueryPerformanceCounter((LARGE_INTEGER*)&unused))
 		return -1;
-#elif __APPLE__
+#elif defined(__APPLE__)
 	if (mach_timebase_info(&_time_info))
 		return -1;
 	_time_freq = 1000000000LL;
@@ -38,11 +38,11 @@ timer_initialize(void) {
 
 uint64_t
 timer_current(void) {
-#ifdef _WIN32
+#if defined(_WIN32)
 	uint64_t curclock;
 	QueryPerformanceCounter((LARGE_INTEGER*)&curclock);
 	return curclock;
-#elif __APPLE__
+#elif defined(__APPLE__)
 	uint64_t curclock = 0;
 	absolutetime_to_nanoseconds(mach_absolute_time(), &curclock);
 	return curclock;
