@@ -58,7 +58,6 @@ extern "C" void cfree(void* ptr) __THROW;
 #endif
 #if !HAVE_DECL_POSIX_MEMALIGN
 extern "C" int posix_memalign(void** ptr, size_t align, size_t size) __THROW;
-#error no posix_memalign
 #endif
 #if !HAVE_DECL_MEMALIGN
 extern "C" void* memalign(size_t __alignment, size_t __size) __THROW;

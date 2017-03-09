@@ -136,6 +136,8 @@
 // generated code closer to normal, we're forcing inlining via
 // attribute.
 #define ALWAYS_INLINE inline __attribute__((always_inline))
+#elif defined(_MSC_VER)
+#define ALWAYS_INLINE __forceinline
 #else
 #define ALWAYS_INLINE inline
 #endif
