@@ -55,9 +55,7 @@ else:
 	hoardsources += ['source/unixtls.cpp']
 hoard_lib = generator.lib(module = 'hoard', sources = hoardsources, basepath = 'benchmark', includepaths = includepaths + hoardincludepaths, externalsources = True)
 hoard_depend_libs = ['hoard', 'benchmark', 'test']
-if target.is_macosx() or target.is_ios():
-	hoard_depend_libs += ['stdc++']
-generator.bin(module = 'hoard', sources = ['benchmark.c'], binname = 'benchmark-hoard', basepath = 'benchmark', implicit_deps = [hoard_lib, benchmark_lib, test_lib], libs = hoard_depend_libs, includepaths = includepaths)
+generator.bin(module = 'hoard', sources = ['benchmark.c'], binname = 'benchmark-hoard', basepath = 'benchmark', implicit_deps = [hoard_lib, benchmark_lib, test_lib], libs = hoard_depend_libs, includepaths = includepaths, variables = {'runtime': 'c++'})
 
 gperftoolsincludepaths = [
 	os.path.join('benchmark', 'gperftools', 'src'),
@@ -83,6 +81,4 @@ if not target.is_windows():
 gperftoolssources = [os.path.join('src', path) for path in gperftoolssources]
 gperftools_lib = generator.lib(module = 'gperftools', sources = gperftoolsbasesources + gperftoolssources, basepath = 'benchmark', includepaths = includepaths + gperftoolsincludepaths, externalsources = True)
 gperftools_depend_libs = ['gperftools', 'benchmark', 'test']
-if target.is_macosx() or target.is_ios():
-	gperftools_depend_libs += ['stdc++']
-generator.bin(module = 'gperftools', sources = ['benchmark.c'], binname = 'benchmark-tcmalloc', basepath = 'benchmark', implicit_deps = [gperftools_lib, benchmark_lib, test_lib], libs = gperftools_depend_libs, includepaths = includepaths)
+generator.bin(module = 'gperftools', sources = ['benchmark.c'], binname = 'benchmark-tcmalloc', basepath = 'benchmark', implicit_deps = [gperftools_lib, benchmark_lib, test_lib], libs = gperftools_depend_libs, includepaths = includepaths, variables = {'runtime': 'c++'})

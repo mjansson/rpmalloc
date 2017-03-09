@@ -16,8 +16,10 @@ class ClangToolchain(toolchain.Toolchain):
     self.includepaths = includepaths
     self.libpaths = libpaths
     self.ccompiler = 'clang'
+    self.cxxcompiler = 'clang++'
     self.archiver = 'ar'
     self.linker = 'clang'
+    self.cxxlinker = 'clang++'
     if self.target.is_windows():
       self.archiver = 'llvm-ar'
 
@@ -30,11 +32,11 @@ class ClangToolchain(toolchain.Toolchain):
 
     #Command definitions
     self.cccmd = '$toolchain$cc -MMD -MT $out -MF $out.d -I. $includepaths $moreincludepaths $cflags $carchflags $cconfigflags -c $in -o $out'
-    self.cxxcmd = '$toolchain$cc -MMD -MT $out -MF $out.d -I. $includepaths $moreincludepaths $cxxflags $carchflags $cconfigflags -c $in -o $out'
+    self.cxxcmd = '$toolchain$cxx -MMD -MT $out -MF $out.d -I. $includepaths $moreincludepaths $cxxflags $carchflags $cconfigflags -c $in -o $out'
     self.ccdeps = 'gcc'
     self.ccdepfile = '$out.d'
     self.arcmd = self.rmcmd('$out') + ' && $toolchain$ar crsD $ararchflags $arflags $out $in'
-    self.linkcmd = '$toolchain$cc $libpaths $configlibpaths $linkflags $linkarchflags $linkconfigflags -o $out $in $libs $archlibs $oslibs $frameworks'
+    self.linkcmd = '$toolchain$link $libpaths $configlibpaths $linkflags $linkarchflags $linkconfigflags -o $out $in $libs $archlibs $oslibs $frameworks'
 
     #Base flags
     self.cflags = ['-D' + project.upper() + '_COMPILE=1',
@@ -50,6 +52,7 @@ class ClangToolchain(toolchain.Toolchain):
     self.frameworks = []
 
     if self.target.is_linux() or self.target.is_bsd() or self.target.is_raspberrypi():
+      self.cflags += ['-D_GNU_SOURCE=1']
       self.linkflags += ['-pthread']
       self.oslibs += ['m']
     if self.target.is_linux() or self.target.is_raspberrypi():
@@ -100,12 +103,12 @@ class ClangToolchain(toolchain.Toolchain):
     self.build_toolchain()
 
     self.cflags += ['-std=c11']
-    self.cxxflags += ['-std=c++11', '-stdlib=libc++']
+    self.cxxflags += ['-std=c++11'] #, '-stdlib=libc++']
 
     self.cexternflags = []
     self.cxxexternflags = []
-    self.cexternflags += self.cflags
-    self.cxxexternflags += self.cxxflags + ['-Wno-deprecated-declarations']
+    self.cexternflags += self.cflags + ['-w']
+    self.cxxexternflags += self.cxxflags + ['-w']
 
     self.cflags += self.cwarnflags
     self.cxxflags += self.cwarnflags
@@ -142,6 +145,7 @@ class ClangToolchain(toolchain.Toolchain):
     writer.variable('sdkpath', self.sdkpath)
     writer.variable('sysroot', self.sysroot)
     writer.variable('cc', self.ccompiler)
+    writer.variable('cxx', self.cxxcompiler)
     writer.variable('ar', self.archiver)
     writer.variable('link', self.linker)
     if self.target.is_macosx() or self.target.is_ios():
@@ -484,6 +488,10 @@ class ClangToolchain(toolchain.Toolchain):
     archlibs = self.make_linkarchlibs(arch, targettype)
     if archlibs != []:
       localvariables += [('archlibs', self.make_libs(archlibs))]
+
+    if 'runtime' in variables and variables['runtime'] == 'c++':
+      localvariables += [('link', self.cxxlinker)]
+
     return localvariables
 
   def builder_cc(self, writer, config, arch, targettype, infile, outfile, variables, externalsources):
