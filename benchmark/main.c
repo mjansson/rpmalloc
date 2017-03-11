@@ -14,6 +14,10 @@
 #define MODE_RANDOM 0
 #define MODE_FIXED  1
 
+#define SIZE_MODE_EVEN 0
+#define SIZE_MODE_LINEAR  1
+#define SIZE_MODE_EXP 2
+
 typedef struct benchmark_arg benchmark_arg;
 typedef struct thread_pointers thread_pointers;
 
@@ -21,7 +25,10 @@ struct benchmark_arg {
 	size_t numthreads;
 	size_t index;
 	size_t mode;
+	size_t size_mode;
 	size_t cross_rate;
+	size_t loop_count;
+	size_t alloc_count;
 	size_t min_size;
 	size_t max_size;
 	size_t accumulator;
@@ -100,6 +107,7 @@ static size_t random_size[1000] = {
 };
 static size_t random_size_lin[1000];
 static size_t random_size_exp[1000];
+static size_t* random_size_arr;
 
 static const size_t num_alloc_ops[] = {
 	13,	18,	12,	16,	27,
@@ -202,8 +210,6 @@ benchmark_worker(void* argptr) {
 	benchmark_arg* arg = argptr;
 	thread_pointers* foreign = 0;
 	void** pointers;
-	const size_t num_pointers = 8192*2;
-	const size_t num_loops = 8192*1024;
 	const size_t random_size_count = (sizeof(random_size) / sizeof(random_size[0]));
 	const size_t alloc_ops_count = (sizeof(num_alloc_ops) / sizeof(num_alloc_ops[0]));
 	const size_t free_ops_count = (sizeof(num_free_ops) / sizeof(num_free_ops[0]));
@@ -219,7 +225,7 @@ benchmark_worker(void* argptr) {
 
 	benchmark_thread_initialize();
 
-	size_t pointers_size = sizeof(void*) * num_pointers;
+	size_t pointers_size = sizeof(void*) * arg->alloc_count;
 	pointers = benchmark_malloc(16, pointers_size);
 	memset(pointers, 0, pointers_size);
 	atomic_add32(&arg->allocated, (int32_t)pointers_size);
@@ -233,7 +239,7 @@ benchmark_worker(void* argptr) {
 		size_t size_index = 0;
 		size_t iter_ticks_elapsed = 0;
 
-		for (size_t iloop = 0; iloop < num_loops; ++iloop) {
+		for (size_t iloop = 0; iloop < arg->loop_count; ++iloop) {
 			size_index = ((arg->index + 1) * (iter * 3 + iloop * 7)) % random_size_count;
 
 			foreign = get_cross_thread_memory(&arg->foreign);
@@ -252,13 +258,13 @@ benchmark_worker(void* argptr) {
 				}
 				size_t size = arg->min_size;
 				if (arg->mode == MODE_RANDOM)
-					size += random_size_lin[size_index];
+					size += random_size_arr[size_index];
 				pointers[alloc_idx] = benchmark_malloc(alignment[(size_index + iop) % 3], size);
 				*(int32_t*)pointers[alloc_idx] = (int32_t)size;
 				allocated += (int32_t)size;
 				++arg->mops;
 
-				alloc_idx = (alloc_idx + 1) % num_pointers;
+				alloc_idx = (alloc_idx + 1) % arg->alloc_count;
 				size_index = (size_index + 1) % random_size_count;
 			}
 
@@ -271,7 +277,7 @@ benchmark_worker(void* argptr) {
 					pointers[free_idx] = 0;
 				}
 
-				free_idx = (free_idx + 1) % num_pointers;
+				free_idx = (free_idx + 1) % arg->alloc_count;
 			}
 
 			for (iop = 0; iop < alloc_op_count; ++iop) {
@@ -282,13 +288,13 @@ benchmark_worker(void* argptr) {
 				}
 				size_t size = arg->min_size;
 				if (arg->mode == MODE_RANDOM)
-					size += random_size_exp[(size_index + 2) % random_size_count];
+					size += random_size_arr[(size_index + 2) % random_size_count];
 				pointers[alloc_idx] = benchmark_malloc(alignment[(size_index + iop) % 3], size);
 				*(int32_t*)pointers[alloc_idx] = (int32_t)size;
 				allocated += (int32_t)size;
 				++arg->mops;
 
-				alloc_idx = (alloc_idx + 1) % num_pointers;
+				alloc_idx = (alloc_idx + 1) % arg->alloc_count;
 				size_index = (size_index + 1) % random_size_count;
 			}
 
@@ -321,7 +327,7 @@ benchmark_worker(void* argptr) {
 				for (iop = 0; iop < alloc_op_count; ++iop) {
 					size_t size = arg->min_size;
 					if (arg->mode == MODE_RANDOM)
-						size += random_size_lin[(size_index + 2) % random_size_count];
+						size += random_size_arr[(size_index + 2) % random_size_count];
 					foreign->pointers[iop] = benchmark_malloc(alignment[(size_index + iop) % 3], size);
 					*(int32_t*)foreign->pointers[iop] = (int32_t)size;
 					allocated += (int32_t)size;
@@ -355,7 +361,7 @@ benchmark_worker(void* argptr) {
 
 		allocated = 0;
 		tick_start = timer_current();
-		for (size_t iptr = 0; iptr < num_pointers; ++iptr) {
+		for (size_t iptr = 0; iptr < arg->alloc_count; ++iptr) {
 			if (!pointers[iptr]) {
 				size_t size = arg->min_size;
 				if (arg->mode == MODE_RANDOM)
@@ -408,7 +414,7 @@ benchmark_worker(void* argptr) {
 
 		allocated = 0;
 		tick_start = timer_current();
-		for (size_t iptr = 0; iptr < num_pointers; ++iptr) {
+		for (size_t iptr = 0; iptr < arg->alloc_count; ++iptr) {
 			if (pointers[iptr]) {
 				allocated -= *(int32_t*)pointers[iptr];
 				benchmark_free(pointers[iptr]);
@@ -486,11 +492,14 @@ int main(int argc, char** argv) {
 	if (benchmark_initialize() < 0)
 		return -2;
 
-	if ((argc < 5) || (argc > 6)) {
-		printf("Usage: benchmark <thread count> <mode> <cross rate> <min size> <max size>\n"
+	if ((argc < 8) || (argc > 9)) {
+		printf("Usage: benchmark <thread count> <mode> <size mode> <cross rate> <loops> <allocs> <min size> <max size>\n"
 		       "         <thread count>     Number of execution threads\n"
 		       "         <mode>             0 for random size [min, max], 1 for fixed size (min)\n"
+		       "         <size mode>        0 for even distribution, 1 for linear dropoff, 2 for exp dropoff\n"
 		       "         <cross rate>       Rate of cross-thread deallocations (every n iterations), 0 for none\n"
+		       "         <loops>            Number of loops in each iteration, default 8m\n"
+		       "         <allocs>           Number of concurrent allocations in each thread, default 16k\n"
 		       "         <min size>         Minimum size for random mode, fixed size for fixed mode\n"
 		       "         <max size>         Maximum size for random mode, ignored for fixed mode\n");
 		return -3;
@@ -498,9 +507,12 @@ int main(int argc, char** argv) {
 
 	size_t thread_count = (size_t)strtol(argv[1], 0, 10);
 	size_t mode = (size_t)strtol(argv[2], 0, 10);
-	size_t cross_rate = (size_t)strtol(argv[3], 0, 10);
-	size_t min_size = (size_t)strtol(argv[4], 0, 10);
-	size_t max_size = (argc > 5) ? (size_t)strtol(argv[5], 0, 10) : 0;
+	size_t size_mode = (size_t)strtol(argv[3], 0, 10);
+	size_t cross_rate = (size_t)strtol(argv[4], 0, 10);
+	size_t loop_count = (size_t)strtol(argv[5], 0, 10);
+	size_t alloc_count = (size_t)strtol(argv[6], 0, 10);
+	size_t min_size = (size_t)strtol(argv[7], 0, 10);
+	size_t max_size = (argc > 8) ? (size_t)strtol(argv[8], 0, 10) : 0;
 
 	if ((thread_count < 1) || (thread_count > 64)) {
 		printf("Invalid thread count: %s\n", argv[1]);
@@ -510,12 +522,20 @@ int main(int argc, char** argv) {
 		printf("Invalid mode: %s\n", argv[2]);
 		return -3;
 	}
+	if ((size_mode != SIZE_MODE_EVEN) && (size_mode != SIZE_MODE_LINEAR) && (size_mode != SIZE_MODE_EXP)) {
+		printf("Invalid size mode: %s\n", argv[3]);
+		return -3;
+	}
+	if (!loop_count || (loop_count > 0x00FFFFFF))
+		loop_count = 8*1024*1024;
+	if (!alloc_count || (alloc_count > 0x00FFFFFF))
+		alloc_count = 16*1024;
 	if ((mode == MODE_RANDOM) && (!max_size || (max_size < min_size))) {
-		printf("Invalid min/max size for random mode: %s %s\n", argv[3], (argc > 4) ? argv[4] : "<missing>");
+		printf("Invalid min/max size for random mode: %s %s\n", argv[7], (argc > 8) ? argv[8] : "<missing>");
 		return -3;
 	}
 	if ((mode == MODE_FIXED) && !min_size) {
-		printf("Invalid size for fixed mode: %s\n", argv[3]);
+		printf("Invalid size for fixed mode: %s\n", argv[7]);
 		return -3;
 	}
 
@@ -534,6 +554,13 @@ int main(int argc, char** argv) {
 		random_size_lin[ir] = (size_t)((double)random_size[(ir + 2) % random_size_count] * (w0 + w1) * 0.5);
 		random_size_exp[ir] = (size_t)((double)random_size[(ir + 2) % random_size_count] * (w0 * w1));
 	}
+
+	if (size_mode == SIZE_MODE_EVEN)
+		random_size_arr = random_size;
+	if (size_mode == SIZE_MODE_LINEAR)
+		random_size_arr = random_size_lin;
+	if (size_mode == SIZE_MODE_EXP)
+		random_size_arr = random_size_exp;
 
 	benchmark_arg* arg;
 	uintptr_t* thread_handle;
@@ -555,15 +582,19 @@ int main(int argc, char** argv) {
 
 	benchmark_start = 0;
 
-	if (mode == 0)
-		printf("Running %s %u threads alloc/free random size [%u,%u]: ",
-			    benchmark_name(),
-			    (unsigned int)thread_count, (unsigned int)min_size,
-			    (unsigned int)max_size);
+	if (mode == MODE_RANDOM)
+		printf("%s %u threads random %s size [%u,%u] %u loops %u allocs: ",
+		        benchmark_name(),
+		        (unsigned int)thread_count,
+		        (size_mode == SIZE_MODE_EVEN) ? "even" : ((size_mode == SIZE_MODE_LINEAR) ? "linear" : "exp"),
+		        (unsigned int)min_size, (unsigned int)max_size,
+		        (unsigned int)loop_count, (unsigned int)alloc_count);
 	else
-		printf("Running %s %u threads alloc/free fixed size [%u]: ",
-			    benchmark_name(),
-			    (unsigned int)thread_count, (unsigned int)min_size);
+		printf("%s %u threads fixed size [%u] %u loops %u allocs: ",
+		        benchmark_name(),
+		        (unsigned int)thread_count,
+		        (unsigned int)min_size,
+		        (unsigned int)loop_count, (unsigned int)alloc_count);
 	fflush(stdout);
 
 	size_t memory_usage = 0;
@@ -581,7 +612,10 @@ int main(int argc, char** argv) {
 			arg[ithread].numthreads = thread_count;
 			arg[ithread].index = ithread;
 			arg[ithread].mode = mode;
+			arg[ithread].size_mode = size_mode;
 			arg[ithread].cross_rate = cross_rate;
+			arg[ithread].loop_count = loop_count;
+			arg[ithread].alloc_count = alloc_count;
 			arg[ithread].min_size = min_size;
 			arg[ithread].max_size = max_size;
 			arg[ithread].thread_arg.fn = benchmark_worker;
