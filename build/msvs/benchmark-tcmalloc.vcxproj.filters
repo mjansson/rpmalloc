@@ -10,18 +10,6 @@
     <ClCompile Include="..\..\benchmark\gperftools\src\base\dynamic_annotations.c">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\benchmark\gperftools\src\fake_stacktrace_scope.cc">
-      <Filter>gperftools</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\benchmark\gperftools\src\heap-profile-table.cc">
-      <Filter>gperftools</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\benchmark\gperftools\src\windows\ia32_modrm_map.cc">
-      <Filter>gperftools</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\benchmark\gperftools\src\windows\ia32_opcode_map.cc">
-      <Filter>gperftools</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\benchmark\gperftools\src\internal_logging.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
@@ -40,19 +28,10 @@
     <ClCompile Include="..\..\benchmark\gperftools\src\memory_region_map.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\benchmark\gperftools\src\windows\mini_disassembler.cc">
-      <Filter>gperftools</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\benchmark\gperftools\src\page_heap.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
     <ClCompile Include="..\..\benchmark\gperftools\src\windows\port.cc">
-      <Filter>gperftools</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\benchmark\gperftools\src\windows\preamble_patcher.cc">
-      <Filter>gperftools</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\benchmark\gperftools\src\windows\preamble_patcher_with_stub.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
     <ClCompile Include="..\..\benchmark\gperftools\src\raw_printer.cc">
@@ -96,6 +75,9 @@
     <ClCompile Include="..\..\test\timer.c" />
     <ClCompile Include="..\..\benchmark\gperftools\benchmark.c" />
     <ClCompile Include="..\..\benchmark\gperftools\src\tcmalloc.cc">
+      <Filter>gperftools</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\benchmark\gperftools\src\fake_stacktrace_scope.cc">
       <Filter>gperftools</Filter>
     </ClCompile>
   </ItemGroup>

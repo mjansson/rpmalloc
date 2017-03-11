@@ -234,7 +234,7 @@ benchmark_worker(void* argptr) {
 		size_t iter_ticks_elapsed = 0;
 
 		for (size_t iloop = 0; iloop < num_loops; ++iloop) {
-			size_index = (iter * 3 + iloop * 7) % random_size_count;
+			size_index = ((arg->index + 1) * (iter * 3 + iloop * 7)) % random_size_count;
 
 			foreign = get_cross_thread_memory(&arg->foreign);
 
@@ -252,7 +252,7 @@ benchmark_worker(void* argptr) {
 				}
 				size_t size = arg->min_size;
 				if (arg->mode == MODE_RANDOM)
-					size += random_size[size_index];
+					size += random_size_lin[size_index];
 				pointers[alloc_idx] = benchmark_malloc(alignment[(size_index + iop) % 3], size);
 				*(int32_t*)pointers[alloc_idx] = (int32_t)size;
 				allocated += (int32_t)size;

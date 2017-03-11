@@ -86,7 +86,7 @@ DEALINGS IN THE SOFTWARE.
 
 #include "nedmalloc.h"
 #include <errno.h>
-#if defined(WIN32)
+#if defined(_WIN32)
  #include <malloc.h>
 #elif defined(__linux__) || defined(__FreeBSD__) || defined(__APPLE__)
 /* Sadly we can't include <malloc.h> as it causes a redefinition error */

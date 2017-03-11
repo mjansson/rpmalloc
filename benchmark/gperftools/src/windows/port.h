@@ -82,7 +82,7 @@
 #pragma warning(disable:4018 4244 4288 4267 4290 4996 4146)
 #endif
 
-#ifndef __cplusplus
+#if !defined(__cplusplus) && !defined(inline)
 /* MSVC does not support C99 */
 # if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 199901L
 #  ifdef _MSC_VER

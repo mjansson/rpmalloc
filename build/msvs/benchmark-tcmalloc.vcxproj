@@ -20,6 +20,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\benchmark\gperftools\benchmark.c" />
+    <ClCompile Include="..\..\benchmark\gperftools\src\fake_stacktrace_scope.cc" />
     <ClCompile Include="..\..\benchmark\gperftools\src\tcmalloc.cc" />
     <ClCompile Include="..\..\benchmark\main.c" />
     <ClCompile Include="..\..\test\thread.c" />
@@ -32,8 +33,6 @@
     <ClCompile Include="..\..\benchmark\gperftools\src\base\sysinfo.cc" />
     <ClCompile Include="..\..\benchmark\gperftools\src\central_freelist.cc" />
     <ClCompile Include="..\..\benchmark\gperftools\src\common.cc" />
-    <ClCompile Include="..\..\benchmark\gperftools\src\fake_stacktrace_scope.cc" />
-    <ClCompile Include="..\..\benchmark\gperftools\src\heap-profile-table.cc" />
     <ClCompile Include="..\..\benchmark\gperftools\src\internal_logging.cc" />
     <ClCompile Include="..\..\benchmark\gperftools\src\malloc_extension.cc" />
     <ClCompile Include="..\..\benchmark\gperftools\src\malloc_hook.cc" />
@@ -47,12 +46,7 @@
     <ClCompile Include="..\..\benchmark\gperftools\src\static_vars.cc" />
     <ClCompile Include="..\..\benchmark\gperftools\src\symbolize.cc" />
     <ClCompile Include="..\..\benchmark\gperftools\src\thread_cache.cc" />
-    <ClCompile Include="..\..\benchmark\gperftools\src\windows\ia32_modrm_map.cc" />
-    <ClCompile Include="..\..\benchmark\gperftools\src\windows\ia32_opcode_map.cc" />
-    <ClCompile Include="..\..\benchmark\gperftools\src\windows\mini_disassembler.cc" />
     <ClCompile Include="..\..\benchmark\gperftools\src\windows\port.cc" />
-    <ClCompile Include="..\..\benchmark\gperftools\src\windows\preamble_patcher.cc" />
-    <ClCompile Include="..\..\benchmark\gperftools\src\windows\preamble_patcher_with_stub.cc" />
     <ClCompile Include="..\..\benchmark\gperftools\src\windows\system-alloc.cc" />
   </ItemGroup>
   <ItemGroup>

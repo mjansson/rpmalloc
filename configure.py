@@ -27,7 +27,7 @@ generator.bin(module = 'nedmalloc', sources = ['benchmark.c', 'nedmalloc.c'], bi
 
 platform_includepaths = [os.path.join('benchmark', 'ptmalloc3')]
 if target.is_windows():
-	platform_includepaths += [os.path.join('benchmark', 'ptmalloc3', 'sysdeps', 'window')]
+	platform_includepaths += [os.path.join('benchmark', 'ptmalloc3', 'sysdeps', 'windows')]
 else:
 	platform_includepaths += [os.path.join('benchmark', 'ptmalloc3', 'sysdeps', 'pthread')]
 generator.bin(module = 'ptmalloc3', sources = ['benchmark.c', 'ptmalloc3.c', 'malloc.c'], binname = 'benchmark-ptmalloc3', basepath = 'benchmark', implicit_deps = [benchmark_lib, test_lib], libs = ['benchmark', 'test'], includepaths = includepaths + platform_includepaths, externalsources = True)
@@ -70,14 +70,15 @@ if not target.is_windows():
 	gperftoolsbasesources += ['thread_lister.c']
 gperftoolsbasesources = [os.path.join('src', 'base', path) for path in gperftoolsbasesources]
 gperftoolssources = [
-	'central_freelist.cc', 'common.cc', 'heap-checker-bcad.cc',
-	'heap-checker.cc', 'heap-profile-table.cc', 'heap-profiler.cc', 'internal_logging.cc',
+	'central_freelist.cc', 'common.cc', 'fake_stacktrace_scope.cc', 'internal_logging.cc',
 	'malloc_extension.cc', 'malloc_hook.cc', 'memfs_malloc.cc', 'memory_region_map.cc',
-	'page_heap.cc', 'raw_printer.cc', 'stacktrace.cc', 'sampler.cc', 'stack_trace_table.cc',
-	'static_vars.cc', 'span.cc', 'symbolize.cc', 'system-alloc.cc', 'tcmalloc.cc', 'thread_cache.cc'
+	'page_heap.cc', 'raw_printer.cc', 'sampler.cc',  'stacktrace.cc', 'stack_trace_table.cc',
+	'static_vars.cc', 'span.cc', 'symbolize.cc', 'tcmalloc.cc', 'thread_cache.cc'
 ]
 if not target.is_windows():
-	gperftoolssources += ['emergency_malloc_for_stacktrace.cc', 'maybe_threads.cc']
+	gperftoolssources += ['maybe_threads.cc', 'system-alloc.cc']
+if target.is_windows():
+	gperftoolssources += [os.path.join('windows', 'port.cc'), os.path.join('windows', 'system-alloc.cc')]
 gperftoolssources = [os.path.join('src', path) for path in gperftoolssources]
 gperftools_lib = generator.lib(module = 'gperftools', sources = gperftoolsbasesources + gperftoolssources, basepath = 'benchmark', includepaths = includepaths + gperftoolsincludepaths, externalsources = True)
 gperftools_depend_libs = ['gperftools', 'benchmark', 'test']

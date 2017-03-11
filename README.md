@@ -24,7 +24,7 @@ We believe rpmalloc is faster than most popular memory allocators like tcmalloc,
 
 Contained in the repository is a benchmark utility that performs interleaved allocations (both aligned to 8 or 16 bytes, and unaligned) and deallocations (both in-thread and cross-thread) in multiple threads. It measures number of memory operations performed per CPU second, as well as memory overhead by comparing the virtual memory mapped with the number of bytes requested in allocation calls. The setup of number of thread, cross-thread deallocation rate and allocation size limits is configured by command line arguments.
 
-Below is comparison charts of performance and memory overhead of rpmalloc and other popular allocator implementations.
+Below is comparison charts of performance of rpmalloc and other popular allocator implementations.
 
 ![Windows random [16, 1000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=137567195&format=image)
 
@@ -34,3 +34,8 @@ Below is comparison charts of performance and memory overhead of rpmalloc and ot
 
 The benchmarks producing these numbers were run on a Windows 10 machine with 8 logical cores (4 physical, HT). The actual numbers are not to be interpreted as absolute performance figures, but rather as relative comparisons between the different allocators.
 
+# Implementation details
+...
+
+# Caveats
+...
