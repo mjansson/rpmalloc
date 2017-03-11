@@ -261,6 +261,9 @@ benchmark_worker(void* argptr) {
 					size += random_size_arr[size_index];
 				pointers[alloc_idx] = benchmark_malloc(alignment[(size_index + iop) % 3], size);
 				*(int32_t*)pointers[alloc_idx] = (int32_t)size;
+				//Make sure to write to each page to commit it for measuring memory usage
+				for (size_t page = 1; page < size / 4096; ++page)
+						*((int32_t*)(pointers[alloc_idx]) + (page * 1024)) = (int32_t)size;
 				allocated += (int32_t)size;
 				++arg->mops;
 
@@ -291,6 +294,8 @@ benchmark_worker(void* argptr) {
 					size += random_size_arr[(size_index + 2) % random_size_count];
 				pointers[alloc_idx] = benchmark_malloc(alignment[(size_index + iop) % 3], size);
 				*(int32_t*)pointers[alloc_idx] = (int32_t)size;
+				for (size_t page = 1; page < size / 4096; ++page)
+						*((int32_t*)(pointers[alloc_idx]) + (page * 1024)) = (int32_t)size;
 				allocated += (int32_t)size;
 				++arg->mops;
 
@@ -330,6 +335,8 @@ benchmark_worker(void* argptr) {
 						size += random_size_arr[(size_index + 2) % random_size_count];
 					foreign->pointers[iop] = benchmark_malloc(alignment[(size_index + iop) % 3], size);
 					*(int32_t*)foreign->pointers[iop] = (int32_t)size;
+					for (size_t page = 1; page < size / 4096; ++page)
+						*((int32_t*)(foreign->pointers[iop]) + (page * 1024)) = (int32_t)size;
 					allocated += (int32_t)size;
 					++arg->mops;
 

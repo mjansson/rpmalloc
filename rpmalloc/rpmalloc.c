@@ -388,7 +388,7 @@ _memory_global_cache_extract(size_t page_count) {
 
 static void
 _memory_global_cache_large_insert(span_t* first_span, size_t list_size, size_t span_count) {
-	/*while (1) {
+	while (1) {
 		void* global_span_ptr = atomic_load_ptr(&_memory_large_cache[span_count - 1]);
 		if (global_span_ptr != SPAN_LIST_LOCK_TOKEN) {
 			uintptr_t global_list_size = (uintptr_t)global_span_ptr & ~SPAN_MASK;
@@ -417,7 +417,7 @@ _memory_global_cache_large_insert(span_t* first_span, size_t list_size, size_t s
 			thread_yield();
 			atomic_thread_fence_acquire();
 		}
-	}*/
+	}
 
 	//Global cache full, release pages
 	for (size_t ispan = 0; ispan < list_size; ++ispan) {
