@@ -103,7 +103,7 @@ class ClangToolchain(toolchain.Toolchain):
     self.build_toolchain()
 
     self.cflags += ['-std=c11']
-    self.cxxflags += ['-std=c++11'] #, '-stdlib=libc++']
+    self.cxxflags += ['-std=c++11', '-stdlib=libc++']
 
     self.cexternflags = []
     self.cxxexternflags = []
