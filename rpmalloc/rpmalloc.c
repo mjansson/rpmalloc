@@ -422,9 +422,9 @@ _memory_global_cache_large_insert(span_t* span_list, size_t list_size, size_t sp
 
 	//Global cache full, release pages
 	for (size_t ispan = 0; ispan < list_size; ++ispan) {
-		span_t* next_span = first_span->next_span;
-		_memory_unmap(first_span, span_count * SPAN_MAX_PAGE_COUNT);
-		first_span = next_span;
+		span_t* next_span = span_list->next_span;
+		_memory_unmap(span_list, span_count * SPAN_MAX_PAGE_COUNT);
+		span_list = next_span;
 	}
 }
 
@@ -600,6 +600,7 @@ _memory_allocate_large_from_heap(heap_t* heap, size_t size) {
 		span->data.span_count = (uint32_t)(idx + 1);
 	}
 	else {
+		idx = num_spans - 1; //Restore index, we're back to smallest fitting span count
 		span = _memory_global_cache_large_extract(num_spans);
 		if (span) {
 			if (span->data.list_size > 1) {
