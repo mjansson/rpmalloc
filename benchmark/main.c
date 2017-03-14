@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 #define MODE_RANDOM 0
 #define MODE_FIXED  1
@@ -560,7 +561,7 @@ int main(int argc, char** argv) {
 	for (size_t ir = 0; ir < sizeof(random_size) / sizeof(random_size[0]); ++ir) {
 		double w0 = 1.0 - (double)random_size[ir] / (double)size_range;
 		double w1 = 1.0 - (double)random_size[(ir + 1) % random_size_count] / (double)size_range;
-		random_size_lin[ir] = (size_t)((double)random_size[(ir + 2) % random_size_count] * (w0 + w1) * 0.5);
+		random_size_lin[ir] = (size_t)((double)random_size[(ir + 2) % random_size_count] * fabs((w0 + w1) - 1.0));
 		random_size_exp[ir] = (size_t)((double)random_size[(ir + 2) % random_size_count] * (w0 * w1));
 	}
 
