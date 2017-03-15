@@ -219,7 +219,7 @@ benchmark_worker(void* argptr) {
 	size_t alloc_idx = 0;
 	size_t free_idx = 0;
 	size_t iop;
-	size_t tick_start, ticks_elapsed;
+	uint64_t tick_start, ticks_elapsed;
 	int32_t allocated;
 	size_t cross_index = 0;
 	int aborted = 0;

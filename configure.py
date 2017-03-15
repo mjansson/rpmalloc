@@ -23,7 +23,8 @@ benchmark_lib = generator.lib(module = 'benchmark', sources = ['main.c'], includ
 #Build one binary per benchmark
 generator.bin(module = 'rpmalloc', sources = ['benchmark.c'], binname = 'benchmark-rpmalloc', basepath = 'benchmark', implicit_deps = [benchmark_lib, test_lib, rpmalloc_lib], libs = ['benchmark', 'test', 'rpmalloc'], includepaths = includepaths)
 generator.bin(module = 'crt', sources = ['benchmark.c'], binname = 'benchmark-crt', basepath = 'benchmark', implicit_deps = [benchmark_lib, test_lib], libs = ['benchmark', 'test'], includepaths = includepaths)
-generator.bin(module = 'nedmalloc', sources = ['benchmark.c', 'nedmalloc.c'], binname = 'benchmark-nedmalloc', basepath = 'benchmark', implicit_deps = [benchmark_lib, test_lib], libs = ['benchmark', 'test'], includepaths = includepaths, externalsources = True)
+if not target.is_android():
+	generator.bin(module = 'nedmalloc', sources = ['benchmark.c', 'nedmalloc.c'], binname = 'benchmark-nedmalloc', basepath = 'benchmark', implicit_deps = [benchmark_lib, test_lib], libs = ['benchmark', 'test'], includepaths = includepaths, externalsources = True)
 
 platform_includepaths = [os.path.join('benchmark', 'ptmalloc3')]
 if target.is_windows():
@@ -53,9 +54,10 @@ elif target.is_windows():
 	hoardsources += ['source/wintls.cpp']
 else:
 	hoardsources += ['source/unixtls.cpp']
-hoard_lib = generator.lib(module = 'hoard', sources = hoardsources, basepath = 'benchmark', includepaths = includepaths + hoardincludepaths, externalsources = True)
-hoard_depend_libs = ['hoard', 'benchmark', 'test']
-generator.bin(module = 'hoard', sources = ['benchmark.c'], binname = 'benchmark-hoard', basepath = 'benchmark', implicit_deps = [hoard_lib, benchmark_lib, test_lib], libs = hoard_depend_libs, includepaths = includepaths, variables = {'runtime': 'c++'})
+if not target.is_android():
+	hoard_lib = generator.lib(module = 'hoard', sources = hoardsources, basepath = 'benchmark', includepaths = includepaths + hoardincludepaths, externalsources = True)
+	hoard_depend_libs = ['hoard', 'benchmark', 'test']
+	generator.bin(module = 'hoard', sources = ['benchmark.c'], binname = 'benchmark-hoard', basepath = 'benchmark', implicit_deps = [hoard_lib, benchmark_lib, test_lib], libs = hoard_depend_libs, includepaths = includepaths, variables = {'runtime': 'c++'})
 
 gperftoolsincludepaths = [
 	os.path.join('benchmark', 'gperftools', 'src'),
@@ -80,6 +82,7 @@ if not target.is_windows():
 if target.is_windows():
 	gperftoolssources += [os.path.join('windows', 'port.cc'), os.path.join('windows', 'system-alloc.cc')]
 gperftoolssources = [os.path.join('src', path) for path in gperftoolssources]
-gperftools_lib = generator.lib(module = 'gperftools', sources = gperftoolsbasesources + gperftoolssources, basepath = 'benchmark', includepaths = includepaths + gperftoolsincludepaths, externalsources = True)
-gperftools_depend_libs = ['gperftools', 'benchmark', 'test']
-generator.bin(module = 'gperftools', sources = ['benchmark.c'], binname = 'benchmark-tcmalloc', basepath = 'benchmark', implicit_deps = [gperftools_lib, benchmark_lib, test_lib], libs = gperftools_depend_libs, includepaths = includepaths, variables = {'runtime': 'c++'})
+if not target.is_android():
+	gperftools_lib = generator.lib(module = 'gperftools', sources = gperftoolsbasesources + gperftoolssources, basepath = 'benchmark', includepaths = includepaths + gperftoolsincludepaths, externalsources = True)
+	gperftools_depend_libs = ['gperftools', 'benchmark', 'test']
+	generator.bin(module = 'gperftools', sources = ['benchmark.c'], binname = 'benchmark-tcmalloc', basepath = 'benchmark', implicit_deps = [gperftools_lib, benchmark_lib, test_lib], libs = gperftools_depend_libs, includepaths = includepaths, variables = {'runtime': 'c++'})
