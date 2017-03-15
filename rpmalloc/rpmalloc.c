@@ -14,9 +14,9 @@
 // Build time configurable limits
 
 //! Limit of thread cache for each page count class (undefine for unlimited cache - i.e never release spans to global cache unless thread finishes)
-#define THREAD_SPAN_CACHE_LIMIT(page_count)   ((128*1024) * page_count)
+#define THREAD_SPAN_CACHE_LIMIT(page_count)   ((312*1024) * page_count)
 //! Limit of global cache for each page count class (undefine for unlimited cache - i.e never free mapped pages)
-#define GLOBAL_SPAN_CACHE_LIMIT(page_count)   ((2*1024*1024) * page_count)
+#define GLOBAL_SPAN_CACHE_LIMIT(page_count)   ((4*1024*1024) * page_count)
 //! Limit of thread cache for each large span count class (undefine for unlimited cache - i.e never release spans to global cache unless thread finishes)
 #define THREAD_LARGE_CACHE_LIMIT(span_count)  (70 - (span_count * 2))
 //! Limit of global cache for each large span count class (undefine for unlimited cache - i.e never free mapped pages)
