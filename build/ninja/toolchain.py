@@ -10,7 +10,6 @@ import random
 import string
 import json
 import zlib
-import version
 import android
 import xcode
 
@@ -114,7 +113,6 @@ class Toolchain(object):
 
   def initialize_project(self, project):
     self.project = project
-    version.generate_version(self.project, self.project)
 
   def initialize_archs(self, archs):
     self.archs = list(archs)
@@ -151,7 +149,7 @@ class Toolchain(object):
       self.initialize_default_configs()
 
   def initialize_default_configs(self):
-    self.configs = ['debug', 'release', 'profile', 'deploy']
+    self.configs = ['debug', 'release']
 
   def initialize_toolchain(self):
     if self.android != None:

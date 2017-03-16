@@ -25,7 +25,7 @@ class Generator(object):
                         choices = toolchain.supported_toolchains())
     parser.add_argument('-c', '--config', action = 'append',
                         help = 'Build configuration',
-                        choices = ['debug', 'release', 'profile', 'deploy'],
+                        choices = ['debug', 'release'],
                         default = [])
     parser.add_argument('-a', '--arch', action = 'append',
                         help = 'Add architecture',
