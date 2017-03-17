@@ -32,13 +32,17 @@ Below is an example performance comparison chart of rpmalloc and other popular a
 
 The benchmark producing these numbers were run on a Windows 10 machine with 8 logical cores (4 physical, HT). The actual numbers are not to be interpreted as absolute performance figures, but rather as relative comparisons between the different allocators. For additional benchmark results, see the [BENCHMARKS](BENCHMARKS.md) file.
 
+Configuration of the thread and global caches can be important depending on your use pattern. See [CACHE](CACHE.md) for a case study and some comments/guidelines.
+
 # Using
 The easiest way to use the library is simply adding rpmalloc.[h|c] to your project and compile them along with your sources. If you want to build it as a separate static library see the Building section below.
 
 We do not provide internal hooks to process and/or thread creation at the moment. You are required to call these functions from your own code in order to initialize and finalize the allocator in your process and threads:
 
 __rpmalloc_initialize__ : Call at process start to initialize the allocator
+
 __rpmalloc_finalize__: Call at process exit to finalize the allocator
+
 __rpmalloc_thread_finalize__: Call at each thread exit to finalize and release thread cache back to global cache
 
 Then simply use the __rpmalloc__/__rpfree__ and the other malloc style replacement functions. Remember all allocations are 16-byte aligned, so no need to call the explicit rpmemalign/rpaligned_alloc/rpposix_memalign functions, they are simply wrappers to make it easier to replace in existing code.
