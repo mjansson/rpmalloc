@@ -704,7 +704,7 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 		if (block_data->free_count > 0)
 			_memory_list_remove(&heap->size_cache[class_idx], span);
 
-#if defined(THREAD_SPAN_CACHE_LIMIT) && (THREAD_SPAN_CACHE_LIMIT == 0)
+#if defined(THREAD_SPAN_CACHE_LIMIT) && (THREAD_SPAN_CACHE_LIMIT(1) == 0)
 		_memory_global_cache_insert(span, 1, size_class->page_count);
 #else
 		//Add to span cache
@@ -756,7 +756,8 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 
 static void
 _memory_deallocate_large_to_heap(heap_t* heap, span_t* span) {
-#if defined(THREAD_LARGE_CACHE_LIMIT) && (THREAD_LARGE_CACHE_LIMIT == 0)
+#if defined(THREAD_LARGE_CACHE_LIMIT) && (THREAD_LARGE_CACHE_LIMIT(1) == 0)
+	(void)sizeof(heap);
 	_memory_global_cache_large_insert(span, 1, span->data.span_count);
 #else
 	size_t idx = span->data.span_count - 1;
