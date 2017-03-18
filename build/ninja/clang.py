@@ -350,6 +350,8 @@ class ClangToolchain(toolchain.Toolchain):
     flags = []
     if targettype == 'sharedlib':
       flags += ['-DBUILD_DYNAMIC_LINK=1']
+      if self.target.is_linux():
+        flags += ['-fPIC']
     flags += self.make_targetarchflags(arch, targettype)
     return flags
 
@@ -397,7 +399,10 @@ class ClangToolchain(toolchain.Toolchain):
         flags += ['-Xlinker', '/SUBSYSTEM:CONSOLE']
     else:
       if targettype == 'sharedlib':
-        flags += ['-dynamiclib']
+        if self.target.is_macosx() or self.target.is_ios():
+          flags += ['-dynamiclib']
+        else:
+          flags += ['-shared']
     return flags
 
   def make_linkarchlibs(self, arch, targettype):

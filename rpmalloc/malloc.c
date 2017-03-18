@@ -70,6 +70,8 @@ posix_memalign(void** memptr, size_t alignment, size_t size) {
 
 #ifdef _WIN32
 
+//TODO
+
 #else
 
 #include <pthread.h>
@@ -113,33 +115,6 @@ thread_destructor(void* value) {
 	rpmalloc_thread_finalize();
 }
 
-/*
-extern int
-pthread_create(pthread_t* thread,
-               const pthread_attr_t* attr,
-               void* (*start_routine)(void*),
-               void* arg);
-
-extern int
-pthread_create(pthread_t* thread,
-               const pthread_attr_t* attr,
-               void* (*start_routine)(void*),
-               void* arg) {
-#if defined(__linux__) || defined(__APPLE__)
-	char fname[] = "pthread_create";
-#else
-	char fname[] = "_pthread_create";
-#endif
-
-	void* real_pthread_create = dlsym(RTLD_NEXT, fname);
-	rpmalloc_thread_initialize();
-	thread_starter_arg* starter_arg = rpmalloc(sizeof(thread_starter_arg));
-	starter_arg->real_start = start_routine;
-	starter_arg->real_arg = arg;
-	return (*(int (*)(pthread_t*, const pthread_attr_t*, void* (*)(void*), void*))real_pthread_create)(thread, attr, thread_starter, starter_arg);
-}*/
-
-
 #ifdef __APPLE__
 
 static int
@@ -165,6 +140,28 @@ __attribute__ ((section("__DATA, __interpose"))) = \
 	{ (void *) newf, (void *) oldf }
 
 MAC_INTERPOSE(pthread_create_proxy, pthread_create);
+
+#else
+
+#include <dlfcn.h>
+
+int
+pthread_create(pthread_t* thread,
+               const pthread_attr_t* attr,
+               void* (*start_routine)(void*),
+               void* arg) {
+#if defined(__linux__) || defined(__APPLE__)
+	char fname[] = "pthread_create";
+#else
+	char fname[] = "_pthread_create";
+#endif
+	void* real_pthread_create = dlsym(RTLD_NEXT, fname);
+	rpmalloc_thread_initialize();
+	thread_starter_arg* starter_arg = rpmalloc(sizeof(thread_starter_arg));
+	starter_arg->real_start = start_routine;
+	starter_arg->real_arg = arg;
+	return (*(int (*)(pthread_t*, const pthread_attr_t*, void* (*)(void*), void*))real_pthread_create)(thread, attr, thread_starter, starter_arg);
+}
 
 #endif
 
