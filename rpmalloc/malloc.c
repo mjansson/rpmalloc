@@ -32,6 +32,8 @@ memalign(size_t alignment, size_t size);
 extern int
 posix_memalign(void** memptr, size_t alignment, size_t size);
 
+extern size_t
+malloc_usable_size(void* ptr);
 
 void*
 calloc(size_t count, size_t size) {
@@ -66,6 +68,11 @@ memalign(size_t alignment, size_t size) {
 int
 posix_memalign(void** memptr, size_t alignment, size_t size) {
 	return rpposix_memalign(memptr, alignment, size);
+}
+
+size_t
+malloc_usable_size(void* ptr) {
+	return rpmalloc_usable_size(ptr);
 }
 
 #ifdef _WIN32

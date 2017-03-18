@@ -870,9 +870,8 @@ _memory_deallocate(void* p) {
 
 static void*
 _memory_reallocate(void* p, size_t size, size_t oldsize) {
-	span_t* span = 0;
 	if (p) {
-		span = (void*)((uintptr_t)p & SPAN_MASK);
+		span_t* span = (void*)((uintptr_t)p & SPAN_MASK);
 		int32_t heap_id = atomic_load32(&span->heap_id);
 		if (heap_id) {
 			if (span->size_class < SIZE_CLASS_COUNT) {
@@ -892,7 +891,7 @@ _memory_reallocate(void* p, size_t size, size_t oldsize) {
 				if ((current_spans >= num_spans) && (num_spans >= (current_spans / 2)))
 					return p; //Still fits and less than half of memory would be freed
 				if (!oldsize)
-					oldsize = current_spans * (size_t)SPAN_MAX_SIZE;
+					oldsize = (current_spans * (size_t)SPAN_MAX_SIZE) - SPAN_HEADER_SIZE;
 			}
 		}
 		else {
@@ -906,7 +905,7 @@ _memory_reallocate(void* p, size_t size, size_t oldsize) {
 			if ((current_pages >= num_pages) && (num_pages >= (current_pages / 2)))
 				return p; //Still fits and less than half of memory would be freed
 			if (!oldsize)
-				oldsize = current_pages * (size_t)PAGE_SIZE;
+				oldsize = (current_pages * (size_t)PAGE_SIZE) - SPAN_HEADER_SIZE;
 		}
 	}
 
@@ -917,6 +916,27 @@ _memory_reallocate(void* p, size_t size, size_t oldsize) {
 	}
 
 	return block;
+}
+
+static size_t
+_memory_usable_size(void* p) {
+	span_t* span = (void*)((uintptr_t)p & SPAN_MASK);
+	int32_t heap_id = atomic_load32(&span->heap_id);
+	if (heap_id) {
+		if (span->size_class < SIZE_CLASS_COUNT) {
+			size_class_t* size_class = _memory_size_class + span->size_class;
+			return size_class->size;
+		}
+
+		//Large span
+		size_t current_spans = span->data.span_count;
+		return (current_spans * (size_t)SPAN_MAX_SIZE) - SPAN_HEADER_SIZE;
+	}
+
+	//Oversized block
+	//Page count is stored in next_span
+	size_t current_pages = (size_t)span->next_span;
+	return (current_pages * (size_t)PAGE_SIZE) - SPAN_HEADER_SIZE;
 }
 
 static void
@@ -1266,33 +1286,37 @@ rprealloc(void* ptr, size_t size) {
 
 void*
 rpaligned_alloc(size_t alignment, size_t size) {
-	if (alignment > 16)
-		return 0;
-	return _memory_allocate(size);
+	if (alignment <= 16)
+		return _memory_allocate(size);
+
+	void* ptr = _memory_allocate(size + alignment);
+	if ((uintptr_t)ptr & (alignment - 1))
+		ptr = (void*)(((uintptr_t)ptr & ~((uintptr_t)alignment - 1)) + alignment);
+	return ptr;
 }
 
 void*
 rpmemalign(size_t alignment, size_t size) {
-	if (alignment > 16)
-		return 0;
-	return _memory_allocate(size);
+	return rpaligned_alloc(alignment, size);
 }
 
 int
 rpposix_memalign(void **memptr, size_t alignment, size_t size) {
-	if (!memptr || (alignment > 16))
+	if (memptr)
+		*memptr = rpaligned_alloc(alignment, size);
+	else
 		return EINVAL;
-	*memptr = _memory_allocate(size);
-	if (*memptr)
-		return 0;
-	return ENOMEM;
+	return *memptr ? 0 : ENOMEM;
+}
+
+size_t
+rpmalloc_usable_size(void* ptr) {
+	return ptr ? _memory_usable_size(ptr) : 0;
 }
 
 void
 rpmalloc_thread_collect(void) {
-	heap_t* heap = _memory_thread_heap;
-	if (heap)
-		_memory_deallocate_deferred(heap, 0);
+	_memory_deallocate_deferred(_memory_thread_heap, 0);
 }
 
 rpmalloc_thread_statistics_t
@@ -1300,33 +1324,31 @@ rpmalloc_thread_statistics(void) {
 	rpmalloc_thread_statistics_t stats;
 	memset(&stats, 0, sizeof(stats));
 	heap_t* heap = _memory_thread_heap;
-	if (heap) {
 #if ENABLE_STATISTICS
-		stats.allocated = heap->allocated;
+	stats.allocated = heap->allocated;
 #endif
-		void* p = atomic_load_ptr(&heap->defer_deallocate);
-		while (p) {
-			void* next = *(void**)p;
-			span_t* span = (void*)((uintptr_t)p & SPAN_MASK);
-			stats.deferred += _memory_size_class[span->size_class].size;
-			p = next;
-		}
+	void* p = atomic_load_ptr(&heap->defer_deallocate);
+	while (p) {
+		void* next = *(void**)p;
+		span_t* span = (void*)((uintptr_t)p & SPAN_MASK);
+		stats.deferred += _memory_size_class[span->size_class].size;
+		p = next;
+	}
 
-		for (size_t isize = 0; isize < SIZE_CLASS_COUNT; ++isize) {
-			if (heap->active_block[isize].free_count)
-				stats.active += heap->active_block[isize].free_count * _memory_size_class[heap->active_span[isize]->size_class].size;
+	for (size_t isize = 0; isize < SIZE_CLASS_COUNT; ++isize) {
+		if (heap->active_block[isize].free_count)
+			stats.active += heap->active_block[isize].free_count * _memory_size_class[heap->active_span[isize]->size_class].size;
 
-			span_t* cache = heap->size_cache[isize];
-			while (cache) {
-				stats.sizecache = cache->data.block.free_count * _memory_size_class[cache->size_class].size;
-				cache = cache->next_span;
-			}
+		span_t* cache = heap->size_cache[isize];
+		while (cache) {
+			stats.sizecache = cache->data.block.free_count * _memory_size_class[cache->size_class].size;
+			cache = cache->next_span;
 		}
+	}
 
-		for (size_t isize = 0; isize < SPAN_CLASS_COUNT; ++isize) {
-			if (heap->span_cache[isize])
-				stats.spancache = (size_t)heap->span_cache[isize]->data.list_size * (isize + 1) * PAGE_SIZE;
-		}
+	for (size_t isize = 0; isize < SPAN_CLASS_COUNT; ++isize) {
+		if (heap->span_cache[isize])
+			stats.spancache = (size_t)heap->span_cache[isize]->data.list_size * (isize + 1) * PAGE_SIZE;
 	}
 	return stats;
 }
