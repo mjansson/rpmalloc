@@ -32,6 +32,9 @@ extern void
 rpmalloc_finalize(void);
 
 extern void
+rpmalloc_thread_initialize(void);
+
+extern void
 rpmalloc_thread_finalize(void);
 
 extern void
