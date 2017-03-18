@@ -15,4 +15,4 @@ writer = generator.writer
 toolchain = generator.toolchain
 
 rpmalloc_lib = generator.lib(module = 'rpmalloc', sources = ['rpmalloc.c'])
-
+rpmalloc_so = generator.sharedlib(module = 'rpmalloc', sources = ['rpmalloc.c', 'malloc.c'])
