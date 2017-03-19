@@ -19,6 +19,7 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\rpmalloc\malloc.c" />
     <ClCompile Include="..\..\rpmalloc\rpmalloc.c" />
   </ItemGroup>
   <ItemGroup>
