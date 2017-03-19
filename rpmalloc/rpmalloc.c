@@ -947,7 +947,6 @@ _memory_adjust_size_class(size_t iclass) {
 	size_t header_size = SPAN_HEADER_SIZE;
 	size_t remain_size, block_count, wasted, overhead;
 	float current_factor;
-	float best_factor = 0;
 	size_t best_page_count = 0;
 	size_t best_block_count = 0;
 	size_t page_size_counter = 0;
@@ -966,7 +965,6 @@ _memory_adjust_size_class(size_t iclass) {
 		overhead = wasted + header_size;
 		current_factor = (float)overhead / ((float)block_count * (float)block_size);
 		if (block_count > best_block_count) {
-			best_factor = current_factor;
 			best_page_count = page_size_counter;
 			best_block_count = block_count;
 		}
