@@ -43,6 +43,8 @@ __rpmalloc_initialize__ : Call at process start to initialize the allocator
 
 __rpmalloc_finalize__: Call at process exit to finalize the allocator
 
+__rpmalloc_thread_initialize__: Call at each thread start to initialize the thread local data for the allocator
+
 __rpmalloc_thread_finalize__: Call at each thread exit to finalize and release thread cache back to global cache
 
 Then simply use the __rpmalloc__/__rpfree__ and the other malloc style replacement functions. Remember all allocations are 16-byte aligned, so no need to call the explicit rpmemalign/rpaligned_alloc/rpposix_memalign functions, they are simply wrappers to make it easier to replace in existing code.
@@ -67,3 +69,5 @@ Large blocks, or super spans, are cached in two levels. The first level is a per
 Cross-thread deallocations are more costly than in-thread deallocations, since the spans are completely owned by the allocating thread. The free operation will be deferred using an atomic list operation and the actual free operation will be performed when the owner thread requires a new block of the corresponding size class.
 
 VirtualAlloc has an internal granularity of 64KiB. However, mmap lacks this granularity control, and the implementation instead keeps track and atomically increases a running address counter of where memory pages should be mapped to in the virtual address range. If some other code in the process uses mmap to reserve a part of virtual memory spance this counter needs to catch up and resync in order to keep the 64KiB granularity of span addresses, which could potentially be time consuming.
+
+The free, realloc and usable size functions all require the passed pointer to be within the first 64KiB page block of the start of the memory block. You cannot pass in any pointer from the memory block address range.

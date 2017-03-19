@@ -1,0 +1,17 @@
+1.1
+
+Require thread initialization with rpmalloc_thread_initialize
+
+Added rpmalloc_usable_size query entry point
+
+Fix invalid old size in memory copy during realloc
+
+Provide malloc entry point replacements and automatic init/fini hooks,
+and a LD_PRELOAD:able dynamic library build
+
+Move benchmarks to separate repo, https://github.com/rampantpixels/rpmalloc-benchmark
+
+
+1.0
+
+Initial release
