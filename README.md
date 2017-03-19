@@ -17,7 +17,7 @@ This library is put in the public domain; you can redistribute it and/or modify 
 
 Please consider our Patreon to support our work - https://www.patreon.com/rampantpixels
 
-Created by Mattias Jansson / Rampant Pixels  -  http://www.rampantpixels.com
+Created by Mattias Jansson ([@maniccoder](https://twitter.com/maniccoder)) / Rampant Pixels - http://www.rampantpixels.com
 
 # Performance
 We believe rpmalloc is faster than most popular memory allocators like tcmalloc, hoard, ptmalloc3 and others without causing extra allocated memory overhead in the thread caches. We also believe the implementation to be easier to read and modify compared to these allocators, as it is a single source file of ~1300 lines of C code.
