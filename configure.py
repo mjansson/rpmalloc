@@ -14,6 +14,6 @@ target = generator.target
 writer = generator.writer
 toolchain = generator.toolchain
 
-rpmalloc_lib = generator.lib(module = 'rpmalloc', sources = ['rpmalloc.c', 'malloc.c])
+rpmalloc_lib = generator.lib(module = 'rpmalloc', sources = ['rpmalloc.c', 'malloc.c'])
 if not target.is_windows():
 	rpmalloc_so = generator.sharedlib(module = 'rpmalloc', sources = ['rpmalloc.c', 'malloc.c'])
