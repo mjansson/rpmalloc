@@ -1328,10 +1328,9 @@ rpcalloc(size_t num, size_t size) {
 void*
 rprealloc(void* ptr, size_t size) {
 #if ENABLE_VALIDATE_ARGS
-	if (size > MAX_ALLOC_SIZE) {
-		_memory_deallocate(ptr);
+	if (size >= MAX_ALLOC_SIZE) {
 		errno = EINVAL;
-		return 0;
+		return ptr;
 	}
 #endif
 	return _memory_reallocate(ptr, size, 0);
