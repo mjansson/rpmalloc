@@ -13,20 +13,23 @@
 
 // Build time configurable limits
 //#define ENABLE_UNLIMITED_CACHE
+//#define DISABLE_CACHE
 //#define ENABLE_SPACE_PRIORITY_CACHE
 
 // Presets for cache limits
 #if defined(ENABLE_UNLIMITED_CACHE)
 // Leave all undefined -> unlimited caches
+#elif defined(DISABLE_CACHE)
+#define THREAD_SPAN_CACHE_LIMIT(page_count, active_threads)   (((page_count)*0) + ((active_threads)*0))
+#define GLOBAL_SPAN_CACHE_LIMIT(page_count, active_threads)   (((page_count)*0) + ((active_threads)*0))
+#define THREAD_LARGE_CACHE_LIMIT(span_count)  ((span_count)*0)
+#define GLOBAL_LARGE_CACHE_LIMIT(span_count)  ((span_count)*0)
 #elif defined(ENABLE_SPACE_PRIORITY_CACHE)
 // Space priority cache limits
-#define THREAD_SPAN_CACHE_LIMIT(page_count, active_threads)   (4 + (((page_count)/16) * 4) + (active_threads*0))
-//! Limit of global cache in number of spans for each page count class (undefine for unlimited cache - i.e never free mapped pages)
-#define GLOBAL_SPAN_CACHE_LIMIT(page_count, active_threads)   (8 + (((page_count)/16) * 8) + (active_threads*0))
-//! Limit of thread cache for each large span count class (undefine for unlimited cache - i.e never release spans to global cache unless thread finishes)
-#define THREAD_LARGE_CACHE_LIMIT(span_count)  (2)
-//! Limit of global cache for each large span count class (undefine for unlimited cache - i.e never free mapped pages)
-#define GLOBAL_LARGE_CACHE_LIMIT(span_count)  (8)
+#define THREAD_SPAN_CACHE_LIMIT(page_count, active_threads)   (4 + (((page_count)/16) * 4) + ((active_threads)*0))
+#define GLOBAL_SPAN_CACHE_LIMIT(page_count, active_threads)   (8 + (((page_count)/16) * 8) + ((active_threads)*0))
+#define THREAD_LARGE_CACHE_LIMIT(span_count)  (2 + ((span_count)*0))
+#define GLOBAL_LARGE_CACHE_LIMIT(span_count)  (8 + ((span_count)*0))
 #else
 // Default - performance priority cache limits
 //! Limit of thread cache in number of spans for each page count class (undefine for unlimited cache - i.e never release spans to global cache unless thread finishes)
@@ -34,9 +37,9 @@
 //! Limit of global cache in number of spans for each page count class (undefine for unlimited cache - i.e never free mapped pages)
 #define GLOBAL_SPAN_CACHE_LIMIT(page_count, active_threads)   (8 + (4 * (active_threads)) + (((page_count)/16) * 32))
 //! Limit of thread cache for each large span count class (undefine for unlimited cache - i.e never release spans to global cache unless thread finishes)
-#define THREAD_LARGE_CACHE_LIMIT(span_count)  (70 - (span_count * 2))
+#define THREAD_LARGE_CACHE_LIMIT(span_count)  (70 - ((span_count) * 2))
 //! Limit of global cache for each large span count class (undefine for unlimited cache - i.e never free mapped pages)
-#define GLOBAL_LARGE_CACHE_LIMIT(span_count)  (256 - (span_count * 3))
+#define GLOBAL_LARGE_CACHE_LIMIT(span_count)  (256 - ((span_count) * 3))
 #endif
 
 //! Size of heap hashmap
