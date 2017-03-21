@@ -167,6 +167,8 @@ class GCCToolchain(toolchain.Toolchain):
     flags = []
     if targettype == 'sharedlib':
       flags += ['-DBUILD_DYNAMIC_LINK=1']
+      if self.target.is_linux():
+        flags += ['-fPIC']
     flags += self.make_targetarchflags(arch, targettype)
     return flags
 
@@ -197,6 +199,12 @@ class GCCToolchain(toolchain.Toolchain):
 
   def make_linkconfigflags(self, config, targettype):
     flags = []
+    if not self.target.is_windows():
+      if targettype == 'sharedlib':
+        if self.target.is_macosx() or self.target.is_ios():
+          flags += ['-dynamiclib']
+        else:
+          flags += ['-shared']
     return flags
 
   def make_libs(self, libs):
