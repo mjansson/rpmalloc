@@ -1287,7 +1287,7 @@ thread_yield(void) {
 void* 
 rpmalloc(size_t size) {
 #if ENABLE_VALIDATE_ARGS
-	if (size > MAX_ALLOC_SIZE) {
+	if (size >= MAX_ALLOC_SIZE) {
 		errno = EINVAL;
 		return 0;
 	}
