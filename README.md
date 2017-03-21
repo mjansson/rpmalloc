@@ -54,6 +54,13 @@ To compile as a static library run the configure python script which generates a
 
 The configure + ninja build also produces a shared object/dynamic library that can be used with LD_PRELOAD/DYLD_INSERT_LIBRARIES to inject in a preexisting binary. This is only implemented for Linux and macOS targets.
 
+# Cache configuration options
+You can control the thread and global cache configuration of the allocator in the `rpmalloc.c` source file for fine tuned control, or you can define preprocessor directives for one of four presets. If you do not define any of these directives, the default preset will be used which is to increase caches and prioritize performance over memory overhead (but not making caches unlimited).
+
+__ENABLE_UNLIMITED_CACHE__: This will make all caches infinite, i.e never release spans to global cache unless thread finishes, and never unmap memory pages back to the OS. Highest performance but largest memory overhead.
+__ENABLE_SPACE_PRIORITY_CACHE__: This will reduce caches to minimize memory overhead while still maintaining decent performance.
+__DISABLE_CACHE__: This will completely disable caches for free pages and instead immediately unmap memory pages back to the OS when no longer in use. Minimizes memory overhead at cost of performance.
+
 # Implementation details
 The allocator is based on 64KiB alignment, where all runs of memory pages are mapped to 64KiB boundaries. On Windows this is automatically guaranteed by the VirtualAlloc granularity, and on mmap systems it is achieved by atomically incrementing the address where pages are mapped to. By aligning to 64KiB boundaries the free operation can locate the header of the memory block without having to do a table lookup (as tcmalloc does) by simply masking out the low 16 bits of the address.
 
