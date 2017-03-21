@@ -23,8 +23,16 @@
 #define GLOBAL_LARGE_CACHE_LIMIT(span_count)  (256 - (span_count * 3))
 //! Size of heap hashmap
 #define HEAP_ARRAY_SIZE           79
+
+#ifndef ENABLE_VALIDATE_ARGS
+//! Enable validation of args to public entry points
+#define ENABLE_VALIDATE_ARGS      1
+#endif
+
+#ifndef ENABLE_STATISTICS
 //! Enable statistics collection
 #define ENABLE_STATISTICS         0
+#endif
 
 // Platform and arch specifics
 
@@ -36,6 +44,9 @@
 #  define _Thread_local __declspec(thread)
 #  define atomic_thread_fence_acquire() //_ReadWriteBarrier()
 #  define atomic_thread_fence_release() //_ReadWriteBarrier()
+#  if ENABLE_VALIDATE_ARGS
+#    include <Intsafe.h>
+#  endif
 #else
 #  define ALIGNED_STRUCT(name, alignment) struct __attribute__((__aligned__(alignment))) name
 #  define FORCEINLINE inline __attribute__((__always_inline__))
@@ -182,6 +193,10 @@ typedef int64_t offset_t;
 typedef int32_t offset_t;
 #endif
 typedef uint32_t count_t;
+
+#if ENABLE_VALIDATE_ARGS
+#define MAX_ALLOC_SIZE            (((size_t)-1) - PAGE_SIZE)
+#endif
 
 // Data types
 
@@ -1274,6 +1289,12 @@ thread_yield(void) {
 
 void* 
 rpmalloc(size_t size) {
+#if ENABLE_VALIDATE_ARGS
+	if (size >= MAX_ALLOC_SIZE) {
+		errno = EINVAL;
+		return 0;
+	}
+#endif
 	return _memory_allocate(size);
 }
 
@@ -1284,7 +1305,24 @@ rpfree(void* ptr) {
 
 void*
 rpcalloc(size_t num, size_t size) {
-	size_t total = num * size;
+	size_t total;
+#if ENABLE_VALIDATE_ARGS
+#ifdef PLATFORM_WINDOWS
+	int err = SizeTMult(num, size, &total);
+	if ((err != S_OK) || (total >= MAX_ALLOC_SIZE)) {
+		errno = EINVAL;
+		return 0;
+	}
+#else
+	int err = __builtin_umull_overflow(num, size, &total);
+	if (err || (total >= MAX_ALLOC_SIZE)) {
+		errno = EINVAL;
+		return 0;
+	}
+#endif
+#else
+	total = num * size;
+#endif
 	void* ptr = _memory_allocate(total);
 	memset(ptr, 0, total);
 	return ptr;
@@ -1292,15 +1330,28 @@ rpcalloc(size_t num, size_t size) {
 
 void*
 rprealloc(void* ptr, size_t size) {
+#if ENABLE_VALIDATE_ARGS
+	if (size >= MAX_ALLOC_SIZE) {
+		errno = EINVAL;
+		return ptr;
+	}
+#endif
 	return _memory_reallocate(ptr, size, 0);
 }
 
 void*
 rpaligned_alloc(size_t alignment, size_t size) {
 	if (alignment <= 16)
-		return _memory_allocate(size);
+		return rpmalloc(size);
 
-	void* ptr = _memory_allocate(size + alignment);
+#if ENABLE_VALIDATE_ARGS
+	if (size + alignment < size) {
+		errno = EINVAL;
+		return 0;
+	}
+#endif
+
+	void* ptr = rpmalloc(size + alignment);
 	if ((uintptr_t)ptr & (alignment - 1))
 		ptr = (void*)(((uintptr_t)ptr & ~((uintptr_t)alignment - 1)) + alignment);
 	return ptr;
