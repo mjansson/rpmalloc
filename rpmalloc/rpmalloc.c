@@ -1304,14 +1304,19 @@ void*
 rpcalloc(size_t num, size_t size) {
 	size_t total;
 #if ENABLE_VALIDATE_ARGS
-	if (__builtin_umull_overflow(num, size, &total)) {
+#ifdef PLATFORM_WINDOWS
+	int err = SizeTMult(num, size, &total);
+	if ((err != S_OK) || (total >= MAX_ALLOC_SIZE)) {
 		errno = EINVAL;
 		return 0;
 	}
-	if (total > MAX_ALLOC_SIZE) {
+#else
+	int err = __builtin_umull_overflow(num, size, &total);
+	if (err || (total >= MAX_ALLOC_SIZE)) {
 		errno = EINVAL;
 		return 0;
 	}
+#endif
 #else
 	total = num * size;
 #endif
@@ -1335,7 +1340,7 @@ rprealloc(void* ptr, size_t size) {
 void*
 rpaligned_alloc(size_t alignment, size_t size) {
 	if (alignment <= 16)
-		return _memory_allocate(size);
+		return rpmalloc(size);
 
 #if ENABLE_VALIDATE_ARGS
 	if (size + alignment < size) {
@@ -1344,7 +1349,7 @@ rpaligned_alloc(size_t alignment, size_t size) {
 	}
 #endif
 
-	void* ptr = _memory_allocate(size + alignment);
+	void* ptr = rpmalloc(size + alignment);
 	if ((uintptr_t)ptr & (alignment - 1))
 		ptr = (void*)(((uintptr_t)ptr & ~((uintptr_t)alignment - 1)) + alignment);
 	return ptr;
