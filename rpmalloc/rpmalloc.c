@@ -44,6 +44,9 @@
 #  define _Thread_local __declspec(thread)
 #  define atomic_thread_fence_acquire() //_ReadWriteBarrier()
 #  define atomic_thread_fence_release() //_ReadWriteBarrier()
+#  if ENABLE_VALIDATE_ARGS
+#    include <Intsafe.h>
+#  endif
 #else
 #  define ALIGNED_STRUCT(name, alignment) struct __attribute__((__aligned__(alignment))) name
 #  define FORCEINLINE inline __attribute__((__always_inline__))
