@@ -12,6 +12,8 @@
 #include "rpmalloc.h"
 
 // Build time configurable limits
+
+// Presets, if none is defined it will default to performance priority
 //#define ENABLE_UNLIMITED_CACHE
 //#define DISABLE_CACHE
 //#define ENABLE_SPACE_PRIORITY_CACHE
@@ -33,9 +35,9 @@
 #else
 // Default - performance priority cache limits
 //! Limit of thread cache in number of spans for each page count class (undefine for unlimited cache - i.e never release spans to global cache unless thread finishes)
-#define THREAD_SPAN_CACHE_LIMIT(page_count, active_threads)   (3 + (active_threads) + (((page_count)/16) * 10))
+#define THREAD_SPAN_CACHE_LIMIT(page_count, active_threads)   (4 + (active_threads) + (((page_count)/16) * 10))
 //! Limit of global cache in number of spans for each page count class (undefine for unlimited cache - i.e never free mapped pages)
-#define GLOBAL_SPAN_CACHE_LIMIT(page_count, active_threads)   (8 + (4 * (active_threads)) + (((page_count)/16) * 32))
+#define GLOBAL_SPAN_CACHE_LIMIT(page_count, active_threads)   (12 + (4 * (active_threads)) + (((page_count)/16) * 32))
 //! Limit of thread cache for each large span count class (undefine for unlimited cache - i.e never release spans to global cache unless thread finishes)
 #define THREAD_LARGE_CACHE_LIMIT(span_count)  (70 - ((span_count) * 2))
 //! Limit of global cache for each large span count class (undefine for unlimited cache - i.e never free mapped pages)
