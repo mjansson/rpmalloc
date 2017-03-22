@@ -58,7 +58,9 @@ The configure + ninja build also produces a shared object/dynamic library that c
 You can control the thread and global cache configuration of the allocator in the `rpmalloc.c` source file for fine tuned control, or you can define preprocessor directives for one of four presets. If you do not define any of these directives, the default preset will be used which is to increase caches and prioritize performance over memory overhead (but not making caches unlimited).
 
 __ENABLE_UNLIMITED_CACHE__: This will make all caches infinite, i.e never release spans to global cache unless thread finishes, and never unmap memory pages back to the OS. Highest performance but largest memory overhead.
+
 __ENABLE_SPACE_PRIORITY_CACHE__: This will reduce caches to minimize memory overhead while still maintaining decent performance.
+
 __DISABLE_CACHE__: This will completely disable caches for free pages and instead immediately unmap memory pages back to the OS when no longer in use. Minimizes memory overhead at cost of performance.
 
 # Implementation details
