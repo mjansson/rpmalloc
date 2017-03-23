@@ -39,9 +39,9 @@
 //! Limit of global cache in number of spans for each page count class (undefine for unlimited cache - i.e never free mapped pages)
 #define GLOBAL_SPAN_CACHE_LIMIT(page_count, active_threads)   (12 + (4 * (active_threads)) + (((page_count)/16) * 32))
 //! Limit of thread cache for each large span count class (undefine for unlimited cache - i.e never release spans to global cache unless thread finishes)
-#define THREAD_LARGE_CACHE_LIMIT(span_count)  (70 - ((span_count) * 2))
+#define THREAD_LARGE_CACHE_LIMIT(span_count)  (20 - ((span_count) / 2))
 //! Limit of global cache for each large span count class (undefine for unlimited cache - i.e never free mapped pages)
-#define GLOBAL_LARGE_CACHE_LIMIT(span_count)  (256 - ((span_count) * 3))
+#define GLOBAL_LARGE_CACHE_LIMIT(span_count)  (64 - ((span_count) / 2))
 #endif
 
 //! Size of heap hashmap
@@ -231,13 +231,13 @@ typedef union span_data_t span_data_t;
 
 struct span_block_t {
 	//! Free list
-	uint8_t    free_list;
+	uint16_t    free_list;
 	//! First autolinked block
-	uint8_t    first_autolink;
+	uint16_t    first_autolink;
 	//! Free count
-	uint8_t    free_count;
+	uint16_t    free_count;
 	//! Padding
-	uint8_t    padding;
+	uint16_t    padding;
 };
 
 union span_data_t {
@@ -293,11 +293,13 @@ struct size_class_t {
 	//! Size of blocks in this class
 	uint16_t size;
 	//! Number of pages to allocate for a chunk
-	uint8_t page_count;
+	uint16_t page_count;
 	//! Number of blocks in each chunk
-	uint8_t block_count;
+	uint16_t block_count;
+	//! Class index this class is merged with
+	uint16_t class_idx;
 };
-_Static_assert(sizeof(size_class_t) == 4, "Size class size mismatch");
+_Static_assert(sizeof(size_class_t) == 8, "Size class size mismatch");
 
 //! Global size classes
 static size_class_t _memory_size_class[SIZE_CLASS_COUNT];
@@ -512,9 +514,9 @@ _memory_allocate_from_heap(heap_t* heap, size_t size) {
 	size += sizeof(size_t);
 #endif
 
-	const size_t class_idx = (size <= SMALL_SIZE_LIMIT) ?
+	const size_t class_idx = _memory_size_class[(size <= SMALL_SIZE_LIMIT) ?
 		((size + (SMALL_GRANULARITY - 1)) >> SMALL_GRANULARITY_SHIFT) - 1 :
-		SMALL_CLASS_COUNT + ((size - SMALL_SIZE_LIMIT + (MEDIUM_GRANULARITY - 1)) >> MEDIUM_GRANULARITY_SHIFT) - 1;
+		SMALL_CLASS_COUNT + ((size - SMALL_SIZE_LIMIT + (MEDIUM_GRANULARITY - 1)) >> MEDIUM_GRANULARITY_SHIFT) - 1].class_idx;
 
 	span_block_t* active_block = heap->active_block + class_idx;
 	size_class_t* size_class = _memory_size_class + class_idx;
@@ -535,12 +537,12 @@ use_active:
 		--active_block->free_count;
 		if (!active_block->free_count) {
 			span->data.block.free_count = 0;
-			span->data.block.first_autolink = size_class->block_count;
+			span->data.block.first_autolink = (uint16_t)size_class->block_count;
 			heap->active_span[class_idx] = 0;
 		}
 		else {
 			if (active_block->free_list < active_block->first_autolink) {
-				active_block->free_list = (uint8_t)(*block);
+				active_block->free_list = (uint16_t)(*block);
 			}
 			else {
 				++active_block->free_list;
@@ -597,14 +599,14 @@ use_active:
 	//If we only have one block we will grab it, otherwise
 	//set span as new span to use for next allocation
 	if (size_class->block_count > 1) {
-		active_block->free_count = (uint8_t)(size_class->block_count - 1);
+		active_block->free_count = (uint16_t)(size_class->block_count - 1);
 		active_block->free_list = 1;
 		active_block->first_autolink = 1;
 		heap->active_span[class_idx] = span;
 	}
 	else {
 		span->data.block.free_count = 0;
-		span->data.block.first_autolink = size_class->block_count;
+		span->data.block.first_autolink = (uint16_t)size_class->block_count;
 	}
 
 #if ENABLE_STATISTICS
@@ -780,7 +782,7 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 		if (block_data->free_count == 0) {
 			//Add to free list
 			_memory_list_add(&heap->size_cache[class_idx], span);
-			block_data->first_autolink = size_class->block_count;
+			block_data->first_autolink = (uint16_t)size_class->block_count;
 			block_data->free_count = 0;
 		}
 		++block_data->free_count;
@@ -789,7 +791,7 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 			*block = block_data->free_list;
 			count_t block_offset = (count_t)pointer_diff(block, span) - SPAN_HEADER_SIZE;
 			count_t block_idx = block_offset / (count_t)size_class->size;
-			block_data->free_list = (uint8_t)block_idx;
+			block_data->free_list = (uint16_t)block_idx;
 		}
 		else {
 			block_data->free_list = 0;
@@ -820,9 +822,14 @@ _memory_deallocate_large_to_heap(heap_t* heap, span_t* span) {
 	}
 #if defined(THREAD_LARGE_CACHE_LIMIT)
 	if (span->data.list_size >= cache_limit) {
-		heap->large_cache[idx] = span->prev_span->next_span;
-		span->prev_span->next_span = 0; //Terminate list
-		_memory_global_cache_large_insert(span, span->data.list_size - heap->large_cache[idx]->data.list_size, idx + 1);
+		if (cache_limit > 2) {
+			heap->large_cache[idx] = span->prev_span->next_span;
+			span->prev_span->next_span = 0; //Terminate list
+			_memory_global_cache_large_insert(span, span->data.list_size - heap->large_cache[idx]->data.list_size, idx + 1);
+		}
+		else {
+			_memory_global_cache_large_insert(span, 1, idx + 1);
+		}
 		return;
 	}
 	else if (span->data.list_size == ((cache_limit / 2) + 1)) {
@@ -1008,15 +1015,25 @@ _memory_adjust_size_class(size_t iclass) {
 		}
 	}
 
-	_memory_size_class[iclass].page_count = (uint8_t)best_page_count;
-	_memory_size_class[iclass].block_count = (uint8_t)best_block_count;
+	best_page_count = ((best_page_count + 1) / 2) * 2;
+	if (best_page_count > 16)
+		best_page_count = 16;
+	best_block_count = ((best_page_count * PAGE_SIZE) - header_size) / block_size;
+
+	_memory_size_class[iclass].page_count = (uint16_t)best_page_count;
+	_memory_size_class[iclass].block_count = (uint16_t)best_block_count;
+	_memory_size_class[iclass].class_idx = (uint16_t)iclass;
 
 	//Check if previous size class can be merged
-	if (iclass > 0) {
-		size_t prevclass = iclass - 1;
+	size_t prevclass = iclass;
+	while (prevclass > 0) {
+		--prevclass;
 		if ((_memory_size_class[prevclass].page_count == _memory_size_class[iclass].page_count) &&
 		        (_memory_size_class[prevclass].block_count == _memory_size_class[iclass].block_count)) {
 			memcpy(_memory_size_class + prevclass, _memory_size_class + iclass, sizeof(_memory_size_class[iclass]));
+		}
+		else {
+			break;
 		}
 	}
 }
