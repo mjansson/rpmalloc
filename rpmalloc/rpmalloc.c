@@ -39,9 +39,9 @@
 //! Limit of global cache in number of spans for each page count class (undefine for unlimited cache - i.e never free mapped pages)
 #define GLOBAL_SPAN_CACHE_LIMIT(page_count, active_threads)   (12 + (4 * (active_threads)) + (((page_count)/16) * 32))
 //! Limit of thread cache for each large span count class (undefine for unlimited cache - i.e never release spans to global cache unless thread finishes)
-#define THREAD_LARGE_CACHE_LIMIT(span_count)  (70 - ((span_count) * 2))
+#define THREAD_LARGE_CACHE_LIMIT(span_count)  (20 - ((span_count) / 2))
 //! Limit of global cache for each large span count class (undefine for unlimited cache - i.e never free mapped pages)
-#define GLOBAL_LARGE_CACHE_LIMIT(span_count)  (256 - ((span_count) * 3))
+#define GLOBAL_LARGE_CACHE_LIMIT(span_count)  (64 - ((span_count) / 2))
 #endif
 
 //! Size of heap hashmap
@@ -822,9 +822,14 @@ _memory_deallocate_large_to_heap(heap_t* heap, span_t* span) {
 	}
 #if defined(THREAD_LARGE_CACHE_LIMIT)
 	if (span->data.list_size >= cache_limit) {
-		heap->large_cache[idx] = span->prev_span->next_span;
-		span->prev_span->next_span = 0; //Terminate list
-		_memory_global_cache_large_insert(span, span->data.list_size - heap->large_cache[idx]->data.list_size, idx + 1);
+		if (cache_limit > 2) {
+			heap->large_cache[idx] = span->prev_span->next_span;
+			span->prev_span->next_span = 0; //Terminate list
+			_memory_global_cache_large_insert(span, span->data.list_size - heap->large_cache[idx]->data.list_size, idx + 1);
+		}
+		else {
+			_memory_global_cache_large_insert(span, 1, idx + 1);
+		}
 		return;
 	}
 	else if (span->data.list_size == ((cache_limit / 2) + 1)) {
