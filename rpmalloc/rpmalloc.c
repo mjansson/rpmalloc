@@ -988,7 +988,7 @@ _memory_usable_size(void* p) {
 	size_t current_pages = (size_t)span->next_span;
 	return (current_pages * (size_t)PAGE_SIZE) - SPAN_HEADER_SIZE;
 }
-#include <stdio.h>
+
 static void
 _memory_adjust_size_class(size_t iclass) {
 	size_t block_size = _memory_size_class[iclass].size;
