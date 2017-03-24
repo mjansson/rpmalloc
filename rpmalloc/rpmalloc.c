@@ -20,29 +20,35 @@
 
 // Presets for cache limits
 #if defined(ENABLE_UNLIMITED_CACHE)
-// Leave all undefined -> unlimited caches
+// Leave all limits undefined -> unlimited caches
+#define MAX_SPAN_CACHE_TRANSFER 8
 #elif defined(DISABLE_CACHE)
 #define THREAD_SPAN_CACHE_LIMIT(page_count, active_threads)   (((page_count)*0) + ((active_threads)*0))
 #define GLOBAL_SPAN_CACHE_LIMIT(page_count, active_threads)   (((page_count)*0) + ((active_threads)*0))
 #define THREAD_LARGE_CACHE_LIMIT(span_count)  ((span_count)*0)
 #define GLOBAL_LARGE_CACHE_LIMIT(span_count)  ((span_count)*0)
+#define MAX_SPAN_CACHE_TRANSFER 4
 #elif defined(ENABLE_SPACE_PRIORITY_CACHE)
 // Space priority cache limits
-#define THREAD_SPAN_CACHE_LIMIT(page_count, active_threads)   (4 + (((page_count)/16) * 4) + ((active_threads)*0))
-#define GLOBAL_SPAN_CACHE_LIMIT(page_count, active_threads)   (8 + (((page_count)/16) * 8) + ((active_threads)*0))
-#define THREAD_LARGE_CACHE_LIMIT(span_count)  (2 + ((span_count)*0))
-#define GLOBAL_LARGE_CACHE_LIMIT(span_count)  (8 + ((span_count)*0))
+#define THREAD_SPAN_CACHE_LIMIT(page_count, active_threads)   (6 + (((page_count)/16) * 4) + (active_threads))
+#define GLOBAL_SPAN_CACHE_LIMIT(page_count, active_threads)   (18 + (((page_count)/16) * 8) + (active_threads))
+#define THREAD_LARGE_CACHE_LIMIT(span_count)  (4 + ((span_count)*0))
+#define GLOBAL_LARGE_CACHE_LIMIT(span_count)  (16 + ((span_count)*0))
+#define MAX_SPAN_CACHE_TRANSFER 4
 #else
 // Default - performance priority cache limits
 //! Limit of thread cache in number of spans for each page count class (undefine for unlimited cache - i.e never release spans to global cache unless thread finishes)
-#define THREAD_SPAN_CACHE_LIMIT(page_count, active_threads)   (4 + (active_threads) + (((page_count)/16) * 10))
+#define THREAD_SPAN_CACHE_LIMIT(page_count, active_threads)   (32 + (4 * (active_threads)) + (((page_count)/16) * 32))
 //! Limit of global cache in number of spans for each page count class (undefine for unlimited cache - i.e never free mapped pages)
-#define GLOBAL_SPAN_CACHE_LIMIT(page_count, active_threads)   (12 + (4 * (active_threads)) + (((page_count)/16) * 32))
+#define GLOBAL_SPAN_CACHE_LIMIT(page_count, active_threads)   (256 + (16 * (active_threads)) + (((page_count)/16) * 128))
 //! Limit of thread cache for each large span count class (undefine for unlimited cache - i.e never release spans to global cache unless thread finishes)
-#define THREAD_LARGE_CACHE_LIMIT(span_count)  (20 - ((span_count) / 2))
+#define THREAD_LARGE_CACHE_LIMIT(span_count)  (90 - ((span_count) * 2))
 //! Limit of global cache for each large span count class (undefine for unlimited cache - i.e never free mapped pages)
-#define GLOBAL_LARGE_CACHE_LIMIT(span_count)  (64 - ((span_count) / 2))
+#define GLOBAL_LARGE_CACHE_LIMIT(span_count)  (256 - ((span_count) * 4))
+//! Maximum number of spans to transfer between thread and global cache
+#define MAX_SPAN_CACHE_TRANSFER 8
 #endif
+
 
 //! Size of heap hashmap
 #define HEAP_ARRAY_SIZE           79
@@ -756,26 +762,29 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 		//Add to span cache
 		span_t** cache = &heap->span_cache[size_class->page_count-1];
 		span->next_span = *cache;
-		if (*cache)
+		if (*cache) {
 			span->data.list_size = (*cache)->data.list_size + 1;
-		else
+			span->prev_span = (*cache)->prev_span; //Propagate skip span pointer
+		}
+		else {
 			span->data.list_size = 1;
-		*cache = span;
+		}
 #if defined(THREAD_SPAN_CACHE_LIMIT)
 		if (span->data.list_size >= cache_limit) {
-			//Release to global cache
-			count_t list_size = 1;
-			span_t* next = span->next_span;
-			span_t* last = span;
-			while (list_size < (cache_limit/2)) {
-				last = next;
-				next = next->next_span;
-				++list_size;
+			if (MAX_SPAN_CACHE_TRANSFER > 2) {
+				*cache = span->prev_span->next_span;
+				span->prev_span->next_span = 0; //Terminate list
+				_memory_global_cache_insert(span, span->data.list_size - (*cache)->data.list_size, size_class->page_count);
 			}
-			*cache = next;
-			last->next_span = 0; //Terminate list
-			_memory_global_cache_insert(span, list_size, size_class->page_count);
+			else {
+				_memory_global_cache_insert(span, 1, size_class->page_count);
+			}
+			return;
 		}
+		if (span->data.list_size == ((MAX_SPAN_CACHE_TRANSFER/2) + 1)) {
+			span->prev_span = span; //Set last span to release as skip span
+		}
+		*cache = span;
 #endif
 	}
 	else {
@@ -988,7 +997,7 @@ _memory_usable_size(void* p) {
 	size_t current_pages = (size_t)span->next_span;
 	return (current_pages * (size_t)PAGE_SIZE) - SPAN_HEADER_SIZE;
 }
-
+#include <stdio.h>
 static void
 _memory_adjust_size_class(size_t iclass) {
 	size_t block_size = _memory_size_class[iclass].size;
@@ -1184,17 +1193,14 @@ rpmalloc_thread_finalize(void) {
 	//Release thread cache spans back to global cache
 	for (size_t iclass = 0; iclass < SPAN_CLASS_COUNT; ++iclass) {
 		const size_t page_count = iclass + 1;
-#if defined(THREAD_SPAN_CACHE_LIMIT)
-		size_t active_heaps = (size_t)atomic_load32(&_memory_active_heaps);
-		const size_t cache_limit = THREAD_SPAN_CACHE_LIMIT(page_count, active_heaps);
 		span_t* span = heap->span_cache[iclass];
 		while (span) {
-			if (span->data.list_size > (cache_limit/2)) {
+			if (span->data.list_size > MAX_SPAN_CACHE_TRANSFER) {
 				//Release to global cache
 				count_t list_size = 1;
 				span_t* next = span->next_span;
 				span_t* last = span;
-				while (list_size < (cache_limit/2)) {
+				while (list_size < MAX_SPAN_CACHE_TRANSFER) {
 					last = next;
 					next = next->next_span;
 					++list_size;
@@ -1209,11 +1215,6 @@ rpmalloc_thread_finalize(void) {
 				span = 0;
 			}
 		}
-#else
-		span_t* span = heap->span_cache[iclass];
-		if (span)
-			_memory_global_cache_insert(span, span->data.list_size, page_count);
-#endif
 		heap->span_cache[iclass] = 0;
 	}
 
