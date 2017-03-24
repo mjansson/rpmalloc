@@ -63,6 +63,9 @@ __ENABLE_SPACE_PRIORITY_CACHE__: This will reduce caches to minimize memory over
 
 __DISABLE_CACHE__: This will completely disable caches for free pages and instead immediately unmap memory pages back to the OS when no longer in use. Minimizes memory overhead at cost of performance.
 
+# Quick overview
+The allocator is similar in spirit to tcmalloc from the [https://github.com/gperftools/gperftools](Google Performance Toolkit). It uses separate heaps for each thread and partitions memory blocks according to a preconfigured set of size classes, up to 2MiB. Larger blocks are mapped and unmapped directly. Allocations for different size classes will be served from different set of memory pages, each "span" of pages is dedicated to one size class. Spans of pages can flow between threads when the thread cache overflows and are released to a global cache.
+
 # Implementation details
 The allocator is based on 64KiB alignment, where all runs of memory pages are mapped to 64KiB boundaries. On Windows this is automatically guaranteed by the VirtualAlloc granularity, and on mmap systems it is achieved by atomically incrementing the address where pages are mapped to. By aligning to 64KiB boundaries the free operation can locate the header of the memory block without having to do a table lookup (as tcmalloc does) by simply masking out the low 16 bits of the address.
 
