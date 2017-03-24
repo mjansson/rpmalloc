@@ -76,6 +76,23 @@ Each span for a small and medium size class keeps track of how many blocks are a
 
 Large blocks, or super spans, are cached in two levels. The first level is a per thread list of free super spans. The second level is a global list of free super spans. Each cache level can be configured to control memory usage versus performance.
 
+# Memory fragmentation
+There is no memory fragmentation by the allocator in the meaning that it will not leave unallocated holes in the memory pages. This is due to the fact that the memory pages allocated for each size class is split up in perfectly aligned blocks which are not reused for a request of a different size.
+
+However, there is memory fragmentation in the meaning that a request for x bytes followed by a request of y bytes where x and y are at least one size class different in size will return blocks that are at least one memory page apart in virtual address space. Only blocks of the same size will be within the same memory page span.
+
+# Best case scenarios
+Threads that keep ownership of allocated memory blocks within the thread and free the blocks from the same thread will have optimal performance.
+
+Threads that have allocation patterns where the difference in memory usage high and low water marks fit within the thread caches in the allocator will never touch the global cache and have optimal performance.
+
+# Worst case scenarios
+Since each thread cache maps spans of memory pages per size class, a thread that allocates just a few blocks of each size class (16, 32, 48, ...) for many size classes will never fill each bucket, and thus map a lot of memory pages while only using a small fraction of the mapped memory.
+
+An application that has a producer-consumer scheme between threads where one thread performs all allocations and another frees all memory will have a sub-optimal performance due to blocks crossing thread boundaries will be freed in a two step process - first deferred to the allocating thread, then freed when that thread has need for more memory pages for the requested size. However, depending on the use case the performance overhead might be small.
+
+Threads that perform a lot of allocations and deallocations in a pattern that have a large difference in high and low water marks, and that difference is larger than the thread cache size, will put a lot of strain on the global cache. What will happen is the thread cache will overflow on each low water mark causing pages to be released to the global cache, then underflow on high water mark causing pages to be re-aqcuired from the global cache.
+
 # Caveats
 Cross-thread deallocations are more costly than in-thread deallocations, since the spans are completely owned by the allocating thread. The free operation will be deferred using an atomic list operation and the actual free operation will be performed when the owner thread requires a new block of the corresponding size class.
 
