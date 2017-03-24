@@ -11,6 +11,17 @@
 
 #include <stddef.h>
 
+#if defined(__clang__) || defined(__GNUC__)
+# define RPMALLOC_ATTRIBUTE __attribute__((__malloc__))
+# define RPMALLOC_CALL
+#elif defined(_MSC_VER)
+# define RPMALLOC_ATTRIBUTE
+# define RPMALLOC_CALL __declspec(restrict)
+#else
+# define RPMALLOC_ATTRIBUTE
+# define RPMALLOC_CALL
+#endif
+
 typedef struct rpmalloc_global_statistics_t {
 	size_t mapped;
 	size_t cache;
@@ -46,23 +57,23 @@ rpmalloc_thread_statistics(void);
 extern rpmalloc_global_statistics_t
 rpmalloc_global_statistics(void);
 
-extern void*
-rpmalloc(size_t size);
+extern RPMALLOC_CALL void*
+rpmalloc(size_t size) RPMALLOC_ATTRIBUTE;
 
 extern void
 rpfree(void* ptr);
 
-extern void*
-rpcalloc(size_t num, size_t size);
+extern RPMALLOC_CALL void*
+rpcalloc(size_t num, size_t size) RPMALLOC_ATTRIBUTE;
 
 extern void*
 rprealloc(void* ptr, size_t size);
 
-extern void*
-rpaligned_alloc(size_t alignment, size_t size);
+extern RPMALLOC_CALL void*
+rpaligned_alloc(size_t alignment, size_t size) RPMALLOC_ATTRIBUTE;
 
-extern void*
-rpmemalign(size_t alignment, size_t size);
+extern RPMALLOC_CALL void*
+rpmemalign(size_t alignment, size_t size) RPMALLOC_ATTRIBUTE;
 
 extern int
 rpposix_memalign(void **memptr, size_t alignment, size_t size);
