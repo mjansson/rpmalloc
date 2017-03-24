@@ -762,29 +762,26 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 		//Add to span cache
 		span_t** cache = &heap->span_cache[size_class->page_count-1];
 		span->next_span = *cache;
-		if (*cache) {
+		if (*cache)
 			span->data.list_size = (*cache)->data.list_size + 1;
-			span->prev_span = (*cache)->prev_span; //Propagate skip span pointer
-		}
-		else {
+		else
 			span->data.list_size = 1;
-		}
+		*cache = span;
 #if defined(THREAD_SPAN_CACHE_LIMIT)
 		if (span->data.list_size >= cache_limit) {
-			if (MAX_SPAN_CACHE_TRANSFER > 2) {
-				*cache = span->prev_span->next_span;
-				span->prev_span->next_span = 0; //Terminate list
-				_memory_global_cache_insert(span, span->data.list_size - (*cache)->data.list_size, size_class->page_count);
+			//Release to global cache
+			count_t list_size = 1;
+			span_t* next = span->next_span;
+			span_t* last = span;
+			while (list_size < MAX_SPAN_CACHE_TRANSFER) {
+				last = next;
+				next = next->next_span;
+				++list_size;
 			}
-			else {
-				_memory_global_cache_insert(span, 1, size_class->page_count);
-			}
-			return;
+			*cache = next;
+			last->next_span = 0; //Terminate list
+			_memory_global_cache_insert(span, list_size, size_class->page_count);
 		}
-		if (span->data.list_size == ((MAX_SPAN_CACHE_TRANSFER/2) + 1)) {
-			span->prev_span = span; //Set last span to release as skip span
-		}
-		*cache = span;
 #endif
 	}
 	else {
@@ -997,7 +994,7 @@ _memory_usable_size(void* p) {
 	size_t current_pages = (size_t)span->next_span;
 	return (current_pages * (size_t)PAGE_SIZE) - SPAN_HEADER_SIZE;
 }
-#include <stdio.h>
+
 static void
 _memory_adjust_size_class(size_t iclass) {
 	size_t block_size = _memory_size_class[iclass].size;
