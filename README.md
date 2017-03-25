@@ -63,6 +63,11 @@ __ENABLE_SPACE_PRIORITY_CACHE__: This will reduce caches to minimize memory over
 
 __DISABLE_CACHE__: This will completely disable caches for free pages and instead immediately unmap memory pages back to the OS when no longer in use. Minimizes memory overhead at cost of performance.
 
+# Other configuration options
+Detailed statistics are available if __ENABLE_STATISTICS__ is defined to 1, either on compile command line or by setting the value in `rpmalloc.c`. This will cause a slight overhead in runtime to collect statistics for each memory operation, and will also add 4 bytes overhead per allocation to track sizes.
+
+Integer safety checks on all calls are enabled if __ENABLE_VALIDATE_ARGS__ is defined to 1, either on compile command line or by setting the value in `rpmalloc.c`. If enabled, size arguments to the global entry points are verified not to cause integer overflows in calculations.
+
 # Quick overview
 The allocator is similar in spirit to tcmalloc from the [https://github.com/gperftools/gperftools](Google Performance Toolkit). It uses separate heaps for each thread and partitions memory blocks according to a preconfigured set of size classes, up to 2MiB. Larger blocks are mapped and unmapped directly. Allocations for different size classes will be served from different set of memory pages, each "span" of pages is dedicated to one size class. Spans of pages can flow between threads when the thread cache overflows and are released to a global cache.
 
@@ -80,9 +85,9 @@ Each span for a small and medium size class keeps track of how many blocks are a
 Large blocks, or super spans, are cached in two levels. The first level is a per thread list of free super spans. The second level is a global list of free super spans. Each cache level can be configured to control memory usage versus performance.
 
 # Memory fragmentation
-There is no memory fragmentation by the allocator in the meaning that it will not leave unallocated holes in the memory pages. This is due to the fact that the memory pages allocated for each size class is split up in perfectly aligned blocks which are not reused for a request of a different size.
+There is no memory fragmentation by the allocator in the meaning that it will not leave unallocated and unusable "holes" in the memory pages by calls to allocate and free blocks of different sizes. This is due to the fact that the memory pages allocated for each size class is split up in perfectly aligned blocks which are not reused for a request of a different size. The block freed by a call to `rpfree` will always be available for an allocation request within the same size class.
 
-However, there is memory fragmentation in the meaning that a request for x bytes followed by a request of y bytes where x and y are at least one size class different in size will return blocks that are at least one memory page apart in virtual address space. Only blocks of the same size will be within the same memory page span.
+However, there is memory fragmentation in the meaning that a request for x bytes followed by a request of y bytes where x and y are at least one size class different in size will return blocks that are at least one memory page apart in virtual address space. Only blocks of the same size will potentially be within the same memory page span.
 
 # Best case scenarios
 Threads that keep ownership of allocated memory blocks within the thread and free the blocks from the same thread will have optimal performance.
