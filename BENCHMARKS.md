@@ -12,10 +12,12 @@ Below is a collection of benchmark results for various allocation sizes. The mac
 The benchmark configurations are to be interpreted as performing alloc/free pairs of 10% of the allocated blocks in each loop iteration (in each thread). Since the free and alloc operations are scattered the patterns of requested sizes and block addresses are random and does not follow any sequential order.
 
 # Random size in [16, 1000] range
-Parameters: `benchmark <num threads> 0 0 2 8000000 16000 16 1000`
-Evenly distributed sizes in `[16, 1000]` range, 8 million loops with 16000 blocks per thread. Cross thread deallocations every other loop iteration.
-![Windows 10 random [16, 1000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=137567195&format=image)
-![Windows 10 random [16, 1000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=1811210702&format=image)
+Parameters: `benchmark <num threads> 0 0 2 10000 50000 5000 16 1000`
+Evenly distributed sizes in `[16, 1000]` range, 10000 loops with 50000 blocks per thread. Every iteration 5000 blocks (10%) are freed and allocated in a scattered pattern. Cross thread deallocations every other loop iteration.
+![Ubuntu 16.10 random [16, 1000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=1979506104&format=image)
+![Ubuntu 16.10 random [16, 1000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=853552429&format=image)
+
+Results indicate that rpmalloc is faster than all allocators, except lockfree-malloc for two threads. However, the latter suffers from a erratic memory overhead as the number of threads increases. Allocators such as tcmalloc and jemalloc trail behind with about 15% in performance (jemalloc also suffers from higher memory overhead).
 
 # Random size in [16, 8000] range
 Parameters: `benchmark <num threads> 0 1 2 10000 50000 5000 16 8000`
@@ -23,7 +25,7 @@ Linear falloff distributed sizes in `[16, 8000]` range, 10000 loops with 50000 b
 ![Ubuntu 16.10 random [16, 8000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=301017877&format=image)
 ![Ubuntu 16.10 random [16, 8000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=1224595675&format=image)
 
-Results indicate that rpmalloc is faster than all allocators, except lockfree-malloc. However, the latter suffers from a massive memory overhead as the number of threads increases. Allocators such as tcmalloc and jemalloc trail behind with about 15% in performance (jemalloc also suffers from higher memory overhead). Ignoring the lockfree-malloc memory overhead range and focusing on the allocators we can see they are pretty close in memory overhead factors, with most of the multohreaded cases hovering around the 20% overhead mark.
+rpmalloc is faster than all allocators, except lockfree-malloc in some cases. Once again the latter suffers from a massive memory overhead as the number of threads increases. Allocators such as tcmalloc and jemalloc trail behind with about 15% in performance (jemalloc again suffers from higher memory overhead). Ignoring the lockfree-malloc memory overhead range and focusing on the allocators we can see they are pretty close in memory overhead factors, with most of the multohreaded cases hovering around the 20% overhead mark.
 
 ![Ubuntu 16.10 random [16, 8000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=812830245&format=image)
 
