@@ -1,7 +1,5 @@
 # rpmalloc - Rampant Pixels Memory Allocator
-This library provides a public domain cross platform lock free thread caching 16-byte aligned memory allocator implemented in C. The latest source code is always available at
-
-https://github.com/rampantpixels/rpmalloc
+This library provides a public domain cross platform lock free thread caching 16-byte aligned memory allocator implemented in C. The latest source code is always available at https://github.com/rampantpixels/rpmalloc
 
 Platforms currently supported:
 
@@ -26,11 +24,11 @@ Contained in a parallel repository is a benchmark utility that performs interlea
 
 https://github.com/rampantpixels/rpmalloc-benchmark
 
-Below is an example performance comparison chart of rpmalloc and other popular allocator implementations.
+Below is an example performance comparison chart of rpmalloc and other popular allocator implementations, with default configurations used.
 
-![Windows random [16, 8000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=881719411&format=image)
+![Ubuntu 16.10, random [16, 8000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=301017877&format=image)
 
-The benchmark producing these numbers were run on a Windows 10 machine with 8 logical cores (4 physical, HT). The actual numbers are not to be interpreted as absolute performance figures, but rather as relative comparisons between the different allocators. For additional benchmark results, see the [BENCHMARKS](BENCHMARKS.md) file.
+The benchmark producing these numbers were run on an Ubuntu 16.10 machine with 8 logical cores (4 physical, HT). The actual numbers are not to be interpreted as absolute performance figures, but rather as relative comparisons between the different allocators. For additional benchmark results, see the [BENCHMARKS](BENCHMARKS.md) file.
 
 Configuration of the thread and global caches can be important depending on your use pattern. See [CACHE](CACHE.md) for a case study and some comments/guidelines.
 
@@ -52,7 +50,7 @@ If you wish to override the standard library malloc family of functions and have
 # Building
 To compile as a static library run the configure python script which generates a Ninja build script, then build using ninja. Or use the Visual Studio or XCode projects available in the build subdirectories. This also includes the malloc overrides and init/fini glue code.
 
-The configure + ninja build also produces a shared object/dynamic library that can be used with LD_PRELOAD/DYLD_INSERT_LIBRARIES to inject in a preexisting binary. This is only implemented for Linux and macOS targets.
+The configure + ninja build also produces a shared object/dynamic library that can be used with LD_PRELOAD/DYLD_INSERT_LIBRARIES to inject in a preexisting binary, replacing any malloc/free family of function calls. This is only implemented for Linux and macOS targets.
 
 # Cache configuration options
 You can control the thread and global cache configuration of the allocator in the `rpmalloc.c` source file for fine tuned control, or you can define preprocessor directives for one of four presets. If you do not define any of these directives, the default preset will be used which is to increase caches and prioritize performance over memory overhead (but not making caches unlimited).
@@ -69,7 +67,7 @@ Detailed statistics are available if __ENABLE_STATISTICS__ is defined to 1, eith
 Integer safety checks on all calls are enabled if __ENABLE_VALIDATE_ARGS__ is defined to 1, either on compile command line or by setting the value in `rpmalloc.c`. If enabled, size arguments to the global entry points are verified not to cause integer overflows in calculations.
 
 # Quick overview
-The allocator is similar in spirit to tcmalloc from the [https://github.com/gperftools/gperftools](Google Performance Toolkit). It uses separate heaps for each thread and partitions memory blocks according to a preconfigured set of size classes, up to 2MiB. Larger blocks are mapped and unmapped directly. Allocations for different size classes will be served from different set of memory pages, each "span" of pages is dedicated to one size class. Spans of pages can flow between threads when the thread cache overflows and are released to a global cache.
+The allocator is similar in spirit to tcmalloc from the [https://github.com/gperftools/gperftools](Google Performance Toolkit). It uses separate heaps for each thread and partitions memory blocks according to a preconfigured set of size classes, up to 2MiB. Larger blocks are mapped and unmapped directly. Allocations for different size classes will be served from different set of memory pages, each "span" of pages is dedicated to one size class. Spans of pages can flow between threads when the thread cache overflows and are released to a global cache, or when the thread ends.
 
 # Implementation details
 The allocator is based on 64KiB alignment, where all runs of memory pages are mapped to 64KiB boundaries. On Windows this is automatically guaranteed by the VirtualAlloc granularity, and on mmap systems it is achieved by atomically incrementing the address where pages are mapped to. By aligning to 64KiB boundaries the free operation can locate the header of the memory block without having to do a table lookup (as tcmalloc does) by simply masking out the low 16 bits of the address.
