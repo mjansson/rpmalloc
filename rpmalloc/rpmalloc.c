@@ -1123,8 +1123,7 @@ _memory_adjust_size_class(size_t iclass) {
 	size_t header_size = SPAN_HEADER_SIZE;
 	size_t page_count = (block_size * 255) / PAGE_SIZE;
 	//Cap to 16 pages (64KiB span granularity)
-	if (page_count > 16)
-		page_count = 16;
+	page_count = (page_count == 0) ? 1 : ((page_count > 16) ? 16 : page_count);
 	//Merge page counts to an even number of pages
 	page_count = ((page_count + 1) / 2) * 2;
 	if (page_count > 16)
