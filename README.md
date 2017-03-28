@@ -87,10 +87,12 @@ There is no memory fragmentation by the allocator in the meaning that it will no
 
 However, there is memory fragmentation in the meaning that a request for x bytes followed by a request of y bytes where x and y are at least one size class different in size will return blocks that are at least one memory page apart in virtual address space. Only blocks of the same size will potentially be within the same memory page span.
 
+Unlike the similar tcmalloc where the linked list of individual blocks leads to back-to-back allocations of the same block size will spread across a different span of memory pages each time (depending on free order), rpmalloc keeps an "active span" for each size class. This leads to back-to-back allocations will most likely be served from within the same span of memory pages (unless the span runs out of free blocks of course).
+
 # Best case scenarios
 Threads that keep ownership of allocated memory blocks within the thread and free the blocks from the same thread will have optimal performance.
 
-Threads that have allocation patterns where the difference in memory usage high and low water marks fit within the thread caches in the allocator will never touch the global cache and have optimal performance.
+Threads that have allocation patterns where the difference in memory usage high and low water marks fit within the thread cache thresholds in the allocator will never touch the global cache except during thread init/fini and have optimal performance.
 
 # Worst case scenarios
 Since each thread cache maps spans of memory pages per size class, a thread that allocates just a few blocks of each size class (16, 32, 48, ...) for many size classes will never fill each bucket, and thus map a lot of memory pages while only using a small fraction of the mapped memory.
