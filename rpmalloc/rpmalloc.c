@@ -690,9 +690,10 @@ _memory_allocate_large_from_heap(heap_t* heap, size_t size) {
 	size_t num_spans = size / SPAN_MAX_SIZE;
 	if (size % SPAN_MAX_SIZE)
 		++num_spans;
-
-	//Step 1: Check if cache for this large size class (or the following) has a span
 	size_t idx = num_spans - 1;
+
+use_cache:
+	//Step 1: Check if cache for this large size class (or the following, unless first class) has a span
 	while (!heap->large_cache[idx] && (idx < LARGE_CLASS_COUNT) && (idx < num_spans + 1))
 		++idx;
 	span_t* span = heap->large_cache[idx];
@@ -706,32 +707,39 @@ _memory_allocate_large_from_heap(heap_t* heap, size_t size) {
 			heap->large_cache[idx] = 0;
 		}
 		span->data.span_count = (uint32_t)(idx + 1);
+		return pointer_offset(span, SPAN_HEADER_SIZE);
+	}
+
+	//Restore index, we're back to smallest fitting span count
+	idx = num_spans - 1;
+
+	//Step 2: Process deferred deallocation
+	if (_memory_deallocate_deferred(heap, SIZE_CLASS_COUNT + idx))
+		goto use_cache;
+
+	//Step 3: Extract a list of spans from global cache
+	span = _memory_global_cache_large_extract(num_spans);
+	if (span) {
+#if ENABLE_STATISTICS
+		heap->global_to_thread += (size_t)span->data.list_size * num_spans * SPAN_MAX_SIZE;
+#endif
+		//We got a list from global cache, store remainder in thread cache
+		if (span->data.list_size > 1) {
+			heap->large_cache[idx] = span->next_span;
+			heap->large_cache[idx]->prev_span = 0;
+			heap->large_cache[idx]->data.list_size = span->data.list_size - 1;
+		}
 	}
 	else {
-		//Step 2: Extract a list of spans from global cache
-		idx = num_spans - 1; //Restore index, we're back to smallest fitting span count
-		span = _memory_global_cache_large_extract(num_spans);
-		if (span) {
-#if ENABLE_STATISTICS
-			heap->global_to_thread += (size_t)span->data.list_size * (idx + 1) * SPAN_MAX_SIZE;
-#endif
-			//We got a list from global cache, store remainder in thread cache
-			if (span->data.list_size > 1) {
-				heap->large_cache[idx] = span->next_span;
-				heap->large_cache[idx]->prev_span = 0;
-				heap->large_cache[idx]->data.list_size = span->data.list_size - 1;
-			}
-		}
-		else {
-			//Step 3: Map in more memory pages
-			span = _memory_map(num_spans * SPAN_MAX_PAGE_COUNT);
-			span->size_class = SIZE_CLASS_COUNT;
-		}
-		//Mark span as owned by this heap
-		span->data.span_count = (uint32_t)num_spans;
-		atomic_store32(&span->heap_id, heap->id);
-		atomic_thread_fence_release();
+		//Step 4: Map in more memory pages
+		span = _memory_map(num_spans * SPAN_MAX_PAGE_COUNT);
+		span->size_class = SIZE_CLASS_COUNT + (count_t)(num_spans - 1);
 	}
+	//Mark span as owned by this heap
+	span->data.span_count = (uint32_t)num_spans;
+	atomic_store32(&span->heap_id, heap->id);
+	atomic_thread_fence_release();
+
 	return pointer_offset(span, SPAN_HEADER_SIZE);
 }
 
@@ -970,6 +978,7 @@ _memory_deallocate_deferred(heap_t* heap, size_t size_class) {
 		}
 		else {
 			//Large block
+			got_class |= ((span->size_class >= size_class) && (span->size_class <= (size_class + 2)));
 			_memory_deallocate_large_to_heap(heap, span);
 		}
 		//Loop until all pending operations in list are processed
