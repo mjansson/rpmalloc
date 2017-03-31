@@ -1025,9 +1025,9 @@ _memory_deallocate_large_to_heap(heap_t* heap, span_t* span) {
 			}
 			*cache = next;
 			last->next_span = 0; //Terminate list
-			_memory_global_cache_large_insert(span, list_size, span->data.span_count);
+			_memory_global_cache_large_insert(span, list_size, idx + 1);
 #if ENABLE_STATISTICS
-			heap->thread_to_global += list_size * span->data.span_count * SPAN_MAX_SIZE;
+			heap->thread_to_global += list_size * (idx + 1) * SPAN_MAX_SIZE;
 #endif
 		}
 	}
