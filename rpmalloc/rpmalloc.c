@@ -41,9 +41,9 @@
 //! Minimum number of spans to transfer between thread and global cache
 #define MIN_SPAN_CACHE_RELEASE 16
 //! Maximum cache size divisor (max cache size will be max allocation count divided by this divisor)
-#define MAX_SPAN_CACHE_DIVISOR 4
+#define MAX_SPAN_CACHE_DIVISOR 8
 //! Multiplier for global span cache limit (max cache size will be calculated like thread cache and multiplied with this)
-//#define GLOBAL_SPAN_CACHE_MULTIPLIER 8
+#define GLOBAL_SPAN_CACHE_MULTIPLIER 4
 #endif
 
 //! Size of heap hashmap
@@ -60,8 +60,8 @@
 #endif
 
 #ifndef ENABLE_ASSERTS
-//! Enable sanity checks
-#define ENABLE_ASSERTS      1
+//! Enable asserts
+#define ENABLE_ASSERTS            0
 #endif
 
 // Platform and arch specifics
@@ -468,10 +468,10 @@ _memory_global_cache_insert(span_t* first_span, size_t list_size, size_t page_co
 #endif
 	//Global cache full, release pages
 	for (size_t ispan = 0; ispan < list_size; ++ispan) {
+		assert(first_span);
 		span_t* next_span = first_span->next_span;
 		_memory_unmap(first_span, page_count);
 		first_span = next_span;
-		assert(first_span);
 	}
 }
 
@@ -551,10 +551,10 @@ _memory_global_cache_large_insert(span_t* span_list, size_t list_size, size_t sp
 #endif
 	//Global cache full, release spans
 	for (size_t ispan = 0; ispan < list_size; ++ispan) {
+		assert(span_list);
 		span_t* next_span = span_list->next_span;
 		_memory_unmap(span_list, span_count * SPAN_MAX_PAGE_COUNT);
 		span_list = next_span;
-		assert(span_list);
 	}
 }
 
