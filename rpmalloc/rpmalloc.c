@@ -1002,6 +1002,7 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 	if (block_data->free_count == ((count_t)size_class->block_count - 1)) {
 		//Track counters
 		size_t span_class_idx = _span_class_from_page_count(size_class->page_count);
+		assert(heap->span_counter[span_class_idx].current_allocations > 0);
 		--heap->span_counter[span_class_idx].current_allocations;
 
 		//If it was active, reset counter. Otherwise, if not active, remove from
@@ -1047,6 +1048,7 @@ _memory_deallocate_large_to_heap(heap_t* heap, span_t* span) {
 	//Decrease counter
 	size_t idx = span->size_class - SIZE_CLASS_COUNT;
 	span_counter_t* counter = heap->large_counter + idx;
+	assert(counter->current_allocations > 0);
 	--counter->current_allocations;
 
 #if MAX_SPAN_CACHE_DIVISOR == 0
