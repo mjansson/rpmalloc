@@ -4,7 +4,9 @@ Add four cache presets (unlimited, performance priority, size priority and no ca
 
 Slight performance improvement by dependent class index lookup for merged size classes
 
-Allow thread cache to vary depending on number of active threads, release to global cache in fixed size batches
+Adaptive cache size per thread and per size class for improved memory efficiency, and release thread caches to global cache in fixed size batches
+
+Merged caches for small/medium classes using 64KiB spans with 64KiB large blocks
 
 Require thread initialization with rpmalloc_thread_initialize, add pthread hooks for automatic init/fini
 
@@ -14,8 +16,9 @@ Fix invalid old size in memory copy during realloc
 
 Optional statistics and integer overflow guards
 
-Provide malloc entry point replacements and automatic init/fini hooks,
-and a LD_PRELOAD:able dynamic library build
+Optional asserts for easier debugging
+
+Provide malloc entry point replacements and automatic init/fini hooks, and a LD_PRELOAD:able dynamic library build
 
 Improve documentation and additional code comments
 
