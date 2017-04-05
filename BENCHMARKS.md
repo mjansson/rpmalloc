@@ -30,15 +30,19 @@ Linear falloff distributed sizes in `[16, 8000]` range, 20000 loops with 50000 b
 ![Ubuntu 16.10 random [16, 8000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=301017877&format=image)
 ![Ubuntu 16.10 random [16, 8000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=1224595675&format=image)
 
-Ignoring the lockfree-malloc memory overhead range and focusing on the allocators we can see they are pretty close in memory overhead factors, with most of the multihreaded cases hovering around the 20% overhead mark.
+Ignoring the lockfree-malloc and jemalloc memory overhead range and focusing on the other allocators we can see they are pretty close in memory overhead factors, with most of the multihreaded cases hovering around the 10-15% overhead mark.
 
 ![Ubuntu 16.10 random [16, 8000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=812830245&format=image)
 
 # Random size in [16, 16000] range
 Parameters: `benchmark <num threads> 0 1 2 20000 50000 5000 16 16000`
 Linear falloff distributed sizes in `[16, 16000]` range, 20000 loops with 50000 blocks per thread. Every iteration 5000 blocks (10%) are freed and allocated in a scattered pattern. Cross thread allocations/deallocations of 5000 blocks in each thread every other loop iteration.
-![Ubuntu 16.10 random [16, 16000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=300710721&format=image)
-![Ubuntu 16.10 random [16, 16000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=496715703&format=image)
+![Ubuntu 16.10 random [16, 16000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=554347956&format=image)
+![Ubuntu 16.10 random [16, 16000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=1568940233&format=image)
+
+Once again focusing on the lower overhead allocators
+
+![Ubuntu 16.10 random [16, 16000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=1749852896&format=image)
 
 # Random size in [128, 64000] range
 Parameters: `benchmark <num threads> 0 2 2 20000 30000 3000 128 64000`
