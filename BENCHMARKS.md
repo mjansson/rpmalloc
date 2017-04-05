@@ -14,17 +14,19 @@ Below is a collection of benchmark results for various allocation sizes. The mac
 The benchmark configurations are to be interpreted as performing alloc/free pairs of 10% of the allocated blocks in each loop iteration (in each thread). Since the free and alloc operations are scattered the patterns of requested sizes and block addresses are random and does not follow any sequential order.
 
 # Result analysis
-rpmalloc is faster than all allocators, except lockfree-malloc in a few cases. However, the latter suffers from massive erratic memory overhead as the number of threads increases. Allocators such as tcmalloc and jemalloc trail behind ~15% in performance, and jemalloc also suffers from higher memory overhead.
+rpmalloc is faster than all allocators, except lockfree-malloc in a few cases when number of threads exceeds number of processor cores. However, the latter suffers from massive memory overhead as the number of threads increases. Allocators such as tcmalloc and jemalloc trail behind ~15% in performance, and jemalloc also suffers from erratic higher memory overhead.
+
+For an example of how rpmalloc cache configurations affect performance and memory overhead, see the [CACHE](CACHE.md) file.
 
 # Random size in [16, 1000] range
-Parameters: `benchmark <num threads> 0 0 2 10000 50000 5000 16 1000`
-Evenly distributed sizes in `[16, 1000]` range, 10000 loops with 50000 blocks per thread. Every iteration 5000 blocks (10%) are freed and allocated in a scattered pattern. Cross thread deallocations every other loop iteration.
+Parameters: `benchmark <num threads> 0 0 2 20000 50000 5000 16 1000`
+Evenly distributed sizes in `[16, 1000]` range, 20000 loops with 50000 blocks per thread. Every iteration 5000 blocks (10%) are freed and allocated in a scattered pattern. Cross thread allocations/deallocations of 5000 blocks in each thread every other loop iteration.
 ![Ubuntu 16.10 random [16, 1000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=1979506104&format=image)
 ![Ubuntu 16.10 random [16, 1000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=853552429&format=image)
 
 # Random size in [16, 8000] range
-Parameters: `benchmark <num threads> 0 1 2 10000 50000 5000 16 8000`
-Linear falloff distributed sizes in `[16, 8000]` range, 10000 loops with 50000 blocks per thread. Every iteration 5000 blocks (10%) are freed and allocated in a scattered pattern. Cross thread deallocations every other loop iteration.
+Parameters: `benchmark <num threads> 0 1 2 20000 50000 5000 16 8000`
+Linear falloff distributed sizes in `[16, 8000]` range, 20000 loops with 50000 blocks per thread. Every iteration 5000 blocks (10%) are freed and allocated in a scattered pattern. Cross thread allocations/deallocations of 5000 blocks in each thread every other loop iteration.
 ![Ubuntu 16.10 random [16, 8000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=301017877&format=image)
 ![Ubuntu 16.10 random [16, 8000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=1224595675&format=image)
 
@@ -33,7 +35,19 @@ Ignoring the lockfree-malloc memory overhead range and focusing on the allocator
 ![Ubuntu 16.10 random [16, 8000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=812830245&format=image)
 
 # Random size in [16, 16000] range
-Parameters: `benchmark <num threads> 0 1 2 10000 50000 5000 16 16000`
-Linear falloff distributed sizes in `[16, 16000]` range, 10000 loops with 50000 blocks per thread. Every iteration 5000 blocks (10%) are freed and allocated in a scattered pattern. Cross thread deallocations every other loop iteration.
+Parameters: `benchmark <num threads> 0 1 2 20000 50000 5000 16 16000`
+Linear falloff distributed sizes in `[16, 16000]` range, 20000 loops with 50000 blocks per thread. Every iteration 5000 blocks (10%) are freed and allocated in a scattered pattern. Cross thread allocations/deallocations of 5000 blocks in each thread every other loop iteration.
 ![Ubuntu 16.10 random [16, 16000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=300710721&format=image)
 ![Ubuntu 16.10 random [16, 16000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=496715703&format=image)
+
+# Random size in [128, 64000] range
+Parameters: `benchmark <num threads> 0 2 2 20000 30000 3000 128 64000`
+Exponential falloff distributed sizes in `[128, 64000]` range, 20000 loops with 30000 blocks per thread. Every iteration 3000 blocks (10%) are freed and allocated in a scattered pattern. Cross thread allocations/deallocations of 3000 blocks in each thread every other loop iteration.
+![Ubuntu 16.10 random [16, 16000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=1077134401&format=image)
+![Ubuntu 16.10 random [16, 16000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=307285196&format=image)
+
+# Random size in [512, 16000] range
+Parameters: `benchmark <num threads> 0 2 2 20000 20000 2000 512 160000`
+Exponential falloff distributed sizes in `[512, 160000]` range, 20000 loops with 20000 blocks per thread. Every iteration 2000 blocks (10%) are freed and allocated in a scattered pattern. Cross thread allocations/deallocations of 2000 blocks in each thread every other loop iteration.
+![Ubuntu 16.10 random [16, 16000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=1203594510&format=image)
+![Ubuntu 16.10 random [16, 16000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=1849152448&format=image)
