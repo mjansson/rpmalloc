@@ -4,6 +4,12 @@ Dual license under MIT
 
 Fix init/fini checks in malloc entry points for preloading into binaries that does malloc/free in init or fini sections
 
+Improve mmap 64KiB granularity enforcement loop to avoid excessive iterations
+
+Fix undersized adaptive cache counter array for large block in heap structure, causing potential abort on exit
+
+Avoid hysteresis in realloc by overallocating on small size increases
+
 1.1
 
 Add four cache presets (unlimited, performance priority, size priority and no cache)
