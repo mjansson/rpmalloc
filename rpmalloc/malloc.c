@@ -37,69 +37,42 @@ posix_memalign(void** memptr, size_t alignment, size_t size);
 extern size_t
 malloc_usable_size(void* ptr);
 
-void*
-calloc(size_t count, size_t size) {
-	return rpcalloc(count, size);
-}
-
-void
-free(void* ptr) {
-	rpfree(ptr);
-}
-
-void*
-malloc(size_t size) {
-	return rpmalloc(size);
-}
-
-void*
-realloc(void* ptr, size_t size) {
-	return rprealloc(ptr, size);
-}
-
-void*
-aligned_alloc(size_t alignment, size_t size) {
-	return rpaligned_alloc(alignment, size);
-}
-
-void*
-memalign(size_t alignment, size_t size) {
-	return rpmemalign(alignment, size);
-}
-
-int
-posix_memalign(void** memptr, size_t alignment, size_t size) {
-	return rpposix_memalign(memptr, alignment, size);
-}
-
-size_t
-malloc_usable_size(void* ptr) {
-	return rpmalloc_usable_size(ptr);
-}
-
 #ifdef _WIN32
 
 //TODO: Injection from rpmalloc compiled as DLL not yet implemented
+
+#define INITIALIZE_CHECK()
+#define FINALIZE_CHECK()
 
 #else
 
 #include <pthread.h>
 #include <stdlib.h>
 
+#define INITIALIZE_CHECK() initializer()
+#define FINALIZE_CHECK() if (!is_initialized) return;
+
 static pthread_key_t destructor_key;
+static int is_initialized;
 
 static void
 thread_destructor(void*);
 
-static __attribute__((constructor)) void
-initialize_rpmalloc(void) {
-	pthread_key_create(&destructor_key, thread_destructor);
-	rpmalloc_initialize();
+static void __attribute__((constructor))
+initializer(void) {
+	if (!is_initialized) {
+		is_initialized = 1;
+		pthread_key_create(&destructor_key, thread_destructor);
+		rpmalloc_initialize();
+	}
 }
 
-static __attribute__((destructor)) void
-finalize_rpmalloc(void) {
-	rpmalloc_finalize();
+static void __attribute__((destructor))
+finalizer(void) {
+	if (is_initialized) {
+		is_initialized = 0;
+		rpmalloc_finalize();
+	}
 }
 
 typedef struct {
@@ -146,7 +119,7 @@ typedef struct interpose_s {
 #define MAC_INTERPOSE(newf, oldf) __attribute__((used)) \
 static const interpose_t macinterpose##newf##oldf \
 __attribute__ ((section("__DATA, __interpose"))) = \
-	{ (void *) newf, (void *) oldf }
+	{ (void*)newf, (void*)oldf }
 
 MAC_INTERPOSE(pthread_create_proxy, pthread_create);
 
@@ -176,3 +149,50 @@ pthread_create(pthread_t* thread,
 
 #endif
 
+void*
+calloc(size_t count, size_t size) {
+	INITIALIZE_CHECK();
+	return rpcalloc(count, size);
+}
+
+void
+free(void* ptr) {
+	FINALIZE_CHECK();
+	rpfree(ptr);
+}
+
+void*
+malloc(size_t size) {
+	INITIALIZE_CHECK();
+	return rpmalloc(size);
+}
+
+void*
+realloc(void* ptr, size_t size) {
+	INITIALIZE_CHECK();
+	return rprealloc(ptr, size);
+}
+
+void*
+aligned_alloc(size_t alignment, size_t size) {
+	INITIALIZE_CHECK();
+	return rpaligned_alloc(alignment, size);
+}
+
+void*
+memalign(size_t alignment, size_t size) {
+	INITIALIZE_CHECK();
+	return rpmemalign(alignment, size);
+}
+
+int
+posix_memalign(void** memptr, size_t alignment, size_t size) {
+	INITIALIZE_CHECK();
+	return rpposix_memalign(memptr, alignment, size);
+}
+
+size_t
+malloc_usable_size(void* ptr) {
+	INITIALIZE_CHECK();
+	return rpmalloc_usable_size(ptr);
+}
