@@ -330,7 +330,7 @@ struct heap_t {
 	//! List of free spans for each large class count (single linked list)
 	span_t*      large_cache[LARGE_CLASS_COUNT];
 	//! Allocation counters for large blocks
-	span_counter_t large_counter[SPAN_CLASS_COUNT];
+	span_counter_t large_counter[LARGE_CLASS_COUNT];
 	//! Next heap in id list
 	heap_t*      next_heap;
 	//! Next heap in orphan list
