@@ -1536,16 +1536,17 @@ _memory_map(size_t page_count) {
 		                  (incr * (intptr_t)SPAN_ADDRESS_GRANULARITY));
 		pages_ptr = mmap(base_addr, total_size, PROT_READ | PROT_WRITE,
 		                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED, -1, 0);
-		if (!((uintptr_t)pages_ptr & ~SPAN_MASK)) {
+		if (pages_ptr != MAP_FAILED) {
 			if (pages_ptr != base_addr) {
-				pages_ptr = (void*)((uintptr_t)pages_ptr & SPAN_MASK);
-				atomic_store64(&_memory_addr, (int64_t)((uintptr_t)pages_ptr) +
-							   (incr * (intptr_t)SPAN_ADDRESS_GRANULARITY));
+				void* new_base = (void*)((uintptr_t)pages_ptr & SPAN_MASK);
+				atomic_store64(&_memory_addr, (int64_t)((uintptr_t)new_base) +
+							   ((incr + 1) * (intptr_t)SPAN_ADDRESS_GRANULARITY));
 				atomic_thread_fence_release();
 			}
-			break;
+			if (!((uintptr_t)pages_ptr & ~SPAN_MASK))
+				break;
+			munmap(pages_ptr, total_size);
 		}
-		munmap(pages_ptr, total_size);
 	}
 	while (1);
 #endif
