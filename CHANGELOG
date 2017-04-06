@@ -1,3 +1,9 @@
+1.2
+
+Dual license under MIT
+
+Fix init/fini checks in malloc entry points for preloading into binaries that does malloc/free in init or fini sections
+
 1.1
 
 Add four cache presets (unlimited, performance priority, size priority and no cache)

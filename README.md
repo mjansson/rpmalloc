@@ -11,7 +11,7 @@ Platforms currently supported:
 
 The code should be easily portable to any platform with atomic operations and an mmap-style virtual memory management API.
 
-This library is put in the public domain; you can redistribute it and/or modify it without any restrictions.
+This library is put in the public domain; you can redistribute it and/or modify it without any restrictions. Or, if you choose, you can use it under the MIT license.
 
 Please consider our Patreon to support our work - https://www.patreon.com/rampantpixels
 
