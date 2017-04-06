@@ -1218,7 +1218,9 @@ _memory_reallocate(void* p, size_t size, size_t oldsize) {
 	}
 
 	//Size is greater than block size, need to allocate a new block and deallocate the old
-	void* block = _memory_allocate(size);
+	//Avoid hysteresis by overallocating if increase is small (below 37%)
+	size_t lower_bound = oldsize + (oldsize >> 2) + (oldsize >> 3);
+	void* block = _memory_allocate(size > lower_bound ? size : lower_bound);
 	if (p) {
 		memcpy(block, p, oldsize < size ? oldsize : size);
 		_memory_deallocate(p);
