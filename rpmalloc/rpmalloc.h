@@ -22,6 +22,9 @@
 # define RPMALLOC_CALL
 #endif
 
+//! Flag to rpaligned_realloc to not preserve content in reallocation
+#define RPMALLOC_NO_PRESERVE    1
+
 typedef struct rpmalloc_global_statistics_t {
 	//! Current amount of virtual memory mapped (only if ENABLE_STATISTICS=1)
 	size_t mapped;
@@ -86,6 +89,9 @@ rpcalloc(size_t num, size_t size) RPMALLOC_ATTRIBUTE;
 
 extern void*
 rprealloc(void* ptr, size_t size);
+
+extern void*
+rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize, unsigned int flags);
 
 extern RPMALLOC_CALL void*
 rpaligned_alloc(size_t alignment, size_t size) RPMALLOC_ATTRIBUTE;

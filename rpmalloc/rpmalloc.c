@@ -1175,7 +1175,7 @@ _memory_deallocate(void* p) {
 
 //! Reallocate the given block to the given size
 static void*
-_memory_reallocate(void* p, size_t size, size_t oldsize) {
+_memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 	if (p) {
 		//Grab the span (always at start of span, using 64KiB alignment)
 		span_t* span = (void*)((uintptr_t)p & SPAN_MASK);
@@ -1222,7 +1222,8 @@ _memory_reallocate(void* p, size_t size, size_t oldsize) {
 	size_t lower_bound = oldsize + (oldsize >> 2) + (oldsize >> 3);
 	void* block = _memory_allocate(size > lower_bound ? size : lower_bound);
 	if (p) {
-		memcpy(block, p, oldsize < size ? oldsize : size);
+		if (!(flags & RPMALLOC_NO_PRESERVE))
+			memcpy(block, p, oldsize < size ? oldsize : size);
 		_memory_deallocate(p);
 	}
 
@@ -1375,6 +1376,7 @@ rpmalloc_finalize(void) {
 
 		atomic_store_ptr(&_memory_heaps[list_idx], 0);
 	}
+	atomic_store_ptr(&_memory_orphan_heaps, 0);
 
 	//Free global caches
 	for (size_t iclass = 0; iclass < SPAN_CLASS_COUNT; ++iclass) {
@@ -1647,7 +1649,21 @@ rprealloc(void* ptr, size_t size) {
 		return ptr;
 	}
 #endif
-	return _memory_reallocate(ptr, size, 0);
+	return _memory_reallocate(ptr, size, 0, 0);
+}
+
+void*
+rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize,
+                  unsigned int flags) {
+#if ENABLE_VALIDATE_ARGS
+	if (size + alignment < size) {
+		errno = EINVAL;
+		return 0;
+	}
+#endif
+	//TODO: If alignment > 16, we need to copy to new aligned position
+	(void)sizeof(alignment);
+	return _memory_reallocate(ptr, size, oldsize, flags);
 }
 
 void*
