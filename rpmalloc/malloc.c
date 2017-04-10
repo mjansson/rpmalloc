@@ -41,16 +41,10 @@ malloc_usable_size(void* ptr);
 
 //TODO: Injection from rpmalloc compiled as DLL not yet implemented
 
-#define INITIALIZE_CHECK()
-#define FINALIZE_CHECK()
-
 #else
 
 #include <pthread.h>
 #include <stdlib.h>
-
-#define INITIALIZE_CHECK() initializer()
-#define FINALIZE_CHECK() if (!is_initialized) return;
 
 static pthread_key_t destructor_key;
 static int is_initialized;
@@ -65,6 +59,7 @@ initializer(void) {
 		pthread_key_create(&destructor_key, thread_destructor);
 		rpmalloc_initialize();
 	}
+	rpmalloc_thread_initialize();
 }
 
 static void __attribute__((destructor))
@@ -151,48 +146,50 @@ pthread_create(pthread_t* thread,
 
 void*
 calloc(size_t count, size_t size) {
-	INITIALIZE_CHECK();
+	initializer();
 	return rpcalloc(count, size);
 }
 
 void
 free(void* ptr) {
-	FINALIZE_CHECK();
+	if (!is_initialized)
+		return;
 	rpfree(ptr);
 }
 
 void*
 malloc(size_t size) {
-	INITIALIZE_CHECK();
+	initializer();
 	return rpmalloc(size);
 }
 
 void*
 realloc(void* ptr, size_t size) {
-	INITIALIZE_CHECK();
+	initializer();
 	return rprealloc(ptr, size);
 }
 
 void*
 aligned_alloc(size_t alignment, size_t size) {
-	INITIALIZE_CHECK();
+	initializer();
 	return rpaligned_alloc(alignment, size);
 }
 
 void*
 memalign(size_t alignment, size_t size) {
-	INITIALIZE_CHECK();
+	initializer();
 	return rpmemalign(alignment, size);
 }
 
 int
 posix_memalign(void** memptr, size_t alignment, size_t size) {
-	INITIALIZE_CHECK();
+	initializer();
 	return rpposix_memalign(memptr, alignment, size);
 }
 
 size_t
 malloc_usable_size(void* ptr) {
-	INITIALIZE_CHECK();
+	if (!rpmalloc_is_thread_initialized())
+		return 0;
 	return rpmalloc_usable_size(ptr);
 }

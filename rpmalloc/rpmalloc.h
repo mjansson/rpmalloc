@@ -72,6 +72,9 @@ rpmalloc_thread_finalize(void);
 extern void
 rpmalloc_thread_collect(void);
 
+extern int
+rpmalloc_is_thread_initialized(void);
+
 extern void
 rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats);
 
