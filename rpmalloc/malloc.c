@@ -64,6 +64,7 @@ initializer(void) {
 
 static void __attribute__((destructor))
 finalizer(void) {
+	rpmalloc_thread_finalize();
 	if (is_initialized) {
 		is_initialized = 0;
 		rpmalloc_finalize();
