@@ -1157,7 +1157,7 @@ _memory_deallocate(void* p) {
 	int32_t heap_id = atomic_load32(&span->heap_id);
 	heap_t* heap = _memory_thread_heap;
 	//Check if block belongs to this heap or if deallocation should be deferred
-	if (heap && (heap_id == heap->id)) {
+	if (heap_id == heap->id) {
 		if (span->size_class < SIZE_CLASS_COUNT)
 			_memory_deallocate_to_heap(heap, span, p);
 		else
