@@ -70,10 +70,7 @@ class Toolchain(object):
     else:
       self.libprefix = 'lib'
       self.staticlibext = '.a'
-      if target.is_macosx() or target.is_ios():
-        self.dynamiclibext = '.dylib'
-      else:
-        self.dynamiclibext = '.so'
+      self.dynamiclibext = '.so'
       self.binprefix = ''
       self.binext = ''
 
@@ -331,7 +328,8 @@ class Toolchain(object):
       includepaths = []
     if libpaths is None:
       libpaths = []
-    sourcevariables = {'includepaths': self.depend_includepaths + list(includepaths)}
+    sourcevariables = (variables or {}).copy()
+    sourcevariables.update({'includepaths': self.depend_includepaths + list(includepaths)})
     nodevariables = (variables or {}).copy()
     nodevariables.update({
                      'libs': libs,
@@ -353,10 +351,10 @@ class Toolchain(object):
         for name in sources:
           if os.path.isabs(name):
             infile = name
-            outfile = os.path.join(modulepath, os.path.splitext(os.path.basename(name))[0] + make_pathhash(infile, nodetype) + self.objext)
+            outfile = os.path.join(modulepath, os.path.splitext(os.path.basename(name))[0] + make_pathhash(binfile + infile, nodetype) + self.objext)
           else:
             infile = os.path.join(basepath, module, name)
-            outfile = os.path.join(modulepath, os.path.splitext(name)[0] + make_pathhash(infile, nodetype) + self.objext)
+            outfile = os.path.join(modulepath, os.path.splitext(name)[0] + make_pathhash(binfile + infile, nodetype) + self.objext)
           objs += self.compile_file(writer, config, arch, nodetype, infile, outfile, sourcevariables, externalsources)
         #Build arch node (per-config-and-arch binary)
         archoutpath = os.path.join(modulepath, binfile)

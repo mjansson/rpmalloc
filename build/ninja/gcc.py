@@ -17,14 +17,15 @@ class GCCToolchain(toolchain.Toolchain):
     self.cxxompiler = 'g++'
     self.archiver = 'ar'
     self.linker = 'gcc'
+    self.cxxlinker = 'g++'
 
     #Command definitions
-    self.cccmd = '$toolchain$cc -MMD -MT $out -MF $out.d -I. $includepaths $moreincludepaths $cflags $carchflags $cconfigflags -c $in -o $out'
-    self.cxxcmd = '$toolchain$cxx -MMD -MT $out -MF $out.d -I. $includepaths $moreincludepaths $cxxflags $carchflags $cconfigflags -c $in -o $out'
+    self.cccmd = '$toolchain$cc -MMD -MT $out -MF $out.d -I. $includepaths $moreincludepaths $cflags $carchflags $cconfigflags $cmoreflags -c $in -o $out'
+    self.cxxcmd = '$toolchain$cxx -MMD -MT $out -MF $out.d -I. $includepaths $moreincludepaths $cxxflags $carchflags $cconfigflags $cmoreflags -c $in -o $out'
     self.ccdeps = 'gcc'
     self.ccdepfile = '$out.d'
     self.arcmd = self.rmcmd('$out') + ' && $toolchain$ar crsD $ararchflags $arflags $out $in'
-    self.linkcmd = '$toolchain$cc $libpaths $configlibpaths $linkflags $linkarchflags $linkconfigflags -o $out $in $libs $archlibs $oslibs'
+    self.linkcmd = '$toolchain$link $libpaths $configlibpaths $linkflags $linkarchflags $linkconfigflags -o $out $in $libs $archlibs $oslibs'
 
     #Base flags
     self.cflags = ['-D' + project.upper() + '_COMPILE=1',
@@ -72,6 +73,7 @@ class GCCToolchain(toolchain.Toolchain):
     #Setup target platform
     self.build_target_toolchain(self.target)
 
+    self.cmoreflags = []
     self.cexternflags = []
     self.cxxexternflags = []
     self.cexternflags += self.cflags
@@ -105,6 +107,7 @@ class GCCToolchain(toolchain.Toolchain):
     writer.variable('cxxflags', self.cxxflags)
     writer.variable('carchflags', '')
     writer.variable('cconfigflags', '')
+    writer.variable('cmoreflags', self.cmoreflags)
     writer.variable('arflags', self.arflags)
     writer.variable('ararchflags', '')
     writer.variable('arconfigflags', '')
@@ -138,6 +141,8 @@ class GCCToolchain(toolchain.Toolchain):
   def build_default_toolchain(self):
     self.cxxflags = self.cflags + ['-std=c++11', '-D_GNU_SOURCE=1']
     self.cflags += ['-std=c11', '-D_GNU_SOURCE=1']
+    if self.target.is_macosx() or self.target.is_ios():
+      self.cxxflags += ['-stdlib=libc++']
 
   def build_windows_toolchain(self):
     self.cxxflags = self.cflags
@@ -199,7 +204,12 @@ class GCCToolchain(toolchain.Toolchain):
 
   def make_linkconfigflags(self, config, targettype):
     flags = []
-    if not self.target.is_windows():
+    if self.target.is_windows():
+      if targettype == 'sharedlib':
+        flags += ['-Xlinker', '/DLL']
+      elif targettype == 'bin':
+        flags += ['-Xlinker', '/SUBSYSTEM:CONSOLE']
+    else:
       if targettype == 'sharedlib':
         if self.target.is_macosx() or self.target.is_ios():
           flags += ['-dynamiclib']
@@ -240,6 +250,8 @@ class GCCToolchain(toolchain.Toolchain):
       localvariables += [('cconfigflags', cconfigflags)]
     if externalsources:
       localvariables += [('cflags', self.cexternflags), ('cxxflags', self.cxxexternflags)]
+    if 'defines' in variables:
+      localvariables += [('cmoreflags', ['-D' + define for define in variables['defines']])]
     return localvariables
 
   def ar_variables(self, config, arch, targettype, variables):
@@ -268,6 +280,8 @@ class GCCToolchain(toolchain.Toolchain):
     if 'libpaths' in variables:
       libpaths = variables['libpaths']
     localvariables += [('configlibpaths', self.make_configlibpaths(config, arch, libpaths))]
+    if 'runtime' in variables and variables['runtime'] == 'c++':
+      localvariables += [('link', self.cxxlinker)]
     return localvariables
 
   def builder_cc(self, writer, config, arch, targettype, infile, outfile, variables, externalsources):

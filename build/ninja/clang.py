@@ -31,8 +31,8 @@ class ClangToolchain(toolchain.Toolchain):
       self.deploymenttarget = '10.7'
 
     #Command definitions
-    self.cccmd = '$toolchain$cc -MMD -MT $out -MF $out.d -I. $includepaths $moreincludepaths $cflags $carchflags $cconfigflags -c $in -o $out'
-    self.cxxcmd = '$toolchain$cxx -MMD -MT $out -MF $out.d -I. $includepaths $moreincludepaths $cxxflags $carchflags $cconfigflags -c $in -o $out'
+    self.cccmd = '$toolchain$cc -MMD -MT $out -MF $out.d -I. $includepaths $moreincludepaths $cflags $carchflags $cconfigflags $cmoreflags -c $in -o $out'
+    self.cxxcmd = '$toolchain$cxx -MMD -MT $out -MF $out.d -I. $includepaths $moreincludepaths $cxxflags $carchflags $cconfigflags $cmoreflags -c $in -o $out'
     self.ccdeps = 'gcc'
     self.ccdepfile = '$out.d'
     self.arcmd = self.rmcmd('$out') + ' && $toolchain$ar crsD $ararchflags $arflags $out $in'
@@ -103,8 +103,12 @@ class ClangToolchain(toolchain.Toolchain):
     self.build_toolchain()
 
     self.cflags += ['-std=c11']
-    #self.cxxflags += ['-std=c++11', '-stdlib=libc++']
+    if self.target.is_macosx() or self.target.is_ios():
+      self.cxxflags += ['-std=c++11', '-stdlib=libc++']
+    if self.target.is_linux():
+      self.cxxflags += ['-std=gnu++11']
 
+    self.cmoreflags = []
     self.cexternflags = []
     self.cxxexternflags = []
     self.cexternflags += self.cflags + ['-w']
@@ -161,6 +165,7 @@ class ClangToolchain(toolchain.Toolchain):
       writer.variable('mflags', self.mflags)
     writer.variable('carchflags', '')
     writer.variable('cconfigflags', '')
+    writer.variable('cmoreflags', self.cmoreflags)
     writer.variable('arflags', self.arflags)
     writer.variable('ararchflags', '')
     writer.variable('arconfigflags', '')
@@ -454,6 +459,8 @@ class ClangToolchain(toolchain.Toolchain):
       localvariables += [('sysroot', self.android.make_sysroot_path(arch))]
     if externalsources:
       localvariables += [('cflags', self.cexternflags), ('cxxflags', self.cxxexternflags)]
+    if 'defines' in variables:
+      localvariables += [('cmoreflags', ['-D' + define for define in variables['defines']])]
     return localvariables
 
   def ar_variables(self, config, arch, targettype, variables):
