@@ -16,4 +16,4 @@ toolchain = generator.toolchain
 
 rpmalloc_lib = generator.lib(module = 'rpmalloc', sources = ['rpmalloc.c', 'malloc.c', 'new.cc'])
 if not target.is_windows():
-	rpmalloc_so = generator.sharedlib(module = 'rpmalloc', sources = ['rpmalloc.c', 'malloc.c', 'new.cc'])
+	rpmalloc_so = generator.sharedlib(module = 'rpmalloc', sources = ['rpmalloc.c', 'malloc.c', 'new.cc'], variables = {'runtime': 'c++'})

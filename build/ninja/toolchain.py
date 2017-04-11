@@ -70,7 +70,10 @@ class Toolchain(object):
     else:
       self.libprefix = 'lib'
       self.staticlibext = '.a'
-      self.dynamiclibext = '.so'
+      if target.is_macosx() or target.is_ios():
+        self.dynamiclibext = '.dylib'
+      else:
+        self.dynamiclibext = '.so'
       self.binprefix = ''
       self.binext = ''
 
