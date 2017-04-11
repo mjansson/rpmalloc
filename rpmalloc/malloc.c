@@ -14,16 +14,19 @@
 //This file provides overrides for the standard library malloc style entry points
 
 extern void*
-calloc(size_t count, size_t size);
-
-extern void
-free(void* ptr);
+malloc(size_t size);
 
 extern void*
-malloc(size_t size);
+calloc(size_t count, size_t size);
 
 extern void *
 realloc(void* ptr, size_t size);
+
+extern void*
+valloc(size_t size);
+
+extern void*
+pvalloc(size_t size);
 
 extern void*
 aligned_alloc(size_t alignment, size_t size);
@@ -34,8 +37,17 @@ memalign(size_t alignment, size_t size);
 extern int
 posix_memalign(void** memptr, size_t alignment, size_t size);
 
+extern void
+free(void* ptr);
+
+extern void
+cfree(void* ptr);
+
 extern size_t
 malloc_usable_size(void* ptr);
+
+extern size_t
+malloc_size(void* ptr);
 
 #ifdef _WIN32
 
@@ -45,7 +57,10 @@ malloc_usable_size(void* ptr);
 
 #include <pthread.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <unistd.h>
 
+static size_t page_size;
 static pthread_key_t destructor_key;
 static int is_initialized;
 
@@ -56,6 +71,7 @@ static void __attribute__((constructor))
 initializer(void) {
 	if (!is_initialized) {
 		is_initialized = 1;
+		page_size = (size_t)sysconf(_SC_PAGESIZE);
 		pthread_key_create(&destructor_key, thread_destructor);
 		rpmalloc_initialize();
 	}
@@ -153,9 +169,14 @@ calloc(size_t count, size_t size) {
 
 void
 free(void* ptr) {
-	if (!is_initialized)
+	if (!is_initialized || !rpmalloc_is_thread_initialized())
 		return;
 	rpfree(ptr);
+}
+
+void
+cfree(void* ptr) {
+	free(ptr);
 }
 
 void*
@@ -168,6 +189,25 @@ void*
 realloc(void* ptr, size_t size) {
 	initializer();
 	return rprealloc(ptr, size);
+}
+
+void*
+valloc(size_t size) {
+	initializer();
+	if (!size)
+		size = page_size;
+	size_t total_size = size + page_size;
+	void* buffer = rpmalloc(total_size);
+	if ((uintptr_t)buffer & (page_size - 1))
+		return (void*)(((uintptr_t)buffer & ~(page_size - 1)) + page_size);
+	return buffer;
+}
+
+void*
+pvalloc(size_t size) {
+	if (size % page_size)
+		size = (1 + (size / page_size)) * page_size;
+	return valloc(size);
 }
 
 void*
@@ -193,4 +233,9 @@ malloc_usable_size(void* ptr) {
 	if (!rpmalloc_is_thread_initialized())
 		return 0;
 	return rpmalloc_usable_size(ptr);
+}
+
+size_t
+malloc_size(void* ptr) {
+	return malloc_usable_size(ptr);
 }

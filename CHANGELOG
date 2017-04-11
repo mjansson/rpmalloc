@@ -12,6 +12,11 @@ Avoid hysteresis in realloc by overallocating on small size increases
 
 Add entry point for realloc with alignment and optional flags to avoid preserving content
 
+Add valloc/pvalloc/cfree wrappers
+
+Add C++ new/delete wrappers
+
+
 1.1
 
 Add four cache presets (unlimited, performance priority, size priority and no cache)
