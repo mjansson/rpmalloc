@@ -11,7 +11,7 @@
 
 #include "rpmalloc.h"
 
-//This file provides overrides for the standard library malloc style entry points
+/*! This file provides overrides for the standard library malloc style entry points */
 
 extern void*
 malloc(size_t size);
@@ -51,7 +51,7 @@ malloc_size(void* ptr);
 
 #ifdef _WIN32
 
-//TODO: Injection from rpmalloc compiled as DLL not yet implemented
+/* TODO: Injection from rpmalloc compiled as DLL not yet implemented */
 
 #else
 
