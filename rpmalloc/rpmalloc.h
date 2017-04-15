@@ -9,6 +9,8 @@
  *
  */
 
+#pragma once
+
 #include <stddef.h>
 
 #if defined(__clang__) || defined(__GNUC__)
@@ -56,6 +58,10 @@ typedef struct rpmalloc_thread_statistics_t {
 	//! Total number of bytes transitioned from global cache to thread cache
 	size_t global_to_thread;
 } rpmalloc_thread_statistics_t;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 extern int
 rpmalloc_initialize(void);
@@ -107,3 +113,7 @@ rpposix_memalign(void **memptr, size_t alignment, size_t size);
 
 extern size_t
 rpmalloc_usable_size(void* ptr);
+
+#ifdef __cplusplus
+}
+#endif
