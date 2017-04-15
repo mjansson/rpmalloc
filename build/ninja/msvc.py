@@ -22,7 +22,7 @@ class MSVCToolchain(toolchain.Toolchain):
 
     #Command definitions
     self.cccmd = '$toolchain$cc /showIncludes /I. $includepaths $moreincludepaths $cflags $carchflags $cconfigflags /c $in /Fo$out /Fd$pdbpath /FS /nologo'
-    self.cxxcmd = '$toolchain$cc /showIncludes /I. $includepaths $moreincludepaths $cxxflags $carchflags $cconfigflags /c $in /Fo$out /Fd$pdbpath /FS /nologo'
+    self.cxxcmd = '$toolchain$cc /showIncludes /I. $includepaths $moreincludepaths $cxxflags $carchflags $cconfigflags /c $in /Fo$out /Fd$pdbpath /FS /nologo /EHsc'
     self.ccdepfile = None
     self.ccdeps = 'msvc'
     self.arcmd = '$toolchain$ar $arflags $ararchflags $arconfigflags /NOLOGO /OUT:$out $in'
