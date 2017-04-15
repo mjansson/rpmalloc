@@ -124,12 +124,16 @@ class MSVCToolchain(toolchain.Toolchain):
 
   def build_toolchain(self):
     if self.toolchain == '':
-      versions = ['14.0', '13.0', '12.0', '11.0', '10.0']
+      versions = ['15.0', '14.0', '13.0', '12.0', '11.0', '10.0']
       keys = [
         'HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\SxS\\VC7',
         'HKCU\\SOFTWARE\\Microsoft\\VisualStudio\\SxS\\VC7',
+        'HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\SxS\\VS7',
+        'HKCU\\SOFTWARE\\Microsoft\\VisualStudio\\SxS\\VS7',
         'HKLM\\SOFTWARE\\Wow6432Node\\Microsoft\\VisualStudio\\SxS\\VC7',
-        'HKCU\\SOFTWARE\\Wow6432Node\\Microsoft\\VisualStudio\\SxS\\VC7'
+        'HKCU\\SOFTWARE\\Wow6432Node\\Microsoft\\VisualStudio\\SxS\\VC7',
+        'HKLM\\SOFTWARE\\Wow6432Node\\Microsoft\\VisualStudio\\SxS\\VS7',
+        'HKCU\\SOFTWARE\\Wow6432Node\\Microsoft\\VisualStudio\\SxS\\VS7'
       ]
       toolchain = ''
       for version in versions:
@@ -141,8 +145,16 @@ class MSVCToolchain(toolchain.Toolchain):
           except:
             continue
           if not toolchain == '':
+            #Thanks MS for making it _really_ hard to find the compiler
+            if version == '15.0':
+              tools_basepath = os.path.join(toolchain, 'VC', 'Tools', 'MSVC')
+              tools_list = [item for item in os.listdir(tools_basepath) if os.path.isdir(os.path.join(tools_basepath, item))]
+              from distutils.version import StrictVersion
+              tools_list.sort(key=StrictVersion)
+              toolchain = os.path.join(tools_basepath, tools_list[-1])
             self.includepaths += [os.path.join(toolchain, 'include')]
             self.toolchain = toolchain
+            self.toolchain_version = version
             break
         if not toolchain == '':
           break
@@ -207,6 +219,11 @@ class MSVCToolchain(toolchain.Toolchain):
     return []
 
   def make_arch_toolchain_path(self, arch):
+    if self.toolchain_version == '15.0':
+      if arch == 'x86-64':
+        return os.path.join(self.toolchain, 'bin', 'HostX64', 'x64\\')
+      elif arch == 'x86':
+        return os.path.join(self.toolchain, 'bin', 'HostX64', 'x86\\')
     if arch == 'x86-64':
       return os.path.join(self.toolchain, 'bin', 'amd64\\')
     return os.path.join(self.toolchain, 'bin\\')
@@ -286,14 +303,20 @@ class MSVCToolchain(toolchain.Toolchain):
       libpaths += [os.path.join(libpath, self.libpath, config, arch) for libpath in extralibpaths]
     if self.sdkpath != '':
       if arch == 'x86':
-        libpaths += [os.path.join(self.toolchain, 'lib')]
+        if self.toolchain_version == '15.0':
+          libpaths += [os.path.join(self.toolchain, 'lib', 'x86')]
+        else:
+          libpaths += [os.path.join(self.toolchain, 'lib')]
         if self.sdkversion == 'v8.1':
           libpaths += [os.path.join( self.sdkpath, 'lib', 'winv6.3', 'um', 'x86')]
         if self.sdkversion == 'v10.0':
           libpaths += [os.path.join(self.sdkpath, 'lib', self.sdkversionpath, 'um', 'x86')]
           libpaths += [os.path.join(self.sdkpath, 'lib', self.sdkversionpath, 'ucrt', 'x86')]
       else:
-        libpaths += [os.path.join( self.toolchain, 'lib', 'amd64')]
+        if self.toolchain_version == '15.0':
+          libpaths += [os.path.join( self.toolchain, 'lib', 'x64')]
+        else:
+          libpaths += [os.path.join( self.toolchain, 'lib', 'amd64')]
         if self.sdkversion == 'v8.1':
           libpaths += [os.path.join( self.sdkpath, 'lib', 'winv6.3', 'um', 'x64')]
         if self.sdkversion == 'v10.0':
