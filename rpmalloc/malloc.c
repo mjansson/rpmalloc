@@ -51,6 +51,33 @@ malloc_size(void* ptr);
 
 #ifdef _WIN32
 
+#include <windows.h>
+
+static size_t page_size;
+static int is_initialized;
+
+static void
+initializer(void) {
+	if (!is_initialized) {
+		is_initialized = 1;
+		SYSTEM_INFO system_info;
+		memset(&system_info, 0, sizeof(system_info));
+		GetSystemInfo(&system_info);
+		page_size = system_info.dwPageSize;
+		rpmalloc_initialize();
+	}
+	rpmalloc_thread_initialize();
+}
+
+static void
+finalizer(void) {
+	rpmalloc_thread_finalize();
+	if (is_initialized) {
+		is_initialized = 0;
+		rpmalloc_finalize();
+	}
+}
+
 //TODO: Injection from rpmalloc compiled as DLL not yet implemented
 
 #else
