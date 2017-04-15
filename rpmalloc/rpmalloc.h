@@ -22,38 +22,38 @@
 # define RPMALLOC_CALL
 #endif
 
-//! Flag to rpaligned_realloc to not preserve content in reallocation
+/*! Flag to rpaligned_realloc to not preserve content in reallocation */
 #define RPMALLOC_NO_PRESERVE    1
 
 typedef struct rpmalloc_global_statistics_t {
-	//! Current amount of virtual memory mapped (only if ENABLE_STATISTICS=1)
+	/*! Current amount of virtual memory mapped (only if ENABLE_STATISTICS=1) */
 	size_t mapped;
-	//! Current amount of memory in global caches for small and medium sizes (<64KiB)
+	/*! Current amount of memory in global caches for small and medium sizes (<64KiB) */
 	size_t cached;
-	//! Curren amount of memory in global caches for large sizes (>=64KiB)
+	/*! Curren amount of memory in global caches for large sizes (>=64KiB) */
 	size_t cached_large;
-	//! Total amount of memory mapped (only if ENABLE_STATISTICS=1)
+	/*! Total amount of memory mapped (only if ENABLE_STATISTICS=1) */
 	size_t mapped_total;
-	//! Total amount of memory unmapped (only if ENABLE_STATISTICS=1)
+	/*! Total amount of memory unmapped (only if ENABLE_STATISTICS=1) */
 	size_t unmapped_total;
 } rpmalloc_global_statistics_t;
 
 typedef struct rpmalloc_thread_statistics_t {
-	//! Amount of memory currently requested in allocations (only if ENABLE_STATISTICS=1)
+	/*! Amount of memory currently requested in allocations (only if ENABLE_STATISTICS=1) */
 	size_t requested;
-	//! Amount of memory actually allocated in memory blocks (only if ENABLE_STATISTICS=1)
+	/*! Amount of memory actually allocated in memory blocks (only if ENABLE_STATISTICS=1) */
 	size_t allocated;
-	//! Current number of bytes available for allocation from active spans
+	/*! Current number of bytes available for allocation from active spans */
 	size_t active;
-	//! Current number of bytes available in thread size class caches
+	/*! Current number of bytes available in thread size class caches */
 	size_t sizecache;
-	//! Current number of bytes available in thread span caches
+	/*! Current number of bytes available in thread span caches */
 	size_t spancache;
-	//! Current number of bytes in pending deferred deallocations
+	/*! Current number of bytes in pending deferred deallocations */
 	size_t deferred;
-	//! Total number of bytes transitioned from thread cache to global cache
+	/*! Total number of bytes transitioned from thread cache to global cache */
 	size_t thread_to_global;
-	//! Total number of bytes transitioned from global cache to thread cache
+	/*! Total number of bytes transitioned from global cache to thread cache */
 	size_t global_to_thread;
 } rpmalloc_thread_statistics_t;
 
