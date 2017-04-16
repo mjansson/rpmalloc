@@ -63,6 +63,10 @@ typedef struct rpmalloc_thread_statistics_t {
 	size_t global_to_thread;
 } rpmalloc_thread_statistics_t;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 extern int
 rpmalloc_initialize(void);
 
