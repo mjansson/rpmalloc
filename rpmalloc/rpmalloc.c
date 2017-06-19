@@ -1018,10 +1018,11 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 	}
 	++block_data->free_count;
 	//Span is not yet completely free, so add block to the linked list of free blocks
-	uint32_t* block = p;
-	*block = block_data->free_list;
-	count_t block_offset = (count_t)pointer_diff(block, span) - SPAN_HEADER_SIZE;
+	void* blocks_start = pointer_offset(span, SPAN_HEADER_SIZE);
+	count_t block_offset = (count_t)pointer_diff(p, blocks_start);
 	count_t block_idx = block_offset / (count_t)size_class->size;
+	uint32_t* block = pointer_offset(blocks_start, block_idx * size_class->size);
+	*block = block_data->free_list;
 	block_data->free_list = (uint16_t)block_idx;
 }
 
