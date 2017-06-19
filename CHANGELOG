@@ -4,6 +4,8 @@ Dual license under MIT
 
 Fix init/fini checks in malloc entry points for preloading into binaries that does malloc/free in init or fini sections
 
+Fixed an issue where freeing a block which had been realigned during allocation due to alignment request greater than 16 caused the free block link to be written in the wrong place in the block, causing next allocation from the size class to return a bad pointer
+
 Improve mmap 64KiB granularity enforcement loop to avoid excessive iterations
 
 Fix undersized adaptive cache counter array for large block in heap structure, causing potential abort on exit
