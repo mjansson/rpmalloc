@@ -11,6 +11,11 @@
 
 #include "rpmalloc.h"
 
+#ifndef ENABLE_VALIDATE_ARGS
+//! Enable validation of args to public entry points
+#define ENABLE_VALIDATE_ARGS      0
+#endif
+
 //This file provides overrides for the standard library malloc style entry points
 
 extern void*
@@ -224,6 +229,12 @@ valloc(size_t size) {
 	if (!size)
 		size = page_size;
 	size_t total_size = size + page_size;
+#if ENABLE_VALIDATE_ARGS
+	if (total_size < size) {
+		errno = EINVAL;
+		return 0;
+	}
+#endif
 	void* buffer = rpmalloc(total_size);
 	if ((uintptr_t)buffer & (page_size - 1))
 		return (void*)(((uintptr_t)buffer & ~(page_size - 1)) + page_size);
@@ -232,8 +243,15 @@ valloc(size_t size) {
 
 void*
 pvalloc(size_t size) {
-	if (size % page_size)
-		size = (1 + (size / page_size)) * page_size;
+	size_t aligned_size = size;
+	if (aligned_size % page_size)
+		aligned_size = (1 + (aligned_size / page_size)) * page_size;
+#if ENABLE_VALIDATE_ARGS
+	if (aligned_size < size) {
+		errno = EINVAL;
+		return 0;
+	}
+#endif
 	return valloc(size);
 }
 
