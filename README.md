@@ -50,7 +50,9 @@ If you wish to override the standard library malloc family of functions and have
 # Building
 To compile as a static library run the configure python script which generates a Ninja build script, then build using ninja. Or use the Visual Studio or XCode projects available in the build subdirectories. This also includes the malloc overrides and init/fini glue code.
 
-The configure + ninja build also produces a shared object/dynamic library that can be used with LD_PRELOAD/DYLD_INSERT_LIBRARIES to inject in a preexisting binary, replacing any malloc/free family of function calls. This is only implemented for Linux and macOS targets.
+The configure + ninja build also produces a shared object/dynamic library that can be used with LD_PRELOAD/DYLD_INSERT_LIBRARIES to inject in a preexisting binary, replacing any malloc/free family of function calls. This is only implemented for Linux and macOS targets. The list of libc entry points replaced may not be complete, use preloading as a convenience for testing the library on an existing binary, not a final solution.
+
+The latest stable release is available in the master branch. For latest development code, use the develop branch.
 
 # Cache configuration options
 Free memory pages are cached both per thread and in a global cache for all threads. The size of the thread caches is determined by an adaptive scheme where each cache is limited by a percentage of the maximum allocation count of the corresponding size class. The size of the global caches is determined by a multiple of the maximum of all thread caches. The factors controlling the cache sizes can be set by either defining one of four presets, or by editing the individual defines in the `rpmalloc.c` source file for fine tuned control. If you do not define any of the following three directives, the default preset will be used which is to increase caches and prioritize performance over memory overhead (but not making caches unlimited).
@@ -111,4 +113,6 @@ Cross-thread deallocations are more costly than in-thread deallocations, since t
 
 VirtualAlloc has an internal granularity of 64KiB. However, mmap lacks this granularity control, and the implementation instead keeps track and atomically increases a running address counter of where memory pages should be mapped to in the virtual address range. If some other code in the process uses mmap to reserve a part of virtual memory spance this counter needs to catch up and resync in order to keep the 64KiB granularity of span addresses, which could potentially be time consuming.
 
-The free, realloc and usable size functions all require the passed pointer to be within the first 64KiB page block of the start of the memory block. You cannot pass in any pointer from the memory block address range.
+The free, realloc and usable size functions all require the passed pointer to be within the first 64KiB page block of the start of the memory block. You cannot pass in any pointer from the memory block address range. 
+
+All entry points assume the passed values are valid, for example passing an invalid pointer to free would most likely result in a segmentation fault. The library does not try to guard against errors.
