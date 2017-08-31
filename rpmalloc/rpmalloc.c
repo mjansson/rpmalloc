@@ -1574,6 +1574,7 @@ _memory_unmap(void* ptr, size_t page_count) {
 
 #ifdef PLATFORM_WINDOWS
 	VirtualFree(ptr, 0, MEM_RELEASE);
+	(void)sizeof(page_count);
 #else
 	munmap(ptr, PAGE_SIZE * page_count);
 #endif
@@ -1606,7 +1607,7 @@ thread_yield(void) {
 
 // Extern interface
 
-void* 
+RPMALLOC_RESTRICT void*
 rpmalloc(size_t size) {
 #if ENABLE_VALIDATE_ARGS
 	if (size >= MAX_ALLOC_SIZE) {
@@ -1622,7 +1623,7 @@ rpfree(void* ptr) {
 	_memory_deallocate(ptr);
 }
 
-void*
+RPMALLOC_RESTRICT void*
 rpcalloc(size_t num, size_t size) {
 	size_t total;
 #if ENABLE_VALIDATE_ARGS
@@ -1667,12 +1668,17 @@ rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize,
 		return 0;
 	}
 #endif
-	//TODO: If alignment > 16, we need to copy to new aligned position
-	(void)sizeof(alignment);
+	if (alignment > 16) {
+		void* block = rpaligned_alloc(alignment, size);
+		if (!(flags & RPMALLOC_NO_PRESERVE))
+			memcpy(block, ptr, oldsize < size ? oldsize : size);
+		rpfree(ptr);
+		return block;
+	}
 	return _memory_reallocate(ptr, size, oldsize, flags);
 }
 
-void*
+RPMALLOC_RESTRICT void*
 rpaligned_alloc(size_t alignment, size_t size) {
 	if (alignment <= 16)
 		return rpmalloc(size);
@@ -1690,7 +1696,7 @@ rpaligned_alloc(size_t alignment, size_t size) {
 	return ptr;
 }
 
-void*
+RPMALLOC_RESTRICT void*
 rpmemalign(size_t alignment, size_t size) {
 	return rpaligned_alloc(alignment, size);
 }
