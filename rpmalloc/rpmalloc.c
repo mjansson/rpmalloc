@@ -64,6 +64,11 @@
 #define ENABLE_ASSERTS            0
 #endif
 
+#ifndef ENABLE_PRELOAD
+//! Support preloading
+#define ENABLE_PRELOAD            0
+#endif
+
 // Platform and arch specifics
 
 #ifdef _MSC_VER
@@ -76,7 +81,7 @@
 #    include <Intsafe.h>
 #  endif
 #else
-#  ifdef __APPLE__
+#  if defined(__APPLE__) && ENABLE_PRELOAD
 #    include <pthread.h>
 #  endif
 #  define ALIGNED_STRUCT(name, alignment) struct __attribute__((__aligned__(alignment))) name
@@ -399,7 +404,7 @@ static atomic32_t _unmapped_total;
 #endif
 
 //! Current thread heap
-#ifdef __APPLE__
+#if defined(__APPLE__) && ENABLE_PRELOAD
 static pthread_key_t _memory_thread_heap;
 #else
 #  ifdef _MSC_VER
@@ -415,7 +420,7 @@ static _Thread_local heap_t* _memory_thread_heap TLS_MODEL;
 
 static FORCEINLINE heap_t*
 get_thread_heap(void) {
-#ifdef __APPLE__
+#if defined(__APPLE__) && ENABLE_PRELOAD
 	return pthread_getspecific(_memory_thread_heap);
 #else
 	return _memory_thread_heap;
@@ -424,7 +429,7 @@ get_thread_heap(void) {
 
 static void
 set_thread_heap(heap_t* heap) {
-#ifdef __APPLE__
+#if defined(__APPLE__) && ENABLE_PRELOAD
 	pthread_setspecific(_memory_thread_heap, heap);
 #else
 	_memory_thread_heap = heap;
@@ -1337,10 +1342,10 @@ rpmalloc_initialize(void) {
 	if (system_info.dwAllocationGranularity < SPAN_ADDRESS_GRANULARITY)
 		return -1;
 #else
-#  ifdef __APPLE__
+#  if defined(__APPLE__) && ENABLE_PRELOAD
 	if (pthread_key_create(&_memory_thread_heap, 0))
 		return -1;
-#endif
+#  endif
 #  if ARCH_64BIT
 	atomic_store64(&_memory_addr, 0x1000000000ULL);
 #  else
@@ -1451,7 +1456,7 @@ rpmalloc_finalize(void) {
 
 	atomic_thread_fence_release();
 
-#ifdef __APPLE__
+#if defined(__APPLE__) && ENABLE_PRELOAD
 	pthread_key_delete(_memory_thread_heap);
 #endif
 }

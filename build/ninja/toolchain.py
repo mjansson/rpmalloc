@@ -368,24 +368,24 @@ class Toolchain(object):
     writer.newline()
     return built
 
-  def lib(self, writer, module, sources, basepath, configs, includepaths, variables, outpath, externalsources):
+  def lib(self, writer, module, sources, libname, basepath, configs, includepaths, variables, outpath, externalsources):
     built = {}
     if basepath == None:
       basepath = ''
     if configs is None:
       configs = list(self.configs)
-    libfile = self.libprefix + module + self.staticlibext
+    libfile = self.libprefix + libname + self.staticlibext
     if outpath is None:
       outpath = self.libpath
     return self.build_sources(writer, 'lib', 'multilib', module, sources, libfile, basepath, outpath, configs, includepaths, None, None, None, variables, None, externalsources)
 
-  def sharedlib(self, writer, module, sources, basepath, configs, includepaths, libpaths, implicit_deps, libs, frameworks, variables, outpath, externalsources):
+  def sharedlib(self, writer, module, sources, libname, basepath, configs, includepaths, libpaths, implicit_deps, libs, frameworks, variables, outpath, externalsources):
     built = {}
     if basepath == None:
       basepath = ''
     if configs is None:
       configs = list(self.configs)
-    libfile = self.libprefix + module + self.dynamiclibext
+    libfile = self.libprefix + libname + self.dynamiclibext
     if outpath is None:
       outpath = self.binpath
     return self.build_sources(writer, 'sharedlib', 'multisharedlib', module, sources, libfile, basepath, outpath, configs, includepaths, libpaths, libs, implicit_deps, variables, frameworks, externalsources)
