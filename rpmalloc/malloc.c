@@ -121,7 +121,8 @@ initializer(void) {
 		is_initialized = 1;
 		page_size = (size_t)sysconf(_SC_PAGESIZE);
 		pthread_key_create(&destructor_key, thread_destructor);
-		rpmalloc_initialize();
+		if (rpmalloc_initialize())
+			abort();
 	}
 	rpmalloc_thread_initialize();
 }
