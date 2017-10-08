@@ -409,6 +409,7 @@ static pthread_key_t _memory_thread_heap;
 #else
 #  ifdef _MSC_VER
 #    define _Thread_local __declspec(thread)
+#    define TLS_MODEL
 #  else
 #    define TLS_MODEL __attribute__((tls_model("initial-exec")))
 #    if !defined(__clang__) && defined(__GNUC__)
