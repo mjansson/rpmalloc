@@ -1327,11 +1327,11 @@ _memory_adjust_size_class(size_t iclass) {
 #else
 #  include <sys/mman.h>
 #  include <sched.h>
-#  include <errno.h>
 #  ifndef MAP_UNINITIALIZED
 #    define MAP_UNINITIALIZED 0
 #  endif
 #endif
+#include <errno.h>
 
 //! Initialize the allocator and setup global data
 int
