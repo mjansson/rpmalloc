@@ -86,7 +86,7 @@
 #  endif
 #  ifdef __arm__
 #    define atomic_thread_fence_acquire() __asm volatile("dmb ish" ::: "memory")
-#    define atomic_thread_fence_release() __asm volatile("dmb ish" ::: "memory")
+#    define atomic_thread_fence_release() __asm volatile("dmb ishst" ::: "memory")
 #  else
 #    define atomic_thread_fence_acquire() //__asm volatile("" ::: "memory")
 #    define atomic_thread_fence_release() //__asm volatile("" ::: "memory")
