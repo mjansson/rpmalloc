@@ -87,8 +87,8 @@
 #  define ALIGNED_STRUCT(name, alignment) struct __attribute__((__aligned__(alignment))) name
 #  define FORCEINLINE inline __attribute__((__always_inline__))
 #  ifdef __arm__
-#    define atomic_thread_fence_acquire() __asm volatile("dmb sy" ::: "memory")
-#    define atomic_thread_fence_release() __asm volatile("dmb st" ::: "memory")
+#    define atomic_thread_fence_acquire() __asm volatile("dmb ish" ::: "memory")
+#    define atomic_thread_fence_release() __asm volatile("dmb ishst" ::: "memory")
 #  else
 #    define atomic_thread_fence_acquire() //__asm volatile("" ::: "memory")
 #    define atomic_thread_fence_release() //__asm volatile("" ::: "memory")
