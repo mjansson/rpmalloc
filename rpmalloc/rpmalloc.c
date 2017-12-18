@@ -385,6 +385,9 @@ static atomicptr_t _memory_heaps[HEAP_ARRAY_SIZE];
 //! Orphaned heaps
 static atomicptr_t _memory_orphan_heaps;
 
+//! Running orphan counter to avoid ABA issues in linked list
+static atomic32_t _memory_orphan_counter;
+
 //! Active heap count
 static atomic32_t _memory_active_heaps;
 
@@ -901,17 +904,22 @@ use_cache:
 //! Allocate a new heap
 static heap_t*
 _memory_allocate_heap(void) {
+	uintptr_t raw_heap, next_raw_heap;
+	uintptr_t orphan_counter;
 	heap_t* heap;
 	heap_t* next_heap;
 	//Try getting an orphaned heap
 	atomic_thread_fence_acquire();
 	do {
-		heap = atomic_load_ptr(&_memory_orphan_heaps);
+		raw_heap = (uintptr_t)atomic_load_ptr(&_memory_orphan_heaps);
+		heap = (void*)(raw_heap & ~(uintptr_t)0xFFFF);
 		if (!heap)
 			break;
 		next_heap = heap->next_orphan;
+		orphan_counter = atomic_incr32(&_memory_orphan_counter);
+		next_raw_heap = (uintptr_t)next_heap | (orphan_counter & 0xFFFF);
 	}
-	while (!atomic_cas_ptr(&_memory_orphan_heaps, next_heap, heap));
+	while (!atomic_cas_ptr(&_memory_orphan_heaps, (void*)next_raw_heap, (void*)raw_heap));
 
 	if (heap) {
 		heap->next_orphan = 0;
@@ -1355,6 +1363,7 @@ rpmalloc_initialize(void) {
 #endif
 
 	atomic_store32(&_memory_heap_id, 0);
+	atomic_store32(&_memory_orphan_counter, 0);
 
 	//Setup all small and medium size classes
 	size_t iclass;
@@ -1551,12 +1560,15 @@ rpmalloc_thread_finalize(void) {
 #endif
 
 	//Orphan the heap
+	uintptr_t raw_heap, orphan_counter;
 	heap_t* last_heap;
 	do {
 		last_heap = atomic_load_ptr(&_memory_orphan_heaps);
-		heap->next_orphan = last_heap;
+		heap->next_orphan = (void*)((uintptr_t)last_heap & ~(uintptr_t)0xFFFF);
+		orphan_counter = atomic_incr32(&_memory_orphan_counter);
+		raw_heap = (uintptr_t)heap | (orphan_counter & 0xFFFF);
 	}
-	while (!atomic_cas_ptr(&_memory_orphan_heaps, heap, last_heap));
+	while (!atomic_cas_ptr(&_memory_orphan_heaps, (void*)raw_heap, last_heap));
 	
 	set_thread_heap(0);
 }
