@@ -1,8 +1,14 @@
-1.3
+1.2.1
 
 Split library into rpmalloc only base library and preloadable malloc wrapper library.
 
 Add arg validation to valloc and pvalloc.
+
+Change ARM memory barrier instructions to dmb ish/ishst for compatibility.
+
+Improve preload compatibility on Apple platforms by using pthread key for TLS in wrapper library.
+
+Fix ABA issue in orphaned heap linked list
 
 1.2
 
