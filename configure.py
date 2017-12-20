@@ -14,6 +14,8 @@ target = generator.target
 writer = generator.writer
 toolchain = generator.toolchain
 
-rpmalloc_lib = generator.lib(module = 'rpmalloc', sources = ['rpmalloc.c', 'malloc.c', 'new.cc'])
+rpmalloc_lib = generator.lib(module = 'rpmalloc', libname = 'rpmalloc', sources = ['rpmalloc.c'])
+rpmallocwrap_lib = generator.lib(module = 'rpmalloc', libname = 'rpmallocwrap', sources = ['rpmalloc.c', 'malloc.c', 'new.cc'], variables = {'defines': ['ENABLE_PRELOAD=1']})
 if not target.is_windows():
-	rpmalloc_so = generator.sharedlib(module = 'rpmalloc', sources = ['rpmalloc.c', 'malloc.c', 'new.cc'], variables = {'runtime': 'c++'})
+	rpmalloc_so = generator.sharedlib(module = 'rpmalloc', libname = 'rpmalloc', sources = ['rpmalloc.c'])
+	rpmallocwrap_so = generator.sharedlib(module = 'rpmalloc', libname = 'rpmallocwrap', sources = ['rpmalloc.c', 'malloc.c', 'new.cc'], variables = {'runtime': 'c++', 'defines': ['ENABLE_PRELOAD=1']})
