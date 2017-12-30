@@ -3,7 +3,6 @@
 """Ninja toolchain abstraction for Android platform"""
 
 import os
-import urlparse
 import subprocess
 
 import toolchain

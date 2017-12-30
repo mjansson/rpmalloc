@@ -141,7 +141,7 @@ class MSVCToolchain(toolchain.Toolchain):
           try:
             query = subprocess.check_output(['reg', 'query', key, '/v', version ], stderr = subprocess.STDOUT).strip().splitlines()
             if len(query) == 2:
-              toolchain = query[1].split('REG_SZ')[-1].strip()
+              toolchain = str(query[1]).split('REG_SZ')[-1].strip(" '\"\n\r\t")
           except:
             continue
           if not toolchain == '':
@@ -173,13 +173,13 @@ class MSVCToolchain(toolchain.Toolchain):
           try:
             query = subprocess.check_output(['reg', 'query', key + '\\' + version, '/v', 'InstallationFolder'], stderr = subprocess.STDOUT).strip().splitlines()
             if len(query) == 2:
-              sdkpath = query[1].split('REG_SZ')[-1].strip()
+              sdkpath = str(query[1]).split('REG_SZ')[-1].strip(" '\"\n\r\t")
               if not sdkpath == '' and version == 'v10.0':
                 base_path = sdkpath
                 sdkpath = ''
                 query = subprocess.check_output(['reg', 'query', key + '\\' + version, '/v', 'ProductVersion'], stderr = subprocess.STDOUT).strip().splitlines()
                 if len(query) == 2:
-                  version_path = query[1].split('REG_SZ')[-1].strip()
+                  version_path = str(query[1]).split('REG_SZ')[-1].strip(" '\"\n\r\t")
                   if not version_path == '':
                     sdkpath = base_path
                     self.sdkversionpath = version_path
