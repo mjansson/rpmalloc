@@ -71,7 +71,7 @@
 
 #ifndef ENABLE_GUARDS
 //! Enable overwrite/underwrite guards
-#define ENABLE_GUARDS             0
+#define ENABLE_GUARDS             1
 #endif
 
 // Platform and arch specifics
@@ -920,12 +920,13 @@ _memory_allocate_heap(void) {
 	//Try getting an orphaned heap
 	atomic_thread_fence_acquire();
 	do {
-		raw_heap = (uintptr_t)atomic_load_ptr(&_memory_orphan_heaps);
+		void* orphan_list = atomic_load_ptr(&_memory_orphan_heaps);
+		raw_heap = (uintptr_t)orphan_list;
 		heap = (void*)(raw_heap & ~(uintptr_t)0xFFFF);
 		if (!heap)
 			break;
 		next_heap = heap->next_orphan;
-		orphan_counter = atomic_incr32(&_memory_orphan_counter);
+		orphan_counter = (uintptr_t)atomic_incr32(&_memory_orphan_counter);
 		next_raw_heap = (uintptr_t)next_heap | (orphan_counter & 0xFFFF);
 	}
 	while (!atomic_cas_ptr(&_memory_orphan_heaps, (void*)next_raw_heap, (void*)raw_heap));
@@ -1574,11 +1575,11 @@ rpmalloc_thread_finalize(void) {
 	do {
 		last_heap = atomic_load_ptr(&_memory_orphan_heaps);
 		heap->next_orphan = (void*)((uintptr_t)last_heap & ~(uintptr_t)0xFFFF);
-		orphan_counter = atomic_incr32(&_memory_orphan_counter);
+		orphan_counter = (uintptr_t)atomic_incr32(&_memory_orphan_counter);
 		raw_heap = (uintptr_t)heap | (orphan_counter & 0xFFFF);
 	}
 	while (!atomic_cas_ptr(&_memory_orphan_heaps, (void*)raw_heap, last_heap));
-	
+
 	set_thread_heap(0);
 }
 
@@ -1688,9 +1689,9 @@ rpmalloc(size_t size) {
 		size_t block_size = _memory_usable_size(block);
 		uint32_t* deadzone = block;
 		deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] = MAGIC_GUARD;
-		deadzone = (uint32_t*)((char*)block + (block_size - 16));
+		deadzone = (uint32_t*)pointer_offset(block, block_size - 16);
 		deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] = MAGIC_GUARD;
-		block = (void*)((char*)block + 16);
+		block = pointer_offset(block, 16);
 	}
 #endif
 	return block;
@@ -1725,7 +1726,7 @@ _memory_validate_integrity(void* p) {
 	for (int i = 0; i < 4; ++i) {
 		assert(deadzone[i] == MAGIC_GUARD);
 	}
-	deadzone = (uint32_t*)((char*)block_start + (block_size - 16));
+	deadzone = (uint32_t*)pointer_offset(block_start, block_size - 16);
 	//If these asserts fire, you have written to memory after the block end
 	for (int i = 0; i < 4; ++i) {
 		assert(deadzone[i] == MAGIC_GUARD);
@@ -1770,9 +1771,9 @@ rpcalloc(size_t num, size_t size) {
 		size_t block_size = _memory_usable_size(block);
 		uint32_t* deadzone = block;
 		deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] = MAGIC_GUARD;
-		deadzone = (uint32_t*)((char*)block + (block_size - 16));
+		deadzone = (uint32_t*)pointer_offset(block, block_size - 16);
 		deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] = MAGIC_GUARD;
-		block = (void*)((char*)block + 16);
+		block = pointer_offset(block, 16);
 		total -= 32;
 	}
 #endif
@@ -1798,9 +1799,9 @@ rprealloc(void* ptr, size_t size) {
 		size_t block_size = _memory_usable_size(block);
 		uint32_t* deadzone = block;
 		deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] = MAGIC_GUARD;
-		deadzone = (uint32_t*)((char*)block + (block_size - 16));
+		deadzone = (uint32_t*)pointer_offset(block, block_size - 16);
 		deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] = MAGIC_GUARD;
-		block = (void*)((char*)block + 16);
+		block = pointer_offset(block, 16);
 	}
 #endif
 	return block;
@@ -1833,9 +1834,9 @@ rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize,
 			size_t block_size = _memory_usable_size(block);
 			uint32_t* deadzone = block;
 			deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] = MAGIC_GUARD;
-			deadzone = (uint32_t*)((char*)block + (block_size - 16));
+			deadzone = (uint32_t*)pointer_offset(block, block_size - 16);
 			deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] = MAGIC_GUARD;
-			block = (void*)((char*)block + 16);
+			block = pointer_offset(block, 16);
 		}
 #endif
 	}
