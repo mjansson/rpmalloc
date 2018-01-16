@@ -225,7 +225,7 @@ thread_yield(void);
 
 //! Granularity of a medium allocation block
 #define MEDIUM_GRANULARITY        512
-//! Medimum granularity shift count
+//! Medium granularity shift count
 #define MEDIUM_GRANULARITY_SHIFT  9
 //! Number of medium block size classes
 #define MEDIUM_CLASS_COUNT        60
@@ -342,7 +342,7 @@ struct heap_t {
 	//! Next heap in orphan list
 	heap_t*      next_orphan;
 #if ENABLE_STATISTICS
-	//! Number of bytes currently reqeusted in allocations
+	//! Number of bytes currently requested in allocations
 	size_t       requested;
 	//! Number of bytes current allocated
 	size_t       allocated;
@@ -708,7 +708,7 @@ use_active:
 	}
 
 	//Step 2: No active span, try executing deferred deallocations and try again if there
-	//        was at least one of the reqeusted size class
+	//        was at least one of the requested size class
 	if (_memory_deallocate_deferred(heap, class_idx)) {
 		if (active_block->free_count)
 			goto use_active;
@@ -1162,7 +1162,7 @@ _memory_deallocate_deferred(heap_t* heap, size_t size_class) {
 //! Defer deallocation of the given block to the given heap
 static void
 _memory_deallocate_defer(int32_t heap_id, void* p) {
-	//Get the heap and link in pointer in list of deferred opeations
+	//Get the heap and link in pointer in list of deferred operations
 	heap_t* heap = _memory_heap_lookup(heap_id);
 	if (!heap)
 		return;

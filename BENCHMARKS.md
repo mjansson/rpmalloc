@@ -5,9 +5,9 @@ https://github.com/rampantpixels/rpmalloc-benchmark
 
 Benchmarks are run with parameters `benchmark <num threads> <mode> <distribution> <cross-thread rate> <loop count> <block count> <op count> <min size> <max size>`. It runs the given number of threads allocating randomly or fixed sized blocks in `[<min size>, <max size>]` bytes range. The `<mode>` parameter controls if it is random or fixed size. If random size, the `<distribution>` parameter controls if sizes are evenly distributed, have a linear falloff rate with size or an exponential falloff rate with size. In each thread, `<loop count>` number of loops are performed, allocating up to `<block count>` blocks in each thread. Every loop iteration `<op count>` number of blocks are deallocated, scattered across the entire set of blocks, then another set of `<op count>` number of blocks are allocated, also scattered across the entire set of slots in the block array (also deallocating any previous block in that slot). Every `<cross-thread rate>` loop iteration an `<op count>` number of blocks are allocated and handed off to another thread for cross-thread deallocation (memory allocated in one thread is freed in another thread).
 
-The benchmark also measures the maximum requested allocated size and the used virtual memory by the process to calculate a overhead percentage. This is done at the end of the loop iterations, once all cross-thread deallocations are processed. This will naturally introduce overhead in allocator implementations that have some form of caching of free blocks, which is intented.
+The benchmark also measures the maximum requested allocated size and the used virtual memory by the process to calculate a overhead percentage. This is done at the end of the loop iterations, once all cross-thread deallocations are processed. This will naturally introduce overhead in allocator implementations that have some form of caching of free blocks, which is intended.
 
-The loop sequence is run four times in all threads, first two times in each thread with a full free of all blocks inbetween. The threads are then terminated and restarted, running another set of similar two loop sequences. The idea is to measure both how well allocators perform at starting up fresh threads, as well as reusing memory within a thread and when warm starting another thread.
+The loop sequence is run four times in all threads, first two times in each thread with a full free of all blocks in between. The threads are then terminated and restarted, running another set of similar two loop sequences. The idea is to measure both how well allocators perform at starting up fresh threads, as well as reusing memory within a thread and when warm starting another thread.
 
 Below is a collection of benchmark results for various allocation sizes. The machines running the Windows 10 and Linux benchmarks have 8 cores (4 physical cores with HT) and 12GiB RAM. The macOS machine is a MacBook, 2 cores (1 physical with HT) and 8GiB RAM. (Windows and macOS results coming soon)
 
@@ -30,7 +30,7 @@ Linear falloff distributed sizes in `[16, 8000]` range, 20000 loops with 50000 b
 ![Ubuntu 16.10 random [16, 8000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=301017877&format=image)
 ![Ubuntu 16.10 random [16, 8000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=1224595675&format=image)
 
-Ignoring the lockfree-malloc and jemalloc memory overhead range and focusing on the other allocators we can see they are pretty close in memory overhead factors, with most of the multihreaded cases hovering around the 10-15% overhead mark.
+Ignoring the lockfree-malloc and jemalloc memory overhead range and focusing on the other allocators we can see they are pretty close in memory overhead factors, with most of the multithreaded cases hovering around the 10-15% overhead mark.
 
 ![Ubuntu 16.10 random [16, 8000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=812830245&format=image)
 
