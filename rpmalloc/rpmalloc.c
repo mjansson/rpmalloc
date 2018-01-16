@@ -911,12 +911,12 @@ _memory_allocate_heap(void) {
 	//Try getting an orphaned heap
 	atomic_thread_fence_acquire();
 	do {
-		raw_heap = (uintptr_t)atomic_load_ptr(&_memory_orphan_heaps);
+		raw_heap = (uintptr_t)(void*)atomic_load_ptr(&_memory_orphan_heaps);
 		heap = (void*)(raw_heap & ~(uintptr_t)0xFFFF);
 		if (!heap)
 			break;
 		next_heap = heap->next_orphan;
-		orphan_counter = atomic_incr32(&_memory_orphan_counter);
+		orphan_counter = (uintptr_t)atomic_incr32(&_memory_orphan_counter);
 		next_raw_heap = (uintptr_t)next_heap | (orphan_counter & 0xFFFF);
 	}
 	while (!atomic_cas_ptr(&_memory_orphan_heaps, (void*)next_raw_heap, (void*)raw_heap));
@@ -1565,7 +1565,7 @@ rpmalloc_thread_finalize(void) {
 	do {
 		last_heap = atomic_load_ptr(&_memory_orphan_heaps);
 		heap->next_orphan = (void*)((uintptr_t)last_heap & ~(uintptr_t)0xFFFF);
-		orphan_counter = atomic_incr32(&_memory_orphan_counter);
+		orphan_counter = (uintptr_t)atomic_incr32(&_memory_orphan_counter);
 		raw_heap = (uintptr_t)heap | (orphan_counter & 0xFFFF);
 	}
 	while (!atomic_cas_ptr(&_memory_orphan_heaps, (void*)raw_heap, last_heap));
