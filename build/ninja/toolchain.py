@@ -35,7 +35,7 @@ def make_toolchain(host, target, toolchain):
   return toolchainmodule.create(host, target, toolchain)
 
 def make_pathhash(path, targettype):
-  return '-' + hex(zlib.adler32(bytes(path + targettype, 'utf-8')) & 0xffffffff)[2:-1]
+  return '-' + hex(zlib.adler32((path + targettype).encode()) & 0xffffffff)[2:-1]
 
 class Toolchain(object):
   def __init__(self, host, target, toolchain):
