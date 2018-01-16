@@ -113,6 +113,7 @@
 #if ENABLE_ASSERTS
 #  include <assert.h>
 #else
+#  undef  assert
 #  define assert(x)
 #endif
 
