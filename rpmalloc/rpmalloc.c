@@ -908,22 +908,23 @@ use_cache:
 //! Allocate a new heap
 static heap_t*
 _memory_allocate_heap(void) {
-	uintptr_t raw_heap, next_raw_heap;
+	void* raw_heap;
+	void* next_raw_heap;
 	uintptr_t orphan_counter;
 	heap_t* heap;
 	heap_t* next_heap;
 	//Try getting an orphaned heap
 	atomic_thread_fence_acquire();
 	do {
-		raw_heap = (uintptr_t)atomic_load_ptr(&_memory_orphan_heaps);
-		heap = (void*)(raw_heap & ~(uintptr_t)0xFFFF);
+		raw_heap = atomic_load_ptr(&_memory_orphan_heaps);
+		heap = (void*)((uintptr_t)raw_heap & ~(uintptr_t)0xFFFF);
 		if (!heap)
 			break;
 		next_heap = heap->next_orphan;
-		orphan_counter = atomic_incr32(&_memory_orphan_counter);
-		next_raw_heap = (uintptr_t)next_heap | (orphan_counter & 0xFFFF);
+		orphan_counter = (uintptr_t)atomic_incr32(&_memory_orphan_counter);
+		next_raw_heap = (void*)((uintptr_t)next_heap | (orphan_counter & 0xFFFF));
 	}
-	while (!atomic_cas_ptr(&_memory_orphan_heaps, (void*)next_raw_heap, (void*)raw_heap));
+	while (!atomic_cas_ptr(&_memory_orphan_heaps, next_raw_heap, raw_heap));
 
 	if (heap) {
 		heap->next_orphan = 0;
@@ -1564,15 +1565,16 @@ rpmalloc_thread_finalize(void) {
 #endif
 
 	//Orphan the heap
-	uintptr_t raw_heap, orphan_counter;
+	void* raw_heap;
+	uintptr_t orphan_counter;
 	heap_t* last_heap;
 	do {
 		last_heap = atomic_load_ptr(&_memory_orphan_heaps);
 		heap->next_orphan = (void*)((uintptr_t)last_heap & ~(uintptr_t)0xFFFF);
-		orphan_counter = atomic_incr32(&_memory_orphan_counter);
-		raw_heap = (uintptr_t)heap | (orphan_counter & 0xFFFF);
+		orphan_counter = (uintptr_t)atomic_incr32(&_memory_orphan_counter);
+		raw_heap = (void*)((uintptr_t)heap | (orphan_counter & 0xFFFF));
 	}
-	while (!atomic_cas_ptr(&_memory_orphan_heaps, (void*)raw_heap, last_heap));
+	while (!atomic_cas_ptr(&_memory_orphan_heaps, raw_heap, last_heap));
 	
 	set_thread_heap(0);
 }
