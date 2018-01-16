@@ -117,6 +117,9 @@
 #  define assert(x)
 #endif
 
+#undef PAGE_SIZE
+#undef MAX_ALLOC_SIZE
+
 // Atomic access abstraction
 ALIGNED_STRUCT(atomic32_t, 4) {
 	int32_t nonatomic;
