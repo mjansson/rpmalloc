@@ -351,6 +351,8 @@ struct heap_t {
 	heap_t*      next_heap;
 	//! Next heap in orphan list
 	heap_t*      next_orphan;
+	//! Memory pages alignment offset
+	size_t       align_offset;
 #if ENABLE_STATISTICS
 	//! Number of bytes currently requested in allocations
 	size_t       requested;
@@ -509,9 +511,12 @@ _memory_map(size_t page_count, size_t* align_offset) {
 
 		size_t padding = SPAN_ADDRESS_GRANULARITY;
 		mapped_address = _memory_config.memory_map(size + padding);
-		aligned_address = pointer_offset(mapped_address, padding - ((uintptr_t)mapped_address % SPAN_ADDRESS_GRANULARITY));
+		padding -= (uintptr_t)mapped_address % SPAN_ADDRESS_GRANULARITY;
+		aligned_address = pointer_offset(mapped_address, padding);
 		//Offset could be 0x10000 (64KiB) if mapped pages are aligned, divide by 2 to fit in uint16_t
-		*align_offset = (size_t)pointer_diff(aligned_address, mapped_address) / 2;
+		assert(padding <= SPAN_ADDRESS_GRANULARITY);
+		assert(!((uintptr_t)mapped_address & ~(uintptr_t)SPAN_MASK));
+		*align_offset = (size_t)padding / 2;
 	}
 
 #if ENABLE_STATISTICS
@@ -525,7 +530,7 @@ _memory_map(size_t page_count, size_t* align_offset) {
 static void
 _memory_unmap(void* address, size_t page_count, size_t align_offset) {
 	size_t size = page_count * PAGE_SIZE;
-	void* mapped_address = pointer_offset(address, -(offset_t)align_offset * 2);
+	void* mapped_address = pointer_offset(address, -(offset_t)(align_offset * 2));
 	if (align_offset)
 		size += SPAN_ADDRESS_GRANULARITY;
 	_memory_config.memory_unmap(mapped_address, size);
@@ -986,8 +991,10 @@ _memory_allocate_heap(void) {
 	}
 
 	//Map in pages for a new heap
-	heap = _memory_config.memory_map(2 * PAGE_SIZE);
+	size_t align_offset = 0;
+	heap = _memory_map(2, &align_offset);
 	memset(heap, 0, sizeof(heap_t));
+	heap->align_offset = align_offset;
 
 	//Get a new heap ID
 	do {
@@ -1241,10 +1248,12 @@ _memory_allocate(size_t size) {
 	size_t num_pages = size / PAGE_SIZE;
 	if (size % PAGE_SIZE)
 		++num_pages;
-	span_t* span = _memory_config.memory_map(num_pages * PAGE_SIZE);
+	size_t align_offset = 0;
+	span_t* span = _memory_map(num_pages, &align_offset);
 	atomic_store32(&span->heap_id, 0);
 	//Store page count in next_span
 	span->next_span = (span_t*)((uintptr_t)num_pages);
+	span->data.list.align_offset = (uint16_t)align_offset;
 
 	return pointer_offset(span, SPAN_HEADER_SIZE);
 }
@@ -1272,7 +1281,7 @@ _memory_deallocate(void* p) {
 	else {
 		//Oversized allocation, page count is stored in next_span
 		size_t num_pages = (size_t)span->next_span;
-		_memory_config.memory_unmap(span, num_pages * PAGE_SIZE);
+		_memory_unmap(span, num_pages, span->data.list.align_offset);
 	}
 }
 
@@ -1484,7 +1493,7 @@ rpmalloc_finalize(void) {
 			}
 
 			heap_t* next_heap = heap->next_heap;
-			_memory_config.memory_unmap(heap, 2 * PAGE_SIZE);
+			_memory_unmap(heap, 2, heap->align_offset);
 			heap = next_heap;
 		}
 
@@ -1657,9 +1666,14 @@ _memory_map_os(size_t size) {
 #ifdef PLATFORM_WINDOWS
 	ptr = VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 #else
-	ptr = mmap(0, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED, -1, 0);
+	size_t padding = SPAN_ADDRESS_GRANULARITY;
+
+	ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED, -1, 0);
 	if (ptr == MAP_FAILED)
-		ptr = 0;
+		return 0;
+
+	padding -= (uintptr_t)ptr % SPAN_ADDRESS_GRANULARITY;
+	ptr = pointer_offset(ptr, padding);
 #endif
 
 	return ptr;
