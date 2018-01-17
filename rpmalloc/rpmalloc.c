@@ -995,7 +995,7 @@ _memory_allocate_heap(void) {
 	}
 
 	//Map in pages for a new heap
-	heap = _memory_config.memory_map(2);
+	heap = _memory_config.memory_map(2 * PAGE_SIZE);
 	memset(heap, 0, sizeof(heap_t));
 
 	//Get a new heap ID
@@ -1250,7 +1250,7 @@ _memory_allocate(size_t size) {
 	size_t num_pages = size / PAGE_SIZE;
 	if (size % PAGE_SIZE)
 		++num_pages;
-	span_t* span = _memory_config.memory_map(num_pages);
+	span_t* span = _memory_config.memory_map(num_pages * PAGE_SIZE);
 	atomic_store32(&span->heap_id, 0);
 	//Store page count in next_span
 	span->next_span = (span_t*)((uintptr_t)num_pages);
@@ -1281,7 +1281,7 @@ _memory_deallocate(void* p) {
 	else {
 		//Oversized allocation, page count is stored in next_span
 		size_t num_pages = (size_t)span->next_span;
-		_memory_config.memory_unmap(span, num_pages);
+		_memory_config.memory_unmap(span, num_pages * PAGE_SIZE);
 	}
 }
 
@@ -1493,7 +1493,7 @@ rpmalloc_finalize(void) {
 			}
 
 			heap_t* next_heap = heap->next_heap;
-			_memory_config.memory_unmap(heap, 2);
+			_memory_config.memory_unmap(heap, 2 * PAGE_SIZE);
 			heap = next_heap;
 		}
 
@@ -1666,7 +1666,7 @@ _memory_map_os(size_t size) {
 #ifdef PLATFORM_WINDOWS
 	pages_ptr = VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 #else
-	pages_ptr = mmap(base_addr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED, -1, 0);
+	pages_ptr = mmap(0, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED, -1, 0);
 	if (pages_ptr == MAP_FAILED)
 		pages_ptr = 0;
 #endif
