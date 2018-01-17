@@ -66,8 +66,20 @@ typedef struct rpmalloc_thread_statistics_t {
 	size_t global_to_thread;
 } rpmalloc_thread_statistics_t;
 
+typedef struct rpmalloc_config_t {
+	//! Map memory pages for the given number of bytes. The returned address MUST be
+	//  2 byte aligned, and should ideally be 64KiB aligned
+	void* (*memory_map)(size_t size);
+	//! Unmap the memory pages starting at address and spanning the given number of bytes.
+	//  Address will always be an address returned by an earlier call to memory_map function
+	void (*memory_unmap)(void* address, size_t size);
+} rpmalloc_config_t;
+
 extern int
 rpmalloc_initialize(void);
+
+extern int
+rpmalloc_initialize_config(const rpmalloc_config_t* config);
 
 extern void
 rpmalloc_finalize(void);
