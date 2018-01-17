@@ -103,8 +103,6 @@
 
 #if defined( _WIN32 ) || defined( __WIN32__ ) || defined( _WIN64 )
 #  define PLATFORM_WINDOWS 1
-#else
-#  define PLATFORM_POSIX 1
 #endif
 
 #include <stdint.h>
@@ -146,20 +144,6 @@ atomic_store32(atomic32_t* dst, int32_t val) {
 	dst->nonatomic = val;
 }
 
-#if PLATFORM_POSIX
-
-static FORCEINLINE void
-atomic_store64(atomic64_t* dst, int64_t val) {
-	dst->nonatomic = val;
-}
-
-static FORCEINLINE int64_t
-atomic_exchange_and_add64(atomic64_t* dst, int64_t add) {
-	return __sync_fetch_and_add(&dst->nonatomic, add);
-}
-
-#endif
-
 static FORCEINLINE int32_t
 atomic_incr32(atomic32_t* val) {
 #ifdef _MSC_VER
@@ -191,7 +175,19 @@ atomic_store_ptr(atomicptr_t* dst, void* val) {
 }
 
 static FORCEINLINE int
-atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref);
+atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref) {
+#ifdef _MSC_VER
+#  if ARCH_64BIT
+	return (_InterlockedCompareExchange64((volatile long long*)&dst->nonatomic,
+	                                      (long long)val, (long long)ref) == (long long)ref) ? 1 : 0;
+#  else
+	return (_InterlockedCompareExchange((volatile long*)&dst->nonatomic,
+	                                      (long)val, (long)ref) == (long)ref) ? 1 : 0;
+#  endif
+#else
+	return __sync_bool_compare_and_swap(&dst->nonatomic, ref, val);
+#endif
+}
 
 static void
 thread_yield(void);
@@ -388,11 +384,6 @@ static size_class_t _memory_size_class[SIZE_CLASS_COUNT];
 
 //! Heap ID counter
 static atomic32_t _memory_heap_id;
-
-#ifdef PLATFORM_POSIX
-//! Virtual memory address counter
-static atomic64_t _memory_addr;
-#endif
 
 //! Global span cache
 static atomicptr_t _memory_span_cache[SPAN_CLASS_COUNT];
@@ -1656,7 +1647,7 @@ rpmalloc_is_thread_initialized(void) {
 //! Map new pages to virtual memory
 static void*
 _memory_map_os(size_t size) {
-	void* pages_ptr = 0;
+	void* ptr;
 
 #if ENABLE_STATISTICS
 	atomic_add32(&_mapped_pages, (int32_t)(size / PAGE_SIZE));
@@ -1664,14 +1655,14 @@ _memory_map_os(size_t size) {
 #endif
 
 #ifdef PLATFORM_WINDOWS
-	pages_ptr = VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	ptr = VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 #else
-	pages_ptr = mmap(0, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED, -1, 0);
-	if (pages_ptr == MAP_FAILED)
-		pages_ptr = 0;
+	ptr = mmap(0, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED, -1, 0);
+	if (ptr == MAP_FAILED)
+		ptr = 0;
 #endif
 
-	return pages_ptr;
+	return ptr;
 }
 
 //! Unmap pages from virtual memory
@@ -1687,21 +1678,6 @@ _memory_unmap_os(void* ptr, size_t size) {
 	(void)sizeof(size);
 #else
 	munmap(ptr, size);
-#endif
-}
-
-static FORCEINLINE int
-atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref) {
-#ifdef _MSC_VER
-#  if ARCH_64BIT
-	return (_InterlockedCompareExchange64((volatile long long*)&dst->nonatomic,
-	                                      (long long)val, (long long)ref) == (long long)ref) ? 1 : 0;
-#  else
-	return (_InterlockedCompareExchange((volatile long*)&dst->nonatomic,
-	                                      (long)val, (long)ref) == (long)ref) ? 1 : 0;
-#  endif
-#else
-	return __sync_bool_compare_and_swap(&dst->nonatomic, ref, val);
 #endif
 }
 
