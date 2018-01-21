@@ -1439,20 +1439,19 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		_memory_page_size = (size_t)sysconf(_SC_PAGESIZE);
 #endif
 	}
-	if ((_memory_page_size < 512) || (_memory_page_size > 16384))
-		return -1;
+	if (_memory_page_size < 512)
+		_memory_page_size = 512;
+	if (_memory_page_size > 16384)
+		_memory_page_size = 16384;
 
 	_memory_page_size_shift = 0;
 	size_t page_size_bit = _memory_page_size;
-	while (!(page_size_bit & 1)) {
+	while (page_size_bit != 1) {
 		++_memory_page_size_shift;
 		page_size_bit >>= 1;
 	}
-	if (page_size_bit != 1) {
-		//Not a power of 2
-		return -1;
-	}
 
+	_memory_page_size = (1 << _memory_page_size_shift);
 	_memory_max_page_count = (SPAN_MAX_SIZE >> _memory_page_size_shift);
 
 #if defined(__APPLE__) && ENABLE_PRELOAD
