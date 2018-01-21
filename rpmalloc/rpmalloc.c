@@ -108,7 +108,6 @@
 
 #include <stdint.h>
 #include <string.h>
-#include <stdio.h>
 
 #if ENABLE_ASSERTS
 #  include <assert.h>
@@ -1478,9 +1477,6 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		_memory_size_class[SMALL_CLASS_COUNT + iclass].size = (uint16_t)size;
 		_memory_adjust_size_class(SMALL_CLASS_COUNT + iclass);
 	}
-
-	for (iclass = 0; iclass < SMALL_CLASS_COUNT + MEDIUM_CLASS_COUNT; ++iclass)
-		printf("Size class %d: index %d with %d pages, %d blocks\n", (int)iclass, (int)_memory_size_class[iclass].class_idx, (int)_memory_size_class[iclass].page_count, _memory_size_class[iclass].block_count);
 
 	//Initialize this thread
 	rpmalloc_thread_initialize();
