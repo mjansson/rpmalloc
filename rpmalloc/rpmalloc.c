@@ -81,6 +81,7 @@
 #    include <Intsafe.h>
 #  endif
 #else
+#  include <unistd.h>
 #  if defined(__APPLE__) && ENABLE_PRELOAD
 #    include <pthread.h>
 #  endif
@@ -114,9 +115,6 @@
 #  undef  assert
 #  define assert(x)
 #endif
-
-#undef PAGE_SIZE
-#undef MAX_ALLOC_SIZE
 
 // Atomic access abstraction
 ALIGNED_STRUCT(atomic32_t, 4) {
@@ -195,29 +193,32 @@ thread_yield(void);
 // Preconfigured limits and sizes
 
 //! Memory page size
-#define PAGE_SIZE                 4096
+static size_t _memory_page_size;
+//! Shift to divide by page size
+static size_t _memory_page_size_shift;
 
 //! Granularity of all memory page spans for small & medium block allocations
 #define SPAN_ADDRESS_GRANULARITY  65536
+
 //! Maximum size of a span of memory pages
 #define SPAN_MAX_SIZE             (SPAN_ADDRESS_GRANULARITY)
 //! Mask for getting the start of a span of memory pages
 #define SPAN_MASK                 (~((uintptr_t)SPAN_MAX_SIZE - 1))
 //! Maximum number of memory pages in a span
-#define SPAN_MAX_PAGE_COUNT       (SPAN_MAX_SIZE / PAGE_SIZE)
-//! Span size class granularity
-#define SPAN_CLASS_GRANULARITY    4
+#define SPAN_MAX_PAGE_COUNT       (SPAN_MAX_SIZE >> _memory_page_size_shift)
 //! Number of size classes for spans
-#define SPAN_CLASS_COUNT          (SPAN_MAX_PAGE_COUNT / SPAN_CLASS_GRANULARITY)
+#define SPAN_CLASS_COUNT          4
+//! Span size class granularity
+#define SPAN_CLASS_GRANULARITY    ((SPAN_ADDRESS_GRANULARITY >> _memory_page_size_shift) / SPAN_CLASS_COUNT)
 
 //! Granularity of a small allocation block
 #define SMALL_GRANULARITY         16
 //! Small granularity shift count
 #define SMALL_GRANULARITY_SHIFT   4
-//! Number of small block size classes
-#define SMALL_CLASS_COUNT         (((PAGE_SIZE - SPAN_HEADER_SIZE) >> 1) >> SMALL_GRANULARITY_SHIFT)
 //! Maximum size of a small block
-#define SMALL_SIZE_LIMIT          (SMALL_CLASS_COUNT * SMALL_GRANULARITY)
+#define SMALL_SIZE_LIMIT          2032
+//! Number of small block size classes
+#define SMALL_CLASS_COUNT         (SMALL_SIZE_LIMIT / SMALL_GRANULARITY)
 
 //! Granularity of a medium allocation block
 #define MEDIUM_GRANULARITY        512
@@ -233,10 +234,8 @@ thread_yield(void);
 
 //! Number of large block size classes
 #define LARGE_CLASS_COUNT         32
-//! Maximum number of memory pages in a large block
-#define LARGE_MAX_PAGES           (SPAN_MAX_PAGE_COUNT * LARGE_CLASS_COUNT)
 //! Maximum size of a large block
-#define LARGE_SIZE_LIMIT          ((LARGE_MAX_PAGES * PAGE_SIZE) - SPAN_HEADER_SIZE)
+#define LARGE_SIZE_LIMIT          ((LARGE_CLASS_COUNT * SPAN_MAX_SIZE) - SPAN_HEADER_SIZE)
 
 #define SPAN_LIST_LOCK_TOKEN      ((void*)1)
 
@@ -255,7 +254,8 @@ typedef uint32_t count_t;
 
 #if ENABLE_VALIDATE_ARGS
 //! Maximum allocation size to avoid integer overflow
-#define MAX_ALLOC_SIZE            (((size_t)-1) - PAGE_SIZE)
+#undef  MAX_ALLOC_SIZE
+#define MAX_ALLOC_SIZE            (((size_t)-1) - _memory_page_size)
 #endif
 
 // Data types
@@ -364,7 +364,6 @@ struct heap_t {
 	size_t       global_to_thread;
 #endif
 };
-_Static_assert(sizeof(heap_t) <= PAGE_SIZE*2, "heap size mismatch");
 
 struct size_class_t {
 	//! Size of blocks in this class
@@ -497,7 +496,7 @@ static void*
 _memory_map(size_t page_count, size_t* align_offset) {
 	void* mapped_address;
 	void* aligned_address;
-	size_t size = page_count * PAGE_SIZE;
+	size_t size = page_count * _memory_page_size;
 
 	mapped_address = _memory_config.memory_map(size);
 
@@ -520,8 +519,8 @@ _memory_map(size_t page_count, size_t* align_offset) {
 	}
 
 #if ENABLE_STATISTICS
-	atomic_add32(&_mapped_pages, (int32_t)(size / PAGE_SIZE));
-	atomic_add32(&_mapped_total, (int32_t)(size / PAGE_SIZE));
+	atomic_add32(&_mapped_pages, (int32_t)(size >> _memory_page_size_shift));
+	atomic_add32(&_mapped_total, (int32_t)(size >> _memory_page_size_shift));
 #endif
  
  	return aligned_address;
@@ -529,7 +528,7 @@ _memory_map(size_t page_count, size_t* align_offset) {
 
 static void
 _memory_unmap(void* address, size_t page_count, size_t align_offset) {
-	size_t size = page_count * PAGE_SIZE;
+	size_t size = page_count * _memory_page_size;
 	void* mapped_address = pointer_offset(address, -(offset_t)(align_offset * 2));
 	if (align_offset)
 		size += SPAN_ADDRESS_GRANULARITY;
@@ -788,7 +787,7 @@ use_active:
 		span = _memory_global_cache_extract(size_class->page_count);
 #if ENABLE_STATISTICS
 		if (span)
-			heap->global_to_thread += (size_t)span->data.list.size * size_class->page_count * PAGE_SIZE;
+			heap->global_to_thread += (size_t)span->data.list.size * size_class->page_count * _memory_page_size;
 #endif
 	}
 	if (span) {
@@ -853,18 +852,20 @@ _memory_allocate_large_from_heap(heap_t* heap, size_t size) {
 	size_t idx = num_spans - 1;
 
 	if (!idx) {
+		//Shared with medium/small spans
 		size_t span_class_idx = _span_class_from_page_count(SPAN_MAX_PAGE_COUNT);
+		//Step 1: Check span cache
 		span_t* span = heap->span_cache[span_class_idx];
 		if (!span) {
 			_memory_deallocate_deferred(heap, 0);
 			span = heap->span_cache[span_class_idx];
 		}
 		if (!span) {
-			//Step 5: No span available in the thread cache, try grab a list of spans from the global cache
+			//Step 2: No span available in the thread cache, try grab a list of spans from the global cache
 			span = _memory_global_cache_extract(SPAN_MAX_PAGE_COUNT);
 #if ENABLE_STATISTICS
 			if (span)
-				heap->global_to_thread += (size_t)span->data.list.size * SPAN_MAX_PAGE_COUNT * PAGE_SIZE;
+				heap->global_to_thread += (size_t)span->data.list.size * SPAN_MAX_PAGE_COUNT * _memory_page_size;
 #endif
 		}
 		if (span) {
@@ -880,7 +881,7 @@ _memory_allocate_large_from_heap(heap_t* heap, size_t size) {
 			}
 		}
 		else {
-			//Step 6: All caches empty, map in new memory pages
+			//Step 3: All caches empty, map in new memory pages
 			size_t align_offset = 0;
 			span = _memory_map(SPAN_MAX_PAGE_COUNT, &align_offset);
 			span->data.block.align_offset = (uint16_t)align_offset;
@@ -992,7 +993,7 @@ _memory_allocate_heap(void) {
 
 	//Map in pages for a new heap
 	size_t align_offset = 0;
-	heap = _memory_map(2, &align_offset);
+	heap = _memory_map(1 + (sizeof(heap_t) >> _memory_page_size_shift), &align_offset);
 	memset(heap, 0, sizeof(heap_t));
 	heap->align_offset = align_offset;
 
@@ -1074,7 +1075,7 @@ _memory_heap_cache_insert(heap_t* heap, span_t* span, size_t page_count) {
 		*cache = next;
 		_memory_global_cache_insert(span, list_size, page_count);
 #if ENABLE_STATISTICS
-		heap->thread_to_global += list_size * page_count * PAGE_SIZE;
+		heap->thread_to_global += list_size * page_count * _memory_page_size;
 #endif
 	}
 #endif
@@ -1245,8 +1246,8 @@ _memory_allocate(size_t size) {
 
 	//Oversized, allocate pages directly
 	size += SPAN_HEADER_SIZE;
-	size_t num_pages = size / PAGE_SIZE;
-	if (size % PAGE_SIZE)
+	size_t num_pages = size >> _memory_page_size_shift;
+	if (size % _memory_page_size)
 		++num_pages;
 	size_t align_offset = 0;
 	span_t* span = _memory_map(num_pages, &align_offset);
@@ -1317,15 +1318,15 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 		else {
 			//Oversized block
 			size_t total_size = size + SPAN_HEADER_SIZE;
-			size_t num_pages = total_size / PAGE_SIZE;
-			if (total_size % PAGE_SIZE)
+			size_t num_pages = total_size >> _memory_page_size_shift;
+			if (total_size % _memory_page_size)
 				++num_pages;
 			//Page count is stored in next_span
 			size_t current_pages = (size_t)span->next_span;
 			if ((current_pages >= num_pages) && (num_pages >= (current_pages / 2)))
 				return p; //Still fits and less than half of memory would be freed
 			if (!oldsize)
-				oldsize = (current_pages * (size_t)PAGE_SIZE) - SPAN_HEADER_SIZE;
+				oldsize = (current_pages * _memory_page_size) - SPAN_HEADER_SIZE;
 		}
 	}
 
@@ -1362,7 +1363,7 @@ _memory_usable_size(void* p) {
 
 	//Oversized block, page count is stored in next_span
 	size_t current_pages = (size_t)span->next_span;
-	return (current_pages * (size_t)PAGE_SIZE) - SPAN_HEADER_SIZE;
+	return (current_pages * _memory_page_size) - SPAN_HEADER_SIZE;
 }
 
 //! Adjust and optimize the size class properties for the given class
@@ -1370,14 +1371,14 @@ static void
 _memory_adjust_size_class(size_t iclass) {
 	//Calculate how many pages are needed for 255 blocks
 	size_t block_size = _memory_size_class[iclass].size;
-	size_t page_count = (block_size * 255) / PAGE_SIZE;
+	size_t page_count = (block_size * 255) >> _memory_page_size_shift;
 	//Cap to 16 pages (64KiB span granularity)
 	page_count = (page_count == 0) ? 1 : ((page_count > 16) ? 16 : page_count);
 	//Merge page counts to span size class granularity
 	page_count = ((page_count + (SPAN_CLASS_GRANULARITY - 1)) / SPAN_CLASS_GRANULARITY) * SPAN_CLASS_GRANULARITY;
 	if (page_count > 16)
 		page_count = 16;
-	size_t block_count = ((page_count * PAGE_SIZE) - SPAN_HEADER_SIZE) / block_size;
+	size_t block_count = ((page_count * _memory_page_size) - SPAN_HEADER_SIZE) / block_size;
 	//Store the final configuration
 	_memory_size_class[iclass].page_count = (uint16_t)page_count;
 	_memory_size_class[iclass].block_count = (uint16_t)block_count;
@@ -1430,7 +1431,20 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	GetSystemInfo(&system_info);
 	if (system_info.dwAllocationGranularity < SPAN_ADDRESS_GRANULARITY)
 		return -1;
+	_memory_page_size = system_info.dwPageSize;
+#else
+	_memory_page_size = (size_t)sysconf(_SC_PAGESIZE);
 #endif
+	if ((_memory_page_size < 4096) || (_memory_page_size > 65536))
+		return -1;
+
+	_memory_page_size_shift = 0;
+	size_t page_size = _memory_page_size;
+	while (page_size > 1) {
+		++_memory_page_size_shift;
+		page_size >>= 1;
+	}
+
 #if defined(__APPLE__) && ENABLE_PRELOAD
 	if (pthread_key_create(&_memory_thread_heap, 0))
 		return -1;
@@ -1493,7 +1507,7 @@ rpmalloc_finalize(void) {
 			}
 
 			heap_t* next_heap = heap->next_heap;
-			_memory_unmap(heap, 2, heap->align_offset);
+			_memory_unmap(heap, 1 + (sizeof(heap_t) >> _memory_page_size_shift), heap->align_offset);
 			heap = next_heap;
 		}
 
@@ -1659,8 +1673,8 @@ _memory_map_os(size_t size) {
 	void* ptr;
 
 #if ENABLE_STATISTICS
-	atomic_add32(&_mapped_pages, (int32_t)(size / PAGE_SIZE));
-	atomic_add32(&_mapped_total, (int32_t)(size / PAGE_SIZE));
+	atomic_add32(&_mapped_pages, (int32_t)(size >> _memory_page_size_shift));
+	atomic_add32(&_mapped_total, (int32_t)(size >> _memory_page_size_shift));
 #endif
 
 #ifdef PLATFORM_WINDOWS
@@ -1683,8 +1697,8 @@ _memory_map_os(size_t size) {
 static void
 _memory_unmap_os(void* ptr, size_t size) {
 #if ENABLE_STATISTICS
-	atomic_add32(&_mapped_pages, -(int32_t)(size / PAGE_SIZE));
-	atomic_add32(&_unmapped_total, (int32_t)(size / PAGE_SIZE));
+	atomic_add32(&_mapped_pages, -(int32_t)(size >> _memory_page_size_shift));
+	atomic_add32(&_unmapped_total, (int32_t)(size >> _memory_page_size_shift));
 #endif
 
 #ifdef PLATFORM_WINDOWS
@@ -1849,7 +1863,7 @@ rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats) {
 
 	for (size_t isize = 0; isize < SPAN_CLASS_COUNT; ++isize) {
 		if (heap->span_cache[isize])
-			stats->spancache = (size_t)heap->span_cache[isize]->data.list.size * (isize + 1) * SPAN_CLASS_GRANULARITY * PAGE_SIZE;
+			stats->spancache = (size_t)heap->span_cache[isize]->data.list.size * (isize + 1) * SPAN_CLASS_GRANULARITY * _memory_page_size;
 	}
 }
 
@@ -1857,9 +1871,9 @@ void
 rpmalloc_global_statistics(rpmalloc_global_statistics_t* stats) {
 	memset(stats, 0, sizeof(rpmalloc_global_statistics_t));
 #if ENABLE_STATISTICS
-	stats->mapped = (size_t)atomic_load32(&_mapped_pages) * PAGE_SIZE;
-	stats->mapped_total = (size_t)atomic_load32(&_mapped_total) * PAGE_SIZE;
-	stats->unmapped_total = (size_t)atomic_load32(&_unmapped_total) * PAGE_SIZE;
+	stats->mapped = (size_t)atomic_load32(&_mapped_pages) * _memory_page_size;
+	stats->mapped_total = (size_t)atomic_load32(&_mapped_total) * _memory_page_size;
+	stats->unmapped_total = (size_t)atomic_load32(&_unmapped_total) * _memory_page_size;
 #endif
 	for (size_t iclass = 0; iclass < SPAN_CLASS_COUNT; ++iclass) {
 		void* global_span_ptr = atomic_load_ptr(&_memory_span_cache[iclass]);
@@ -1868,7 +1882,7 @@ rpmalloc_global_statistics(rpmalloc_global_statistics_t* stats) {
 			global_span_ptr = atomic_load_ptr(&_memory_span_cache[iclass]);
 		}
 		uintptr_t global_span_count = (uintptr_t)global_span_ptr & ~SPAN_MASK;
-		size_t list_bytes = global_span_count * (iclass + 1) * SPAN_CLASS_GRANULARITY * PAGE_SIZE;
+		size_t list_bytes = global_span_count * (iclass + 1) * SPAN_CLASS_GRANULARITY * _memory_page_size;
 		stats->cached += list_bytes;
 	}
 	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
@@ -1878,7 +1892,7 @@ rpmalloc_global_statistics(rpmalloc_global_statistics_t* stats) {
 			global_span_ptr = atomic_load_ptr(&_memory_large_cache[iclass]);
 		}
 		uintptr_t global_span_count = (uintptr_t)global_span_ptr & ~SPAN_MASK;
-		size_t list_bytes = global_span_count * (iclass + 1) * SPAN_MAX_PAGE_COUNT * PAGE_SIZE;
+		size_t list_bytes = global_span_count * (iclass + 1) * SPAN_MAX_PAGE_COUNT * _memory_page_size;
 		stats->cached_large += list_bytes;
 	}
 }
