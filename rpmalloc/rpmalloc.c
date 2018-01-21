@@ -108,6 +108,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
 
 #if ENABLE_ASSERTS
 #  include <assert.h>
@@ -196,6 +197,8 @@ thread_yield(void);
 static size_t _memory_page_size;
 //! Shift to divide by page size
 static size_t _memory_page_size_shift;
+//! Maximum number of pages in a span (span max size divided by page size)
+static size_t _memory_max_page_count;
 
 //! Granularity of all memory page spans for small & medium block allocations
 #define SPAN_ADDRESS_GRANULARITY  65536
@@ -475,7 +478,7 @@ _memory_heap_lookup(int32_t id) {
 //! Get the span size class from page count
 static size_t
 _span_class_from_page_count(size_t page_count) {
-	assert((page_count > 0) && (page_count <= 16));
+	assert((page_count > 0) && (page_count <= _memory_max_page_count));
 	return ((page_count + SPAN_CLASS_GRANULARITY - 1) / SPAN_CLASS_GRANULARITY) - 1;
 }
 
@@ -1372,12 +1375,11 @@ _memory_adjust_size_class(size_t iclass) {
 	//Calculate how many pages are needed for 255 blocks
 	size_t block_size = _memory_size_class[iclass].size;
 	size_t page_count = (block_size * 255) >> _memory_page_size_shift;
-	//Cap to 16 pages (64KiB span granularity)
-	page_count = (page_count == 0) ? 1 : ((page_count > 16) ? 16 : page_count);
+	page_count = (page_count == 0) ? 1 : ((page_count > _memory_max_page_count) ? _memory_max_page_count : page_count);
 	//Merge page counts to span size class granularity
 	page_count = ((page_count + (SPAN_CLASS_GRANULARITY - 1)) / SPAN_CLASS_GRANULARITY) * SPAN_CLASS_GRANULARITY;
-	if (page_count > 16)
-		page_count = 16;
+	if (page_count > _memory_max_page_count)
+		page_count = _memory_max_page_count;
 	size_t block_count = ((page_count * _memory_page_size) - SPAN_HEADER_SIZE) / block_size;
 	//Store the final configuration
 	_memory_size_class[iclass].page_count = (uint16_t)page_count;
@@ -1425,25 +1427,34 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	if (!_memory_config.memory_unmap)
 		_memory_config.memory_unmap = _memory_unmap_os;
 	
+	_memory_page_size = _memory_config.page_size;
+	if (!_memory_page_size) {
 #ifdef PLATFORM_WINDOWS
-	SYSTEM_INFO system_info;
-	memset(&system_info, 0, sizeof(system_info));
-	GetSystemInfo(&system_info);
-	if (system_info.dwAllocationGranularity < SPAN_ADDRESS_GRANULARITY)
-		return -1;
-	_memory_page_size = system_info.dwPageSize;
+		SYSTEM_INFO system_info;
+		memset(&system_info, 0, sizeof(system_info));
+		GetSystemInfo(&system_info);
+		if (system_info.dwAllocationGranularity < SPAN_ADDRESS_GRANULARITY)
+			return -1;
+		_memory_page_size = system_info.dwPageSize;
 #else
-	_memory_page_size = (size_t)sysconf(_SC_PAGESIZE);
+		_memory_page_size = (size_t)sysconf(_SC_PAGESIZE);
 #endif
-	if ((_memory_page_size < 4096) || (_memory_page_size > 65536))
+	}
+	if ((_memory_page_size < 512) || (_memory_page_size > 16384))
 		return -1;
 
 	_memory_page_size_shift = 0;
-	size_t page_size = _memory_page_size;
-	while (page_size > 1) {
+	size_t page_size_bit = _memory_page_size;
+	while (!(page_size_bit & 1)) {
 		++_memory_page_size_shift;
-		page_size >>= 1;
+		page_size_bit >>= 1;
 	}
+	if (page_size_bit != 1) {
+		//Not a power of 2
+		return -1;
+	}
+
+	_memory_max_page_count = (SPAN_MAX_SIZE >> _memory_page_size_shift);
 
 #if defined(__APPLE__) && ENABLE_PRELOAD
 	if (pthread_key_create(&_memory_thread_heap, 0))
@@ -1467,6 +1478,9 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		_memory_size_class[SMALL_CLASS_COUNT + iclass].size = (uint16_t)size;
 		_memory_adjust_size_class(SMALL_CLASS_COUNT + iclass);
 	}
+
+	for (iclass = 0; iclass < SMALL_CLASS_COUNT + MEDIUM_CLASS_COUNT; ++iclass)
+		printf("Size class %d: index %d with %d pages, %d blocks\n", (int)iclass, (int)_memory_size_class[iclass].class_idx, (int)_memory_size_class[iclass].page_count, _memory_size_class[iclass].block_count);
 
 	//Initialize this thread
 	rpmalloc_thread_initialize();
