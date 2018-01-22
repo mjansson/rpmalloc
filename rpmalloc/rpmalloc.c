@@ -1423,6 +1423,7 @@ _memory_adjust_size_class(size_t iclass) {
 //! Initialize the allocator and setup global data
 int
 rpmalloc_initialize(void) {
+	memset(&_memory_config, 0, sizeof(rpmalloc_config_t));
 	return rpmalloc_initialize_config(0);
 }
 
@@ -1571,6 +1572,8 @@ rpmalloc_finalize(void) {
 	}
 
 	atomic_thread_fence_release();
+
+	set_thread_heap(0);
 
 #if defined(__APPLE__) && ENABLE_PRELOAD
 	pthread_key_delete(_memory_thread_heap);
