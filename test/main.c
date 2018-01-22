@@ -7,6 +7,7 @@
 #include <thread.h>
 #include <test.h>
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -18,28 +19,149 @@
 #  define PRIsize "zu"
 #endif
 
+#define pointer_offset(ptr, ofs) (void*)((char*)(ptr) + (ptrdiff_t)(ofs))
+#define pointer_diff(first, second) (ptrdiff_t)((const char*)(first) - (const char*)(second))
+
 #ifndef ENABLE_GUARDS
 #  define ENABLE_GUARDS 0
 #endif
+
+static int
+test_alloc(void) {
+	unsigned int iloop = 0;
+	unsigned int ipass = 0;
+	unsigned int icheck = 0;
+	unsigned int id = 0;
+	void* addr[8142];
+	char data[20000];
+	unsigned int datasize[7] = { 473, 39, 195, 24, 73, 376, 245 };
+
+	rpmalloc_initialize();
+
+	for (id = 0; id < 20000; ++id)
+		data[id] = (char)(id % 139 + id % 17);
+
+	for (iloop = 0; iloop < 64; ++iloop) {
+		for (ipass = 0; ipass < 8142; ++ipass) {
+			addr[ipass] = rpmalloc(500);
+			if (addr[ipass] == 0)
+				return -1;
+
+			memcpy(addr[ipass], data, 500);
+
+			for (icheck = 0; icheck < ipass; ++icheck) {
+				if (addr[icheck] == addr[ipass])
+					return -1;
+				if (addr[icheck] < addr[ipass]) {
+					if (pointer_offset(addr[icheck], 500) > addr[ipass])
+						return -1;
+				}
+				else if (addr[icheck] > addr[ipass]) {
+					if (pointer_offset(addr[ipass], 500) > addr[icheck])
+						return -1;
+				}
+			}
+		}
+
+		for (ipass = 0; ipass < 8142; ++ipass) {
+			if (memcmp(addr[ipass], data, 500))
+				return -1;
+		}
+
+		for (ipass = 0; ipass < 8142; ++ipass)
+			rpfree(addr[ipass]);
+	}
+
+	for (iloop = 0; iloop < 64; ++iloop) {
+		for (ipass = 0; ipass < 1024; ++ipass) {
+			unsigned int cursize = datasize[ipass%7] + ipass;
+
+			addr[ipass] = rpmalloc(cursize);
+			if (addr[ipass] == 0)
+				return -1;
+
+			memcpy(addr[ipass], data, cursize);
+
+			for (icheck = 0; icheck < ipass; ++icheck) {
+				if (addr[icheck] == addr[ipass])
+					return -1;
+				if (addr[icheck] < addr[ipass]) {
+					if (pointer_offset(addr[icheck], rpmalloc_usable_size(addr[icheck])) > addr[ipass])
+						return -1;
+				}
+				else if (addr[icheck] > addr[ipass]) {
+					if (pointer_offset(addr[ipass], rpmalloc_usable_size(addr[ipass])) > addr[icheck])
+						return -1;
+				}
+			}
+		}
+
+		for (ipass = 0; ipass < 1024; ++ipass) {
+			unsigned int cursize = datasize[ipass%7] + ipass;
+			if (memcmp(addr[ipass], data, cursize))
+				return -1;
+		}
+
+		for (ipass = 0; ipass < 1024; ++ipass)
+			rpfree(addr[ipass]);
+	}
+
+	for (iloop = 0; iloop < 128; ++iloop) {
+		for (ipass = 0; ipass < 1024; ++ipass) {
+			addr[ipass] = rpmalloc(500);
+			if (addr[ipass] == 0)
+				return -1;
+
+			memcpy(addr[ipass], data, 500);
+
+			for (icheck = 0; icheck < ipass; ++icheck) {
+				if (addr[icheck] == addr[ipass])
+					return -1;
+				if (addr[icheck] < addr[ipass]) {
+					if (pointer_offset(addr[icheck], 500) > addr[ipass])
+						return -1;
+				}
+				else if (addr[icheck] > addr[ipass]) {
+					if (pointer_offset(addr[ipass], 500) > addr[icheck])
+						return -1;
+				}
+			}
+		}
+
+		for (ipass = 0; ipass < 1024; ++ipass) {
+			if (memcmp(addr[ipass], data, 500))
+				return -1;
+		}
+
+		for (ipass = 0; ipass < 1024; ++ipass)
+			rpfree(addr[ipass]);
+	}
+
+	rpmalloc_finalize();
+
+	printf("Memory allocation tests passed\n");
+
+	return 0;
+}
 
 #if ENABLE_GUARDS
 
 static int test_overwrite_detected;
 
 static void
-test_overwrite(void* addr) {
+test_overwrite_cb(void* addr) {
 	++test_overwrite_detected;
 }
 
-int
-test_run(int argc, char** argv) {
+static int
+test_overwrite(void) {
 	int ret = 0;
 	char* addr;
 	size_t istep, size;
 
 	rpmalloc_config_t config;
 	memset(&config, 0, sizeof(config));
-	config.memory_overwrite = test_overwrite;
+	config.memory_overwrite = test_overwrite_cb;
 
 	rpmalloc_initialize_config(&config);
 
@@ -67,20 +189,28 @@ test_run(int argc, char** argv) {
 		}
 	}
 
-	printf("Memory ovewrite tests passed\n");
+	printf("Memory overwrite tests passed\n");
 
 cleanup:
 	rpmalloc_finalize();
-	return ret;
+	return ret;	
+}
+
+int
+test_run(int argc, char** argv) {
+	if (test_overwrite())
+		return -1;
+	if (test_alloc())
+		return -1;
+	return 0;
 }
 
 #else
 
 int
 test_run(int argc, char** argv) {
-	rpmalloc_initialize();
-
-	rpmalloc_finalize();
+	if (test_alloc())
+		return -1;
 	return 0;
 }
 
