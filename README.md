@@ -9,7 +9,7 @@ Platforms currently supported:
 - Linux
 - Android
 
-The code should be easily portable to any platform with atomic operations and an mmap-style virtual memory management API.
+The code should be easily portable to any platform with atomic operations and an mmap-style virtual memory management API. The API used to map/unmap memory pages can be configured in runtime to a custom implementation.
 
 This library is put in the public domain; you can redistribute it and/or modify it without any restrictions. Or, if you choose, you can use it under the MIT license.
 
@@ -36,6 +36,8 @@ Configuration of the thread and global caches can be important depending on your
 The easiest way to use the library is simply adding rpmalloc.[h|c] to your project and compile them along with your sources. This contains only the rpmalloc specific entry points and does not provide internal hooks to process and/or thread creation at the moment. You are required to call these functions from your own code in order to initialize and finalize the allocator in your process and threads:
 
 __rpmalloc_initialize__ : Call at process start to initialize the allocator
+
+__rpmalloc_initialize_config__ : Optional entry point to call at process start to initialize the allocator with a custom memory mapping backend and/or memory page size
 
 __rpmalloc_finalize__: Call at process exit to finalize the allocator
 
@@ -88,6 +90,16 @@ Each span for a small and medium size class keeps track of how many blocks are a
 
 Large blocks, or super spans, are cached in two levels. The first level is a per thread list of free super spans. The second level is a global list of free super spans.
 
+# Memory mapping
+By default the allocator uses OS APIs to map virtual memory pages as needed, either `VirtualAlloc` on Windows or `mmap` on POSIX systems. If you want to use your own custom memory mapping provider you can use __rpmalloc_initialize_config__ and pass function pointers to map and unmap virtual memory. These function should reserve and free the requested number of bytes.
+
+The functions do not need to deal with alignment, this is done by rpmalloc internally. However, ideally the map function should return pages aligned to 64KiB boundaries in order to avoid extra mapping requests (see caveats section below). What will happen is that if the first map call returns an address that is not 64KiB aligned, rpmalloc will immediately unmap that block and call a new mapping request with the size increased by 64KiB, then perform the alignment internally. To avoid this double mapping, always return blocks aligned to 64KiB.
+
+Memory mapping requests are always done in multiples of the memory page size. You can specify a custom page size when initializing rpmalloc with __rpmalloc_initialize_config__, or pass 0 to let rpmalloc determine the system memory page size using OS APIs. The page size MUST be a power of two in [512, 16384] range.
+
+# Memory guards
+If you define the __ENABLE_GUARDS__ to 1, all memory allocations will be padded with extra guard areas before and after the memory block (while still honoring the requested alignment). These dead zones will be filled with a pattern and checked when the block is freed. If the patterns are not intact, an assert is fired.
+
 # Memory fragmentation
 There is no memory fragmentation by the allocator in the sense that it will not leave unallocated and unusable "holes" in the memory pages by calls to allocate and free blocks of different sizes. This is due to the fact that the memory pages allocated for each size class is split up in perfectly aligned blocks which are not reused for a request of a different size. The block freed by a call to `rpfree` will always be immediately available for an allocation request within the same size class.
 
@@ -108,12 +120,12 @@ Since each thread cache maps spans of memory pages per size class, a thread that
 
 An application that has a producer-consumer scheme between threads where one thread performs all allocations and another frees all memory will have a sub-optimal performance due to blocks crossing thread boundaries will be freed in a two step process - first deferred to the allocating thread, then freed when that thread has need for more memory pages for the requested size. However, depending on the use case the performance overhead might be small.
 
-Threads that perform a lot of allocations and deallocations in a pattern that have a large difference in high and low water marks, and that difference is larger than the thread cache size, will put a lot of contention on the global cache. What will happen is the thread cache will overflow on each low water mark causing pages to be released to the global cache, then underflow on high water mark causing pages to be re-aqcuired from the global cache.
+Threads that perform a lot of allocations and deallocations in a pattern that have a large difference in high and low water marks, and that difference is larger than the thread cache size, will put a lot of contention on the global cache. What will happen is the thread cache will overflow on each low water mark causing pages to be released to the global cache, then underflow on high water mark causing pages to be re-acquired from the global cache.
 
 # Caveats
 Cross-thread deallocations are more costly than in-thread deallocations, since the spans are completely owned by the allocating thread. The free operation will be deferred using an atomic list operation and the actual free operation will be performed when the owner thread requires a new block of the corresponding size class.
 
-VirtualAlloc has an internal granularity of 64KiB. However, mmap lacks this granularity control, and the implementation instead keeps track and atomically increases a running address counter of where memory pages should be mapped to in the virtual address range. If some other code in the process uses mmap to reserve a part of virtual memory spance this counter needs to catch up and resync in order to keep the 64KiB granularity of span addresses, which could potentially be time consuming.
+VirtualAlloc has an internal granularity of 64KiB. However, mmap lacks this granularity control, and the implementation instead oversizes the memory mapping with 64KiB to be able to always return a memory area with this alignment. Since the extra memory pages are never touched this will not result in extra committed physical memory pages, but rather only increase virtual memory address space.
 
 The free, realloc and usable size functions all require the passed pointer to be within the first 64KiB page block of the start of the memory block. You cannot pass in any pointer from the memory block address range. 
 

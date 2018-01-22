@@ -1,3 +1,10 @@
+1.2.2
+
+Add configurable memory mapper providing map/unmap of memory pages. Default to VirtualAlloc/mmap if none provided. This allows rpmalloc to be used in contexts where memory is provided by internal means.
+
+Avoid using explicit memory map addresses to mmap on POSIX systems. Instead use overallocation of virtual memory space to gain 64KiB alignment of spans. Since extra pages are never touched this should have no impact on real memory usage and remove the possibility of contention in virtual address space with other uses of mmap.
+
+
 1.2.1
 
 Split library into rpmalloc only base library and preloadable malloc wrapper library.
