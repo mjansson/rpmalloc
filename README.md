@@ -37,7 +37,7 @@ The easiest way to use the library is simply adding rpmalloc.[h|c] to your proje
 
 __rpmalloc_initialize__ : Call at process start to initialize the allocator
 
-__rpmalloc_initialize_config__ : Optional entry point to call at process start to initialize the allocator with a custom memory mapping backend
+__rpmalloc_initialize_config__ : Optional entry point to call at process start to initialize the allocator with a custom memory mapping backend and/or memory page size
 
 __rpmalloc_finalize__: Call at process exit to finalize the allocator
 
@@ -94,6 +94,8 @@ Large blocks, or super spans, are cached in two levels. The first level is a per
 By default the allocator uses OS APIs to map virtual memory pages as needed, either `VirtualAlloc` on Windows or `mmap` on POSIX systems. If you want to use your own custom memory mapping provider you can use __rpmalloc_initialize_config__ and pass function pointers to map and unmap virtual memory. These function should reserve and free the requested number of bytes.
 
 The functions do not need to deal with alignment, this is done by rpmalloc internally. However, ideally the map function should return pages aligned to 64KiB boundaries in order to avoid extra mapping requests (see caveats section below). What will happen is that if the first map call returns an address that is not 64KiB aligned, rpmalloc will immediately unmap that block and call a new mapping request with the size increased by 64KiB, then perform the alignment internally. To avoid this double mapping, always return blocks aligned to 64KiB.
+
+Memory mapping requests are always done in multiples of the memory page size. You can specify a custom page size when initializing rpmalloc with __rpmalloc_initialize_config__, or pass 0 to let rpmalloc determine the system memory page size using OS APIs. The page size MUST be a power of two in [512, 16384] range.
 
 # Memory guards
 If you define the __ENABLE_GUARDS__ to 1, all memory allocations will be padded with extra guard areas before and after the memory block (while still honoring the requested alignment). These dead zones will be filled with a pattern and checked when the block is freed. If the patterns are not intact, an assert is fired.
