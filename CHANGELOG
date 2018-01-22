@@ -4,6 +4,10 @@ Add configurable memory mapper providing map/unmap of memory pages. Default to V
 
 Avoid using explicit memory map addresses to mmap on POSIX systems. Instead use overallocation of virtual memory space to gain 64KiB alignment of spans. Since extra pages are never touched this should have no impact on real memory usage and remove the possibility of contention in virtual address space with other uses of mmap.
 
+Detect system memory page size at initialization, and allow page size to be set explicitly in initialization. This allows the allocator to be used as a sub-allocator where the page granularity should be lower to reduce risk of wasting unused memory ranges, and adds support for modern iOS devices where page size is 16KiB.
+
+Add build time option to use memory guards, surrounding each allocated block with a dead zone which is checked for consistency when block is freed.
+
 
 1.2.1
 
