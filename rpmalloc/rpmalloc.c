@@ -71,7 +71,7 @@
 
 #ifndef ENABLE_GUARDS
 //! Enable overwrite/underwrite guards
-#define ENABLE_GUARDS             1
+#define ENABLE_GUARDS             0
 #endif
 
 // Platform and arch specifics
@@ -1460,7 +1460,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		page_size_bit >>= 1;
 	}
 
-	_memory_page_size = (1 << _memory_page_size_shift);
+	_memory_page_size = ((size_t)1 << _memory_page_size_shift);
 	_memory_max_page_count = (SPAN_MAX_SIZE >> _memory_page_size_shift);
 
 #if defined(__APPLE__) && ENABLE_PRELOAD
