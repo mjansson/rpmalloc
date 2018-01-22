@@ -331,7 +331,10 @@ class MSVCToolchain(toolchain.Toolchain):
     if cconfigflags != []:
       localvariables += [('cconfigflags', cconfigflags)]
     if 'defines' in variables:
-      localvariables += [('cmoreflags', ['/D' + define for define in variables['defines']])]
+      definelist = []
+      for define in variables['defines']:
+        definelist += ['/D', '"' + define + '"']
+      localvariables += [('cmoreflags', definelist)]
     return localvariables
 
   def ar_variables(self, config, arch, targettype, variables):
