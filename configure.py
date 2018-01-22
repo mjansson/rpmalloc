@@ -21,3 +21,4 @@ if not target.is_windows():
 	rpmallocwrap_so = generator.sharedlib(module = 'rpmalloc', libname = 'rpmallocwrap', sources = ['rpmalloc.c', 'malloc.c', 'new.cc'], variables = {'runtime': 'c++', 'defines': ['ENABLE_PRELOAD=1']})
 
 generator.bin(module = 'test', sources = ['thread.c', 'main.c'], binname = 'rpmalloc-test', implicit_deps = [rpmalloc_lib], libs = ['rpmalloc'], includepaths = ['test'])
+generator.bin(module = 'test', sources = ['thread.c', 'main.c'], binname = 'rpmalloc-test-guard', implicit_deps = [rpmalloc_lib], libs = ['rpmalloc'], includepaths = ['test'], variables = {'defines': ['ENABLE_GUARDS=1']})

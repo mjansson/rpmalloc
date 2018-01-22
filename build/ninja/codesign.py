@@ -14,7 +14,7 @@ parser.add_argument('file', type=str,
                     help = 'Bundle/package to sign')
 parser.add_argument('--target', type=str,
                     help = 'Target',
-                    choices = ['macosx', 'ios', 'android'],
+                    choices = ['macos', 'ios', 'android'],
                     default = '')
 parser.add_argument('--bundle', type=str,
                     help = 'Bundle identifier (OSX/iOS)',
@@ -65,13 +65,13 @@ options = parser.parse_args()
 
 androidprefs = {}
 iosprefs = {}
-macosxprefs = {}
+macosprefs = {}
 
 
 def parse_prefs( prefsfile ):
   global androidprefs
   global iosprefs
-  global macosxprefs
+  global macosprefs
   if not os.path.isfile( prefsfile ):
     return
   file = open( prefsfile, 'r' )
@@ -81,8 +81,8 @@ def parse_prefs( prefsfile ):
     androidprefs = prefs['android']
   if 'ios' in prefs:
     iosprefs = prefs['ios']
-  if 'macosx' in prefs:
-    macosxprefs = prefs['macosx']
+  if 'macos' in prefs:
+    macosprefs = prefs['macos']
 
 
 def codesign_ios():
@@ -127,7 +127,7 @@ def codesign_ios():
   if os.path.isfile( os.path.join( options.file, '_CodeSignature', 'CodeResources' ) ):
     os.remove( os.path.join( options.file, '_CodeSignature', 'CodeResources' ) )
 
-  os.system( '/usr/bin/codesign --force --sign ' + iosprefs['signature'] + ' --entitlements ' + plistpath + ' ' + options.file )
+  os.system( '/usr/bin/codesign --force --sign "' + iosprefs['signature'] + '" --entitlements ' + plistpath + ' ' + options.file )
 
   if os.path.isfile( os.path.join( options.file, '_CodeSignature', 'CodeResources' ) ):
     os.utime( os.path.join( options.file, '_CodeSignature', 'CodeResources' ), None )
@@ -135,13 +135,13 @@ def codesign_ios():
     os.utime( options.file, None )
 
 
-def codesign_macosx():
-  if not 'organisation' in macosxprefs:
-    macosxprefs['organisation'] = options.organisation
-  if not 'bundleidentifier' in macosxprefs:
-    macosxprefs['bundleidentifier'] = options.bundle
-  if not 'provisioning' in macosxprefs:
-    macosxprefs['provisioning'] = options.provisioning
+def codesign_macos():
+  if not 'organisation' in macosprefs:
+    macosprefs['organisation'] = options.organisation
+  if not 'bundleidentifier' in macosprefs:
+    macosprefs['bundleidentifier'] = options.bundle
+  if not 'provisioning' in macosprefs:
+    macosprefs['provisioning'] = options.provisioning
 
   codesign_allocate = subprocess.check_output( [ 'xcrun', '--sdk', 'macosx', '-f', 'codesign_allocate' ] ).strip()
   sdkdir = subprocess.check_output( [ 'xcrun', '--sdk', 'macosx', '--show-sdk-path' ] ).strip()
@@ -150,8 +150,8 @@ def codesign_macosx():
   if os.path.isfile( os.path.join( options.file, 'Contents', '_CodeSignature', 'CodeResources' ) ):
     os.remove( os.path.join( options.file, 'Contents', '_CodeSignature', 'CodeResources' ) )
 
-  if 'signature' in macosxprefs:
-    os.system( 'export CODESIGN_ALLOCATE=' + codesign_allocate + '; /usr/bin/codesign --force --sign ' + macosxprefs['signature'] + ' ' + options.file )
+  if 'signature' in macosprefs:
+    os.system( 'export CODESIGN_ALLOCATE=' + codesign_allocate + '; /usr/bin/codesign --force --sign ' + macosprefs['signature'] + ' ' + options.file )
 
   if os.path.isfile( os.path.join( options.file, 'Contents', '_CodeSignature', 'CodeResources' ) ):
     os.utime( os.path.join( options.file, 'Contents', '_CodeSignature', 'CodeResources' ), None )
@@ -215,7 +215,7 @@ parse_prefs( options.prefs )
 
 if options.target == 'ios':
   codesign_ios()
-elif options.target == 'macosx':
-  codesign_macosx()
+elif options.target == 'macos':
+  codesign_macos()
 elif options.target == 'android':
   codesign_android()
