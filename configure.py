@@ -22,5 +22,6 @@ if not target.is_windows():
 
 rpmallocguards_lib = generator.lib(module = 'rpmalloc', libname = 'rpmallocguards', sources = ['rpmalloc.c'], variables = {'defines': ['ENABLE_GUARDS=1']})
 
-generator.bin(module = 'test', sources = ['thread.c', 'main.c'], binname = 'rpmalloc-test', implicit_deps = [rpmalloc_lib], libs = ['rpmalloc'], includepaths = ['rpmalloc', 'test'])
-generator.bin(module = 'test', sources = ['thread.c', 'main.c'], binname = 'rpmalloc-test-guards', implicit_deps = [rpmallocguards_lib], libs = ['rpmallocguards'], includepaths = ['rpmalloc', 'test'], variables = {'defines': ['ENABLE_GUARDS=1']})
+if not target.is_ios() and not target.is_android():
+	generator.bin(module = 'test', sources = ['thread.c', 'main.c'], binname = 'rpmalloc-test', implicit_deps = [rpmalloc_lib], libs = ['rpmalloc'], includepaths = ['rpmalloc', 'test'])
+	generator.bin(module = 'test', sources = ['thread.c', 'main.c'], binname = 'rpmalloc-test-guards', implicit_deps = [rpmallocguards_lib], libs = ['rpmallocguards'], includepaths = ['rpmalloc', 'test'], variables = {'defines': ['ENABLE_GUARDS=1']})

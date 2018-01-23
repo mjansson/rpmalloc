@@ -46,25 +46,31 @@ thread_run(thread_arg* arg) {
 }
 
 void ATTRIBUTE_NORETURN
-thread_exit(void* value) {
+thread_exit(uintptr_t value) {
 #ifdef _WIN32
-
+	_endthreadex((unsigned)value);
 #else
-	pthread_exit(value);
+	pthread_exit((void*)value);
 #endif
 }
 
-void
+uintptr_t
 thread_join(uintptr_t handle) {
 	if (!handle)
-		return;
+		return (uintptr_t)-1;
+	uintptr_t ret;
 #ifdef _WIN32
+	DWORD exit_code = 0;
 	WaitForSingleObject((HANDLE)handle, INFINITE);
+	GetExitCodeThread((HANDLE)handle, &exit_code);
 	CloseHandle((HANDLE)handle);
+	ret = exit_code;
 #else
 	void* result = 0;
 	pthread_join((pthread_t)handle, &result);
+	ret = (uintptr_t)result;
 #endif
+	return ret;
 }
 
 void

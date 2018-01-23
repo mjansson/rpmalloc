@@ -3,7 +3,7 @@
 
 
 struct thread_arg {
-	void(*fn)(void*);
+	void (*fn)(void*);
 	void* arg;
 };
 typedef struct thread_arg thread_arg;
@@ -12,9 +12,9 @@ extern uintptr_t
 thread_run(thread_arg* arg);
 
 extern void
-thread_exit(void* value);
+thread_exit(uintptr_t value);
 
-extern void
+extern uintptr_t
 thread_join(uintptr_t handle);
 
 extern void
