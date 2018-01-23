@@ -1497,6 +1497,8 @@ void
 rpmalloc_finalize(void) {
 	atomic_thread_fence_acquire();
 
+	rpmalloc_thread_finalize();
+
 	//Free all thread caches
 	for (size_t list_idx = 0; list_idx < HEAP_ARRAY_SIZE; ++list_idx) {
 		heap_t* heap = atomic_load_ptr(&_memory_heaps[list_idx]);
@@ -1572,8 +1574,6 @@ rpmalloc_finalize(void) {
 	}
 
 	atomic_thread_fence_release();
-
-	set_thread_heap(0);
 
 #if defined(__APPLE__) && ENABLE_PRELOAD
 	pthread_key_delete(_memory_thread_heap);
