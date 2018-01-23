@@ -25,7 +25,7 @@ class Generator(object):
                         choices = toolchain.supported_toolchains())
     parser.add_argument('-c', '--config', action = 'append',
                         help = 'Build configuration',
-                        choices = ['debug', 'release'],
+                        choices = ['debug', 'release', 'profile', 'deploy'],
                         default = [])
     parser.add_argument('-a', '--arch', action = 'append',
                         help = 'Add architecture',
@@ -40,11 +40,15 @@ class Generator(object):
     parser.add_argument('--coverage', action='store_true',
                         help = 'Build with code coverage',
                         default = False)
+    parser.add_argument('--subninja', action='store',
+                        help = 'Build as subproject (exclude rules and pools) with the given subpath',
+                        default = '')
     options = parser.parse_args()
 
     self.project = project
     self.target = platform.Platform(options.target)
     self.host = platform.Platform(options.host)
+    self.subninja = options.subninja
     archs = options.arch
     configs = options.config
     if includepaths is None:
@@ -72,23 +76,20 @@ class Generator(object):
       config_str = ' '.join([key + '=' + pipes.quote(configure_env[key]) for key in configure_env])
       writer.variable('configure_env', config_str + '$ ')
 
+    if variables is None:
+      variables = {}
+    if not isinstance(variables, dict):
+      variables = dict(variables)
+
     if options.monolithic:
-      if variables is None:
-        variables = {}
-      if isinstance(variables, dict):
-        variables['monolithic'] = True
-      else:
-        variables += [('monolithic', True)]
+      variables['monolithic'] = True
     if options.coverage:
-      if variables is None:
-        variables = {}
-      if isinstance(variables, dict):
-        variables['coverage'] = True
-      else:
-        variables += [('coverage', True)]
+      variables['coverage'] = True
+    if self.subninja != '':
+      variables['internal_deps'] = True
 
     self.toolchain = toolchain.make_toolchain(self.host, self.target, options.toolchain)
-    self.toolchain.initialize(project, archs, configs, includepaths, dependlibs, libpaths, variables)
+    self.toolchain.initialize(project, archs, configs, includepaths, dependlibs, libpaths, variables, self.subninja)
 
     self.writer.variable('configure_toolchain', self.toolchain.name())
     self.writer.variable('configure_archs', archs)
@@ -96,7 +97,8 @@ class Generator(object):
     self.writer.newline()
 
     self.toolchain.write_variables(self.writer)
-    self.toolchain.write_rules(self.writer)
+    if self.subninja == '':
+      self.toolchain.write_rules(self.writer)
 
   def target(self):
     return self.target
@@ -110,19 +112,23 @@ class Generator(object):
   def writer(self):
     return self.writer
 
-  def lib(self, module, sources, libname, basepath = None, configs = None, includepaths = None, variables = None, externalsources = False):
-    return self.toolchain.lib(self.writer, module, sources, libname, basepath, configs, includepaths, variables, None, externalsources)
+  def is_subninja(self):
+    return self.subninja != ''
 
-  def sharedlib(self, module, sources, libname, basepath = None, configs = None, includepaths = None, libpaths = None, implicit_deps = None, libs = None, frameworks = None, variables = None, externalsources = False):
-    return self.toolchain.sharedlib(self.writer, module, sources, libname, basepath, configs, includepaths, libpaths, implicit_deps, libs, frameworks, variables, None, externalsources)
+  def lib(self, module, sources, libname = None, basepath = None, configs = None, includepaths = None, variables = None):
+    return self.toolchain.lib(self.writer, module, sources, libname, basepath, configs, includepaths, variables)
 
-  def bin(self, module, sources, binname, basepath = None, configs = None, includepaths = None, libpaths = None, implicit_deps = None, libs = None, frameworks = None, variables = None, outpath = None, externalsources = False):
-    return self.toolchain.bin(self.writer, module, sources, binname, basepath, configs, includepaths, libpaths, implicit_deps, libs, frameworks, variables, outpath, externalsources)
+  def sharedlib(self, module, sources, basepath = None, configs = None, includepaths = None, libpaths = None, implicit_deps = None, dependlibs = None, libs = None, frameworks = None, variables = None):
+    return self.toolchain.sharedlib(self.writer, module, sources, basepath, configs, includepaths, libpaths, implicit_deps, dependlibs, libs, frameworks, variables)
 
-  def app(self, module, sources, binname, basepath = None, configs = None, includepaths = None, libpaths = None, implicit_deps = None, libs = None, frameworks = None, variables = None, resources = None):
-    return self.toolchain.app(self.writer, module, sources, binname, basepath, configs, includepaths, libpaths, implicit_deps, libs, frameworks, variables, resources)
+  def bin(self, module, sources, binname, basepath = None, configs = None, includepaths = None, libpaths = None, implicit_deps = None, dependlibs = None, libs = None, frameworks = None, variables = None):
+    return self.toolchain.bin(self.writer, module, sources, binname, basepath, configs, includepaths, libpaths, implicit_deps, dependlibs, libs, frameworks, variables)
+
+  def app(self, module, sources, binname, basepath = None, configs = None, includepaths = None, libpaths = None, implicit_deps = None, dependlibs = None, libs = None, frameworks = None, variables = None, resources = None):
+    return self.toolchain.app(self.writer, module, sources, binname, basepath, configs, includepaths, libpaths, implicit_deps, dependlibs, libs, frameworks, variables, resources)
 
   def test_includepaths(self):
+    #TODO: This is ugly
     if self.project == "foundation":
       return ['test']
     return ['test', os.path.join('..', 'foundation_lib', 'test')]

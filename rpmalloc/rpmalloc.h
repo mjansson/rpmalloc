@@ -79,6 +79,8 @@ typedef struct rpmalloc_config_t {
 	//  size. If set to 0, rpmalloc will use system calls to determine the page size. The page
 	//  size MUST be a power of two in [512,16384] range (2^9 to 2^14).
 	size_t page_size;
+	//! Debug callback if memory guards are enabled. Called if a memory overwrite is detected
+	void (*memory_overwrite)(void* address);
 } rpmalloc_config_t;
 
 extern int

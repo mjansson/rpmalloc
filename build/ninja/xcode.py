@@ -21,13 +21,13 @@ class XCode(object):
     self.organisation = ''
     self.bundleidentifier = ''
     self.provisioning = ''
-    if self.target.is_macosx():
+    if self.target.is_macos():
       self.deploymenttarget = '10.7'
     elif self.target.is_ios():
       self.deploymenttarget = '8.0'
 
   def build_toolchain(self):
-    if self.target.is_macosx():
+    if self.target.is_macos():
       sdk = 'macosx'
       deploytarget = 'MACOSX_DEPLOYMENT_TARGET=' + self.deploymenttarget
     elif self.target.is_ios():
@@ -43,7 +43,7 @@ class XCode(object):
     self.dsymutil = "PATH=" + localpath + " " + subprocess.check_output(['xcrun', '--sdk', sdk, '-f', 'dsymutil']).strip()
 
     self.plistcmd = 'build/ninja/plist.py --exename $exename --prodname $prodname --bundle $bundleidentifier --target $target --deploymenttarget $deploymenttarget --output $outpath $in'
-    if self.target.is_macosx():
+    if self.target.is_macos():
       self.xcassetscmd = 'mkdir -p $outpath && $xcassets --output-format human-readable-text --output-partial-info-plist $outplist' \
                          ' --app-icon AppIcon --launch-image LaunchImage --platform macosx --minimum-deployment-target ' + self.deploymenttarget + \
                          ' --target-device mac --compress-pngs --compile $outpath $in >/dev/null'
@@ -88,16 +88,16 @@ class XCode(object):
         self.bundleidentifier = iosprefs['bundleidentifier']
       if 'provisioning' in iosprefs:
         self.provisioning = iosprefs['provisioning']
-    elif self.target.is_macosx() and 'macosx' in prefs:
-      macosxprefs = prefs['macosx']
-      if 'deploymenttarget' in macosxprefs:
-        self.deploymenttarget = macosxprefs['deploymenttarget']
-      if 'organisation' in macosxprefs:
-        self.organisation = macosxprefs['organisation']
-      if 'bundleidentifier' in macosxprefs:
-        self.bundleidentifier = macosxprefs['bundleidentifier']
-      if 'provisioning' in macosxprefs:
-        self.provisioning = macosxprefs['provisioning']
+    elif self.target.is_macos() and 'macos' in prefs:
+      macosprefs = prefs['macos']
+      if 'deploymenttarget' in macosprefs:
+        self.deploymenttarget = macosprefs['deploymenttarget']
+      if 'organisation' in macosprefs:
+        self.organisation = macosprefs['organisation']
+      if 'bundleidentifier' in macosprefs:
+        self.bundleidentifier = macosprefs['bundleidentifier']
+      if 'provisioning' in macosprefs:
+        self.provisioning = macosprefs['provisioning']
 
   def write_variables(self, writer):
     writer.variable('plist', self.plist)
@@ -154,14 +154,14 @@ class XCode(object):
       #First build everything except plist inputs
       for resource in resources:
         if resource.endswith('.xcassets'):
-          if self.target.is_macosx():
+          if self.target.is_macos():
             assetsvars = [('outpath', os.path.join(os.getcwd(), apppath, 'Contents', 'Resources'))]
           else:
             assetsvars = [('outpath', apppath)]
           outplist = os.path.join(os.getcwd(), builddir, os.path.splitext(os.path.basename(resource))[0] + '-xcassets.plist')
           assetsvars += [('outplist', outplist)]
           outfiles = [outplist]
-          if self.target.is_macosx():
+          if self.target.is_macos():
             outfiles += [os.path.join(os.getcwd(), apppath, 'Contents', 'Resources', 'AppIcon.icns')]
           elif self.target.is_ios():
             pass #TODO: Need to list all icon and launch image files here
@@ -169,7 +169,7 @@ class XCode(object):
           has_resources = True
         elif resource.endswith('.xib'):
           xibmodule = binname.replace('-', '_').replace('.', '_')
-          if self.target.is_macosx():
+          if self.target.is_macos():
             nibpath = os.path.join(apppath, 'Contents', 'Resources', os.path.splitext(os.path.basename(resource))[0] + '.nib')
           else:
             nibpath = os.path.join(apppath, os.path.splitext(os.path.basename(resource))[0] + '.nib')
@@ -186,11 +186,11 @@ class XCode(object):
 
       #Extra output files/directories
       outfiles = []
-      if has_resources and self.target.is_macosx():
+      if has_resources and self.target.is_macos():
         outfiles += [os.path.join(apppath, 'Contents', 'Resources')]
 
       #Now build input plists appending partial plists created by previous resources
-      if self.target.is_macosx():
+      if self.target.is_macos():
         plistpath = os.path.join(apppath, 'Contents', 'Info.plist')
         pkginfopath = os.path.join(apppath, 'Contents', 'PkgInfo')
       else:
@@ -210,7 +210,7 @@ class XCode(object):
         if self.provisioning != '':
           codesignvars += [('provisioning', self.provisioning)]
         writer.build([os.path.join(apppath, '_CodeSignature', 'CodeResources'), os.path.join(apppath, '_CodeSignature'), apppath], 'codesign', builtbin, implicit = builtres + [os.path.join('build', 'ninja', 'codesign.py')], variables = codesignvars)
-      elif self.target.is_macosx():
+      elif self.target.is_macos():
         if self.provisioning != '':
           codesignvars += [('provisioning', self.provisioning)]
         writer.build([os.path.join(apppath, 'Contents', '_CodeSignature', 'CodeResources'), os.path.join(apppath, 'Contents', '_CodeSignature'), os.path.join(apppath, 'Contents'), apppath], 'codesign', builtbin, implicit = builtres + [os.path.join('build', 'ninja', 'codesign.py')], variables = codesignvars)

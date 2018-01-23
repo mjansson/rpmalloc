@@ -9,11 +9,11 @@ import toolchain
 
 class ClangToolchain(toolchain.Toolchain):
 
-  def initialize(self, project, archs, configs, includepaths, dependlibs, libpaths, variables):
+  def initialize(self, project, archs, configs, includepaths, dependlibs, libpaths, variables, subninja):
     #Local variable defaults
     self.toolchain = ''
     self.sdkpath = ''
-    self.includepaths = includepaths
+    self.includepaths = []
     self.libpaths = libpaths
     self.ccompiler = 'clang'
     self.cxxcompiler = 'clang++'
@@ -27,16 +27,16 @@ class ClangToolchain(toolchain.Toolchain):
     self.sysroot = ''
     if self.target.is_ios():
       self.deploymenttarget = '9.0'
-    if self.target.is_macosx():
+    if self.target.is_macos():
       self.deploymenttarget = '10.7'
 
     #Command definitions
-    self.cccmd = '$toolchain$cc -MMD -MT $out -MF $out.d -I. $includepaths $moreincludepaths $cflags $carchflags $cconfigflags $cmoreflags -c $in -o $out'
-    self.cxxcmd = '$toolchain$cxx -MMD -MT $out -MF $out.d -I. $includepaths $moreincludepaths $cxxflags $carchflags $cconfigflags $cmoreflags -c $in -o $out'
+    self.cccmd = '$toolchain$cc -MMD -MT $out -MF $out.d $includepaths $moreincludepaths $cflags $carchflags $cconfigflags $cmoreflags -c $in -o $out'
+    self.cxxcmd = '$toolchain$cxx -MMD -MT $out -MF $out.d $includepaths $moreincludepaths $cxxflags $carchflags $cconfigflags $cmoreflags -c $in -o $out'
     self.ccdeps = 'gcc'
     self.ccdepfile = '$out.d'
     self.arcmd = self.rmcmd('$out') + ' && $toolchain$ar crsD $ararchflags $arflags $out $in'
-    self.linkcmd = '$toolchain$link $libpaths $configlibpaths $linkflags $linkarchflags $linkconfigflags -o $out $in $libs $archlibs $oslibs $frameworks'
+    self.linkcmd = '$toolchain$cc $libpaths $configlibpaths $linkflags $linkarchflags $linkconfigflags -o $out $in $libs $archlibs $oslibs $frameworks'
 
     #Base flags
     self.cflags = ['-D' + project.upper() + '_COMPILE=1',
@@ -45,11 +45,22 @@ class ClangToolchain(toolchain.Toolchain):
                    '-fno-trapping-math', '-ffast-math']
     self.cwarnflags = ['-W', '-Werror', '-pedantic', '-Wall', '-Weverything',
                        '-Wno-padded', '-Wno-documentation-unknown-command']
+    self.cmoreflags = []
     self.mflags = []
     self.arflags = []
     self.linkflags = []
     self.oslibs = []
     self.frameworks = []
+
+    self.initialize_subninja(subninja)
+    self.initialize_archs(archs)
+    self.initialize_configs(configs)
+    self.initialize_project(project)
+    self.initialize_toolchain()
+    self.initialize_depends(dependlibs)
+
+    self.parse_default_variables(variables)
+    self.read_build_prefs()
 
     if self.target.is_linux() or self.target.is_bsd() or self.target.is_raspberrypi():
       self.cflags += ['-D_GNU_SOURCE=1']
@@ -60,20 +71,23 @@ class ClangToolchain(toolchain.Toolchain):
     if self.target.is_bsd():
       self.oslibs += ['execinfo']
 
-    self.initialize_archs(archs)
-    self.initialize_configs(configs)
-    self.initialize_project(project)
-    self.initialize_toolchain()
-    self.initialize_depends(dependlibs)
-
-    self.parse_default_variables(variables)
-    self.read_build_prefs()
+    self.includepaths = self.prefix_includepaths((includepaths or []) + ['.'])
 
     if self.is_monolithic():
       self.cflags += ['-DBUILD_MONOLITHIC=1']
     if self.use_coverage():
       self.cflags += ['--coverage']
       self.linkflags += ['--coverage']
+
+    if not 'nowarning' in variables or not variables['nowarning']:
+      self.cflags += self.cwarnflags
+    self.cxxflags = list(self.cflags)
+
+    self.cflags += ['-std=c11']
+    if self.target.is_macos() or self.target.is_ios():
+      self.cxxflags += ['-std=c++14', '-stdlib=libc++']
+    else:
+      self.cxxflags += ['-std=gnu++14']
 
     #Overrides
     self.objext = '.o'
@@ -85,7 +99,7 @@ class ClangToolchain(toolchain.Toolchain):
     self.builders['lib'] = self.builder_lib
     self.builders['sharedlib'] = self.builder_sharedlib
     self.builders['bin'] = self.builder_bin
-    if self.target.is_macosx() or self.target.is_ios():
+    if self.target.is_macos() or self.target.is_ios():
       self.builders['m'] = self.builder_cm
       self.builders['multilib'] = self.builder_apple_multilib
       self.builders['multisharedlib'] = self.builder_apple_multisharedlib
@@ -101,21 +115,6 @@ class ClangToolchain(toolchain.Toolchain):
 
     #Setup target platform
     self.build_toolchain()
-
-    self.cflags += ['-std=c11']
-    if self.target.is_macosx() or self.target.is_ios():
-      self.cxxflags += ['-std=c++11', '-stdlib=libc++']
-    if self.target.is_linux():
-      self.cxxflags += ['-std=gnu++11']
-
-    self.cmoreflags = []
-    self.cexternflags = []
-    self.cxxexternflags = []
-    self.cexternflags += self.cflags + ['-w']
-    self.cxxexternflags += self.cxxflags + ['-w']
-
-    self.cflags += self.cwarnflags
-    self.cxxflags += self.cwarnflags
 
   def name(self):
     return 'clang'
@@ -134,10 +133,10 @@ class ClangToolchain(toolchain.Toolchain):
       iosprefs = prefs['ios']
       if 'deploymenttarget' in iosprefs:
         self.deploymenttarget = iosprefs['deploymenttarget']
-    if self.target.is_macosx() and 'macosx' in prefs:
-      macosxprefs = prefs['macosx']
-      if 'deploymenttarget' in macosxprefs:
-        self.deploymenttarget = macosxprefs['deploymenttarget']
+    if self.target.is_macos() and 'macos' in prefs:
+      macosprefs = prefs['macos']
+      if 'deploymenttarget' in macosprefs:
+        self.deploymenttarget = macosprefs['deploymenttarget']
     if self.target.is_pnacl() and 'pnacl' in prefs:
       pnaclprefs = prefs['pnacl']
       if 'sdkpath' in pnaclprefs:
@@ -152,7 +151,7 @@ class ClangToolchain(toolchain.Toolchain):
     writer.variable('cxx', self.cxxcompiler)
     writer.variable('ar', self.archiver)
     writer.variable('link', self.linker)
-    if self.target.is_macosx() or self.target.is_ios():
+    if self.target.is_macos() or self.target.is_ios():
       writer.variable('lipo', self.lipo)
     if self.target.is_pnacl():
       writer.variable('finalize', self.finalizer)
@@ -161,7 +160,7 @@ class ClangToolchain(toolchain.Toolchain):
     writer.variable('moreincludepaths', '')
     writer.variable('cflags', self.cflags)
     writer.variable('cxxflags', self.cxxflags)
-    if self.target.is_macosx() or self.target.is_ios():
+    if self.target.is_macos() or self.target.is_ios():
       writer.variable('mflags', self.mflags)
     writer.variable('carchflags', '')
     writer.variable('cconfigflags', '')
@@ -184,7 +183,7 @@ class ClangToolchain(toolchain.Toolchain):
     super(ClangToolchain, self).write_rules(writer)
     writer.rule('cc', command = self.cccmd, depfile = self.ccdepfile, deps = self.ccdeps, description = 'CC $in')
     writer.rule('cxx', command = self.cxxcmd, depfile = self.ccdepfile, deps = self.ccdeps, description = 'CXX $in')
-    if self.target.is_macosx() or self.target.is_ios():
+    if self.target.is_macos() or self.target.is_ios():
       writer.rule('cm', command = self.cmcmd, depfile = self.ccdepfile, deps = self.ccdeps, description = 'CM $in')
       writer.rule( 'lipo', command = self.lipocmd, description = 'LIPO $out' )
     writer.rule('ar', command = self.arcmd, description = 'LIB $out')
@@ -201,21 +200,15 @@ class ClangToolchain(toolchain.Toolchain):
       self.build_windows_toolchain()
     elif self.target.is_android():
       self.build_android_toolchain()
-    elif self.target.is_macosx() or self.target.is_ios():
+    elif self.target.is_macos() or self.target.is_ios():
       self.build_xcode_toolchain()
     elif self.target.is_pnacl():
       self.build_pnacl_toolchain()
-    else:
-      self.build_default_toolchain()
     if self.toolchain != '' and not self.toolchain.endswith('/') and not self.toolchain.endswith('\\'):
       self.toolchain += os.sep
 
-  def build_default_toolchain(self):
-    self.cxxflags = list(self.cflags)
-
   def build_windows_toolchain(self):
     self.cflags += ['-U__STRICT_ANSI__', '-Wno-reserved-id-macro']
-    self.cxxflags = list(self.cflags)
     self.oslibs = ['kernel32', 'user32', 'shell32', 'advapi32']
 
   def build_android_toolchain(self):
@@ -225,7 +218,6 @@ class ClangToolchain(toolchain.Toolchain):
     self.linkcmd += ' -shared -Wl,-soname,$liblinkname --sysroot=$sysroot'
     self.cflags += ['-fpic', '-ffunction-sections', '-funwind-tables', '-fstack-protector', '-fomit-frame-pointer',
                     '-no-canonical-prefixes', '-Wa,--noexecstack']
-    self.cxxflags = list(self.cflags)
 
     self.linkflags += ['-no-canonical-prefixes', '-Wl,--no-undefined', '-Wl,-z,noexecstack', '-Wl,-z,relro', '-Wl,-z,now']
 
@@ -237,16 +229,18 @@ class ClangToolchain(toolchain.Toolchain):
     self.toolchain = os.path.join('$ndk', 'toolchains', 'llvm', 'prebuilt', self.android.hostarchname, 'bin', '')
 
   def build_xcode_toolchain(self):
-    if self.target.is_macosx():
+    if self.target.is_macos():
       sdk = 'macosx'
       deploytarget = 'MACOSX_DEPLOYMENT_TARGET=' + self.deploymenttarget
       self.cflags += ['-fasm-blocks', '-mmacosx-version-min=' + self.deploymenttarget, '-isysroot', '$sysroot']
+      self.cxxflags += ['-fasm-blocks', '-mmacosx-version-min=' + self.deploymenttarget, '-isysroot', '$sysroot']
       self.arflags += ['-static', '-no_warning_for_no_symbols']
       self.linkflags += ['-isysroot', '$sysroot']
     elif self.target.is_ios():
       sdk = 'iphoneos'
       deploytarget = 'IPHONEOS_DEPLOYMENT_TARGET=' + self.deploymenttarget
       self.cflags += ['-fasm-blocks', '-miphoneos-version-min=' + self.deploymenttarget, '-isysroot', '$sysroot']
+      self.cxxflags += ['-fasm-blocks', '-miphoneos-version-min=' + self.deploymenttarget, '-isysroot', '$sysroot']
       self.arflags += ['-static', '-no_warning_for_no_symbols']
       self.linkflags += ['-isysroot', '$sysroot']
     self.cflags += ['-fembed-bitcode-marker']
@@ -254,25 +248,22 @@ class ClangToolchain(toolchain.Toolchain):
     platformpath = subprocess.check_output(['xcrun', '--sdk', sdk, '--show-sdk-platform-path']).strip()
     localpath = platformpath + "/Developer/usr/bin:/Applications/Xcode.app/Contents/Developer/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-    if self.target.is_macosx():
-      self.sysroot = subprocess.check_output(['xcrun', '--sdk', 'macosx', '--show-sdk-path']).strip()
-    elif self.target.is_ios():
-      self.sysroot = subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path']).strip()
+    self.sysroot = subprocess.check_output(['xcrun', '--sdk', sdk, '--show-sdk-path']).strip()
 
     self.ccompiler = "PATH=" + localpath + " " + subprocess.check_output(['xcrun', '--sdk', sdk, '-f', 'clang']).strip()
     self.archiver = "PATH=" + localpath + " " + subprocess.check_output(['xcrun', '--sdk', sdk, '-f', 'libtool']).strip()
     self.linker = deploytarget + " " + self.ccompiler
     self.lipo = "PATH=" + localpath + " " + subprocess.check_output(['xcrun', '--sdk', sdk, '-f', 'lipo']).strip()
 
-    self.mflags += self.cflags + ['-fobjc-arc', '-fno-objc-exceptions', '-x', 'objective-c']
-    self.cxxflags = self.cflags + ['-x', 'c++']
+    self.mflags += list(self.cflags) + ['-fobjc-arc', '-fno-objc-exceptions', '-x', 'objective-c']
     self.cflags += ['-x', 'c']
+    self.cxxflags += ['-x', 'c++']
 
     self.cmcmd = self.cccmd.replace('$cflags', '$mflags')
     self.arcmd = self.rmcmd('$out') + ' && $ar $ararchflags $arflags $in -o $out'
     self.lipocmd = '$lipo $in -create -output $out'
 
-    if self.target.is_macosx():
+    if self.target.is_macos():
       self.frameworks = ['Cocoa', 'CoreFoundation']
     if self.target.is_ios():
       self.frameworks = ['CoreGraphics', 'UIKit', 'Foundation']
@@ -292,7 +283,6 @@ class ClangToolchain(toolchain.Toolchain):
     self.linker = self.ccompiler
     self.finalizer = os.path.join('bin', 'pnacl-finalize' + shsuffix)
     self.nmfer = os.path.join('tools', 'create_nmf.py')
-    self.cxxflags = list(self.cflags)
 
     self.finalizecmd = '$toolchain$finalize -o $out $in'
     self.nmfcmd = self.python + ' ' + os.path.join('$sdkpath', '$nmf') + ' -o $out $in'
@@ -303,14 +293,17 @@ class ClangToolchain(toolchain.Toolchain):
 
   def make_includepaths(self, includepaths):
     if not includepaths is None:
-      return ['-I' + self.path_escape(path) for path in list(includepaths)]
+      return ['-I' + path for path in list(includepaths)]
     return []
+
+  def make_libpath(self, path):
+    return self.path_escape(path)
 
   def make_libpaths(self, libpaths):
     if not libpaths is None:
       if self.target.is_windows():
         return ['-Xlinker /LIBPATH:' + self.path_escape(path) for path in libpaths]
-      return ['-L' + self.path_escape(path) for path in libpaths]
+      return ['-L' + self.make_libpath(path) for path in libpaths]
     return []
 
   def make_targetarchflags(self, arch, targettype):
@@ -335,7 +328,7 @@ class ClangToolchain(toolchain.Toolchain):
       elif arch == 'mips64':
         flags += ['-target', 'mips64el-none-linux-android']
       flags += ['-gcc-toolchain', self.android.make_gcc_toolchain_path(arch)]
-    elif self.target.is_macosx() or self.target.is_ios():
+    elif self.target.is_macos() or self.target.is_ios():
       if arch == 'x86':
         flags += [' -arch x86']
       elif arch == 'x86-64':
@@ -355,8 +348,6 @@ class ClangToolchain(toolchain.Toolchain):
     flags = []
     if targettype == 'sharedlib':
       flags += ['-DBUILD_DYNAMIC_LINK=1']
-      if self.target.is_linux():
-        flags += ['-fPIC']
     flags += self.make_targetarchflags(arch, targettype)
     return flags
 
@@ -391,7 +382,7 @@ class ClangToolchain(toolchain.Toolchain):
         flags += ['-Xlinker', '/MACHINE:X86']
       elif arch == 'x86-64':
         flags += ['-Xlinker', '/MACHINE:X64']
-    if self.target.is_macosx() and 'support_lua' in variables and variables['support_lua']:
+    if self.target.is_macos() and 'support_lua' in variables and variables['support_lua']:
       flags += ['-pagezero_size', '10000', '-image_base', '100000000']
     return flags
 
@@ -402,12 +393,6 @@ class ClangToolchain(toolchain.Toolchain):
         flags += ['-Xlinker', '/DLL']
       elif targettype == 'bin':
         flags += ['-Xlinker', '/SUBSYSTEM:CONSOLE']
-    else:
-      if targettype == 'sharedlib':
-        if self.target.is_macosx() or self.target.is_ios():
-          flags += ['-dynamiclib']
-        else:
-          flags += ['-shared']
     return flags
 
   def make_linkarchlibs(self, arch, targettype):
@@ -432,18 +417,18 @@ class ClangToolchain(toolchain.Toolchain):
 
   def make_configlibpaths(self, config, arch, extralibpaths):
     libpaths = [self.libpath, os.path.join(self.libpath, config)]
-    if not self.target.is_macosx() and not self.target.is_ios():
+    if not self.target.is_macos() and not self.target.is_ios():
       libpaths += [os.path.join(self.libpath, arch)]
       libpaths += [os.path.join(self.libpath, config, arch)]
     if extralibpaths != None:
       libpaths += [os.path.join(libpath, self.libpath) for libpath in extralibpaths]
       libpaths += [os.path.join(libpath, self.libpath, config) for libpath in extralibpaths]
-      if not self.target.is_macosx() and not self.target.is_ios():
+      if not self.target.is_macos() and not self.target.is_ios():
         libpaths += [os.path.join(libpath, self.libpath, arch) for libpath in extralibpaths]
         libpaths += [os.path.join(libpath, self.libpath, config, arch) for libpath in extralibpaths]
     return self.make_libpaths(libpaths)
 
-  def cc_variables(self, config, arch, targettype, variables, externalsources):
+  def cc_variables(self, config, arch, targettype, variables):
     localvariables = []
     if 'includepaths' in variables:
       moreincludepaths = self.make_includepaths(variables['includepaths'])
@@ -457,8 +442,6 @@ class ClangToolchain(toolchain.Toolchain):
       localvariables += [('cconfigflags', cconfigflags)]
     if self.target.is_android():
       localvariables += [('sysroot', self.android.make_sysroot_path(arch))]
-    if externalsources:
-      localvariables += [('cflags', self.cexternflags), ('cxxflags', self.cxxexternflags)]
     if 'defines' in variables:
       localvariables += [('cmoreflags', ['-D' + define for define in variables['defines']])]
     return localvariables
@@ -477,8 +460,6 @@ class ClangToolchain(toolchain.Toolchain):
 
   def link_variables(self, config, arch, targettype, variables):
     localvariables = []
-    if not variables:
-      variables = {}
     linkarchflags = self.make_linkarchflags(arch, targettype, variables)
     if linkarchflags != []:
       localvariables += [('linkarchflags', linkarchflags)]
@@ -495,7 +476,7 @@ class ClangToolchain(toolchain.Toolchain):
       localframeworks += list(variables['frameworks'])
     if len(localframeworks) > 0:
       localvariables += [('frameworks', self.make_frameworks(list(localframeworks)))]
-
+      
     libpaths = []
     if 'libpaths' in variables:
       libpaths = variables['libpaths']
@@ -511,40 +492,39 @@ class ClangToolchain(toolchain.Toolchain):
 
     return localvariables
 
-  def builder_cc(self, writer, config, arch, targettype, infile, outfile, variables, externalsources):
-    return writer.build(outfile, 'cc', infile, implicit = self.implicit_deps(config, variables), variables = self.cc_variables(config, arch, targettype, variables, externalsources))
+  def builder_cc(self, writer, config, arch, targettype, infile, outfile, variables):
+    return writer.build(outfile, 'cc', infile, implicit = self.implicit_deps(config, variables), variables = self.cc_variables(config, arch, targettype, variables))
 
-  def builder_cxx(self, writer, config, arch, targettype, infile, outfile, variables, externalsources):
-    return writer.build(outfile, 'cxx', infile, implicit = self.implicit_deps(config, variables), variables = self.cc_variables(config, arch, targettype, variables, externalsources))
+  def builder_cxx(self, writer, config, arch, targettype, infile, outfile, variables):
+    return writer.build(outfile, 'cxx', infile, implicit = self.implicit_deps(config, variables), variables = self.cc_variables(config, arch, targettype, variables))
 
-  def builder_cm(self, writer, config, arch, targettype, infile, outfile, variables, externalsources):
-    return writer.build(outfile, 'cm', infile, implicit = self.implicit_deps(config, variables), variables = self.cc_variables(config, arch, targettype, variables, externalsources))
+  def builder_cm(self, writer, config, arch, targettype, infile, outfile, variables):
+    return writer.build(outfile, 'cm', infile, implicit = self.implicit_deps(config, variables), variables = self.cc_variables(config, arch, targettype, variables))
 
-  def builder_lib(self, writer, config, arch, targettype, infiles, outfile, variables, externalsources):
+  def builder_lib(self, writer, config, arch, targettype, infiles, outfile, variables):
     return writer.build(outfile, 'ar', infiles, implicit = self.implicit_deps(config, variables), variables = self.ar_variables(config, arch, targettype, variables))
 
-  def builder_sharedlib(self, writer, config, arch, targettype, infiles, outfile, variables, externalsources):
+  def builder_sharedlib(self, writer, config, arch, targettype, infiles, outfile, variables):
     return writer.build(outfile, 'so', infiles, implicit = self.implicit_deps(config, variables), variables = self.link_variables(config, arch, targettype, variables))
 
-  def builder_bin(self, writer, config, arch, targettype, infiles, outfile, variables, externalsources):
+  def builder_bin(self, writer, config, arch, targettype, infiles, outfile, variables):
     return writer.build(outfile, 'link', infiles, implicit = self.implicit_deps(config, variables), variables = self.link_variables(config, arch, targettype, variables))
 
   #Apple universal targets
-  def builder_apple_multilib(self, writer, config, arch, targettype, infiles, outfile, variables, externalsources):
+  def builder_apple_multilib(self, writer, config, arch, targettype, infiles, outfile, variables):
     localvariables = [('arflags', '-static -no_warning_for_no_symbols')]
     if variables != None:
       localvariables = variables + localvariables
     return writer.build(os.path.join(outfile, self.buildtarget), 'ar', infiles, variables = localvariables);
 
-  def builder_apple_multisharedlib(self, writer, config, arch, targettype, infiles, outfile, variables, externalsources):
-    #return writer.build(outfile, 'so', infiles, implicit = self.implicit_deps(config, variables), variables = self.link_variables(config, arch, targettype, variables))
-    return writer.build(os.path.join(outfile, self.buildtarget), 'lipo', infiles, variables = variables)
+  def builder_apple_multisharedlib(self, writer, config, arch, targettype, infiles, outfile, variables):
+    return writer.build(outfile, 'so', infiles, implicit = self.implicit_deps(config, variables), variables = self.link_variables(config, arch, targettype, variables))
 
-  def builder_apple_multibin(self, writer, config, arch, targettype, infiles, outfile, variables, externalsources):
+  def builder_apple_multibin(self, writer, config, arch, targettype, infiles, outfile, variables):
     return writer.build(os.path.join(outfile, self.buildtarget), 'lipo', infiles, variables = variables)
 
   #PNaCl finalizer
-  def builder_pnacl_multibin(self, writer, config, arch, targettype, infiles, outfile, variables, externalsources):
+  def builder_pnacl_multibin(self, writer, config, arch, targettype, infiles, outfile, variables):
     binfile = os.path.splitext(self.buildtarget)[0]
     pexe = writer.build(os.path.join(outfile, binfile + '.pexe'), 'finalize', infiles)
     nmf = writer.build(os.path.join(outfile, binfile + '.nmf'), 'nmf', pexe + infiles)

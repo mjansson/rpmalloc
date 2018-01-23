@@ -21,6 +21,7 @@
 *.rtf	 diff=astextplain
 *.RTF	 diff=astextplain
 
-# Ignore build scripts in language stats
+# Ignore build scripts and test cases in language stats
 build/* linguist-vendored
 configure.py linguist-vendored=true
+test/* linguist-vendored

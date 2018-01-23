@@ -118,7 +118,7 @@
 #  include <assert.h>
 #else
 #  undef  assert
-#  define assert(x)
+#  define assert(x) do {} while(0)
 #endif
 
 #if ENABLE_GUARDS
@@ -1423,6 +1423,7 @@ _memory_adjust_size_class(size_t iclass) {
 //! Initialize the allocator and setup global data
 int
 rpmalloc_initialize(void) {
+	memset(&_memory_config, 0, sizeof(rpmalloc_config_t));
 	return rpmalloc_initialize_config(0);
 }
 
@@ -1571,6 +1572,8 @@ rpmalloc_finalize(void) {
 	}
 
 	atomic_thread_fence_release();
+
+	set_thread_heap(0);
 
 #if defined(__APPLE__) && ENABLE_PRELOAD
 	pthread_key_delete(_memory_thread_heap);
@@ -1791,12 +1794,24 @@ _memory_validate_integrity(void* p) {
 	uint32_t* deadzone = block_start;
 	//If these asserts fire, you have written to memory before the block start
 	for (int i = 0; i < 4; ++i) {
-		assert(deadzone[i] == MAGIC_GUARD);
+		if (deadzone[i] == MAGIC_GUARD)
+			continue;
+		if (_memory_config.memory_overwrite)
+			_memory_config.memory_overwrite(p);
+		else
+			assert(deadzone[i] == MAGIC_GUARD && "Memory overwrite before block start");
+		return;
 	}
 	deadzone = (uint32_t*)pointer_offset(block_start, block_size - 16);
 	//If these asserts fire, you have written to memory after the block end
 	for (int i = 0; i < 4; ++i) {
-		assert(deadzone[i] == MAGIC_GUARD);
+		if (deadzone[i] == MAGIC_GUARD)
+			continue;
+		if (_memory_config.memory_overwrite)
+			_memory_config.memory_overwrite(p);
+		else
+			assert(deadzone[i] == MAGIC_GUARD && "Memory overwrite after block end");
+		return;
 	}
 }
 #endif
@@ -1944,7 +1959,14 @@ rpposix_memalign(void **memptr, size_t alignment, size_t size) {
 
 size_t
 rpmalloc_usable_size(void* ptr) {
-	return ptr ? _memory_usable_size(ptr) : 0;
+	size_t size = 0;
+	if (ptr) {
+		size = _memory_usable_size(ptr);
+#if ENABLE_GUARDS
+		size -= 32;
+#endif
+	}
+	return size;
 }
 
 void
