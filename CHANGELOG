@@ -8,6 +8,10 @@ Detect system memory page size at initialization, and allow page size to be set 
 
 Add build time option to use memory guards, surrounding each allocated block with a dead zone which is checked for consistency when block is freed.
 
+Always finalize thread on allocator finalization, fixing issue when re-initializing allocator in the same thread.
+
+Add basic allocator test cases
+
 
 1.2.1
 
@@ -20,6 +24,7 @@ Change ARM memory barrier instructions to dmb ish/ishst for compatibility.
 Improve preload compatibility on Apple platforms by using pthread key for TLS in wrapper library.
 
 Fix ABA issue in orphaned heap linked list
+
 
 1.2
 
