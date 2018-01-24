@@ -36,7 +36,7 @@ class ClangToolchain(toolchain.Toolchain):
     self.ccdeps = 'gcc'
     self.ccdepfile = '$out.d'
     self.arcmd = self.rmcmd('$out') + ' && $toolchain$ar crsD $ararchflags $arflags $out $in'
-    self.linkcmd = '$toolchain$cc $libpaths $configlibpaths $linkflags $linkarchflags $linkconfigflags -o $out $in $libs $archlibs $oslibs $frameworks'
+    self.linkcmd = '$toolchain$link $libpaths $configlibpaths $linkflags $linkarchflags $linkconfigflags -o $out $in $libs $archlibs $oslibs $frameworks'
 
     #Base flags
     self.cflags = ['-D' + project.upper() + '_COMPILE=1',
@@ -348,6 +348,8 @@ class ClangToolchain(toolchain.Toolchain):
     flags = []
     if targettype == 'sharedlib':
       flags += ['-DBUILD_DYNAMIC_LINK=1']
+      if self.target.is_linux():
+       flags += ['-fPIC']
     flags += self.make_targetarchflags(arch, targettype)
     return flags
 
@@ -393,6 +395,12 @@ class ClangToolchain(toolchain.Toolchain):
         flags += ['-Xlinker', '/DLL']
       elif targettype == 'bin':
         flags += ['-Xlinker', '/SUBSYSTEM:CONSOLE']
+    else:
+      if targettype == 'sharedlib':
+        if self.target.is_macos() or self.target.is_ios():
+          flags += ['-dynamiclib']
+        else:
+          flags += ['-shared']
     return flags
 
   def make_linkarchlibs(self, arch, targettype):

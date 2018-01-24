@@ -13,18 +13,20 @@
 #include <string.h>
 #include <math.h>
 
+#ifndef ENABLE_GUARDS
+#  define ENABLE_GUARDS 0
+#endif
+
+#if ENABLE_GUARDS
 #ifdef _MSC_VER
 #  define PRIsize "Iu"
 #else
 #  define PRIsize "zu"
 #endif
+#endif
 
 #define pointer_offset(ptr, ofs) (void*)((char*)(ptr) + (ptrdiff_t)(ofs))
-#define pointer_diff(first, second) (ptrdiff_t)((const char*)(first) - (const char*)(second))
-
-#ifndef ENABLE_GUARDS
-#  define ENABLE_GUARDS 0
-#endif
+//#define pointer_diff(first, second) (ptrdiff_t)((const char*)(first) - (const char*)(second))
 
 static int
 test_alloc(void) {
@@ -486,6 +488,7 @@ static int test_overwrite_detected;
 
 static void
 test_overwrite_cb(void* addr) {
+	(void)sizeof(addr);
 	++test_overwrite_detected;
 }
 
@@ -543,6 +546,8 @@ test_overwrite(void) {
 
 int
 test_run(int argc, char** argv) {
+	(void)sizeof(argc);
+	(void)sizeof(argv);
 	if (test_alloc())
 		return -1;
 	if (test_threaded())

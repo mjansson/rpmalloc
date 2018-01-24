@@ -25,7 +25,7 @@ class GCCToolchain(toolchain.Toolchain):
     self.ccdeps = 'gcc'
     self.ccdepfile = '$out.d'
     self.arcmd = self.rmcmd('$out') + ' && $toolchain$ar crsD $ararchflags $arflags $out $in'
-    self.linkcmd = '$toolchain$cc $libpaths $configlibpaths $linkflags $linkarchflags $linkconfigflags -o $out $in $libs $archlibs $oslibs'
+    self.linkcmd = '$toolchain$link $libpaths $configlibpaths $linkflags $linkarchflags $linkconfigflags -o $out $in $libs $archlibs $oslibs'
 
     #Base flags
     self.cflags = ['-D' + project.upper() + '_COMPILE=1',
@@ -82,6 +82,7 @@ class GCCToolchain(toolchain.Toolchain):
     #Builders
     self.builders['c'] = self.builder_cc
     self.builders['cc'] = self.builder_cxx
+    self.builders['cpp'] = self.builder_cxx
     self.builders['lib'] = self.builder_lib
     self.builders['multilib'] = self.builder_multicopy
     self.builders['sharedlib'] = self.builder_sharedlib
@@ -182,6 +183,8 @@ class GCCToolchain(toolchain.Toolchain):
     flags = []
     if targettype == 'sharedlib':
       flags += ['-DBUILD_DYNAMIC_LINK=1']
+      if self.target.is_linux():
+        flags += ['-fPIC']
     flags += self.make_targetarchflags(arch, targettype)
     return flags
 
@@ -212,6 +215,17 @@ class GCCToolchain(toolchain.Toolchain):
 
   def make_linkconfigflags(self, config, targettype):
     flags = []
+    if self.target.is_windows():
+      if targettype == 'sharedlib':
+        flags += ['-Xlinker', '/DLL']
+      elif targettype == 'bin':
+        flags += ['-Xlinker', '/SUBSYSTEM:CONSOLE']
+    else:
+      if targettype == 'sharedlib':
+        if self.target.is_macosx() or self.target.is_ios():
+          flags += ['-dynamiclib']
+        else:
+          flags += ['-shared']
     return flags
 
   def make_libs(self, libs):

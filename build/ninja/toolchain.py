@@ -73,7 +73,10 @@ class Toolchain(object):
     else:
       self.libprefix = 'lib'
       self.staticlibext = '.a'
-      self.dynamiclibext = '.so'
+      if target.is_macos() or target.is_ios():
+        self.dynamiclibext = '.dylib'
+      else:
+        self.dynamiclibext = '.so'
       self.binprefix = ''
       self.binext = ''
 
@@ -156,7 +159,7 @@ class Toolchain(object):
       self.initialize_default_configs()
 
   def initialize_default_configs(self):
-    self.configs = ['debug', 'release', 'profile', 'deploy']
+    self.configs = ['debug', 'release'] #, 'profile', 'deploy']
 
   def initialize_toolchain(self):
     if self.android != None:
