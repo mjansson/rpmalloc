@@ -220,12 +220,12 @@ class GCCToolchain(toolchain.Toolchain):
         flags += ['-Xlinker', '/DLL']
       elif targettype == 'bin':
         flags += ['-Xlinker', '/SUBSYSTEM:CONSOLE']
+    elif self.target.is_macos() or self.target.is_ios():
+      if targettype == 'sharedlib' or targettype == 'multisharedlib':
+        flags += ['-dynamiclib']
     else:
       if targettype == 'sharedlib':
-        if self.target.is_macosx() or self.target.is_ios():
-          flags += ['-dynamiclib']
-        else:
-          flags += ['-shared']
+        flags += ['-shared']
     return flags
 
   def make_libs(self, libs):
