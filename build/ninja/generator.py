@@ -118,8 +118,8 @@ class Generator(object):
   def lib(self, module, sources, libname = None, basepath = None, configs = None, includepaths = None, variables = None):
     return self.toolchain.lib(self.writer, module, sources, libname, basepath, configs, includepaths, variables)
 
-  def sharedlib(self, module, sources, basepath = None, configs = None, includepaths = None, libpaths = None, implicit_deps = None, dependlibs = None, libs = None, frameworks = None, variables = None):
-    return self.toolchain.sharedlib(self.writer, module, sources, basepath, configs, includepaths, libpaths, implicit_deps, dependlibs, libs, frameworks, variables)
+  def sharedlib(self, module, sources, libname = None, basepath = None, configs = None, includepaths = None, libpaths = None, implicit_deps = None, dependlibs = None, libs = None, frameworks = None, variables = None):
+    return self.toolchain.sharedlib(self.writer, module, sources, libname, basepath, configs, includepaths, libpaths, implicit_deps, dependlibs, libs, frameworks, variables)
 
   def bin(self, module, sources, binname, basepath = None, configs = None, includepaths = None, libpaths = None, implicit_deps = None, dependlibs = None, libs = None, frameworks = None, variables = None):
     return self.toolchain.bin(self.writer, module, sources, binname, basepath, configs, includepaths, libpaths, implicit_deps, dependlibs, libs, frameworks, variables)

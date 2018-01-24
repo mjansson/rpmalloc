@@ -382,7 +382,7 @@ class ClangToolchain(toolchain.Toolchain):
         flags += ['-Xlinker', '/MACHINE:X86']
       elif arch == 'x86-64':
         flags += ['-Xlinker', '/MACHINE:X64']
-    if self.target.is_macos() and 'support_lua' in variables and variables['support_lua']:
+    if self.target.is_macos() and variables != None and 'support_lua' in variables and variables['support_lua']:
       flags += ['-pagezero_size', '10000', '-image_base', '100000000']
     return flags
 
@@ -459,6 +459,8 @@ class ClangToolchain(toolchain.Toolchain):
     return localvariables
 
   def link_variables(self, config, arch, targettype, variables):
+    if variables == None:
+        variables = {}
     localvariables = []
     linkarchflags = self.make_linkarchflags(arch, targettype, variables)
     if linkarchflags != []:
