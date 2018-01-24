@@ -9,42 +9,35 @@ import toolchain
 
 class MSVCToolchain(toolchain.Toolchain):
 
-  def initialize(self, project, archs, configs, includepaths, dependlibs, libpaths, variables):
+  def initialize(self, project, archs, configs, includepaths, dependlibs, libpaths, variables, subninja):
     #Local variable defaults
     self.sdkpath = ''
     self.toolchain = ''
-    self.includepaths = includepaths
+    self.includepaths = []
     self.libpaths = libpaths
     self.ccompiler = 'cl'
+    self.cxxcompiler = 'cl'
     self.archiver = 'lib'
     self.linker = 'link'
     self.dller = 'dll'
 
     #Command definitions
-    self.cccmd = '$toolchain$cc /showIncludes /I. $includepaths $moreincludepaths $cflags $carchflags $cconfigflags /c $in /Fo$out /Fd$pdbpath /FS /nologo'
-    self.cxxcmd = '$toolchain$cc /showIncludes /I. $includepaths $moreincludepaths $cxxflags $carchflags $cconfigflags /c $in /Fo$out /Fd$pdbpath /FS /nologo /EHsc'
+    self.cccmd = '$toolchain$cc /showIncludes /I. $includepaths $moreincludepaths $cflags $carchflags $cconfigflags $cmoreflags /c $in /Fo$out /Fd$pdbpath /FS /nologo'
+    self.cxxcmd = '$toolchain$cxx /showIncludes /I. $includepaths $moreincludepaths $cxxflags $carchflags $cconfigflags $cmoreflags /c $in /Fo$out /Fd$pdbpath /FS /nologo'
     self.ccdepfile = None
     self.ccdeps = 'msvc'
     self.arcmd = '$toolchain$ar $arflags $ararchflags $arconfigflags /NOLOGO /OUT:$out $in'
     self.linkcmd = '$toolchain$link $libpaths $configlibpaths $linkflags $linkarchflags $linkconfigflags /DEBUG /NOLOGO /SUBSYSTEM:CONSOLE /DYNAMICBASE /NXCOMPAT /MANIFEST /MANIFESTUAC:\"level=\'asInvoker\' uiAccess=\'false\'\" /TLBID:1 /PDB:$pdbpath /OUT:$out $in $libs $archlibs $oslibs'
     self.dllcmd = self.linkcmd + ' /DLL'
 
-    #Base flags
-    self.cflags = ['/D', '"' + project.upper() + '_COMPILE=1"', '/Zi', '/Oi', '/Oy-', '/GS-', '/Gy-', '/Qpar-', '/fp:fast', '/fp:except-', '/Zc:forScope', '/Zc:wchar_t', '/GR-', '/openmp-']
-    self.cxxflags = self.cflags
+    self.cflags = ['/D', '"' + project.upper() + '_COMPILE=1"', '/D', '"_UNICODE"',  '/D', '"UNICODE"', '/Zi', '/Oi', '/Oy-', '/GS-', '/Gy-', '/Qpar-', '/fp:fast', '/fp:except-', '/Zc:forScope', '/Zc:wchar_t', '/GR-', '/openmp-']
     self.cwarnflags = ['/W3', '/WX']
+    self.cmoreflags = []
     self.arflags = ['/ignore:4221'] #Ignore empty object file warning]
     self.linkflags = ['/DEBUG']
     self.oslibs = ['kernel32', 'user32', 'shell32', 'advapi32']
 
-    self.cexternflags = ['/W0']
-    self.cxxexternflags = ['/W0', '/EHsc']
-    self.cexternflags += self.cflags
-    self.cxxexternflags += self.cxxflags
-
-    self.cflags += self.cwarnflags
-    self.cxxflags += self.cwarnflags
-
+    self.initialize_subninja(subninja)
     self.initialize_archs(archs)
     self.initialize_configs(configs)
     self.initialize_project(project)
@@ -54,8 +47,14 @@ class MSVCToolchain(toolchain.Toolchain):
     self.parse_default_variables(variables)
     self.read_build_prefs()
 
+    self.includepaths = self.prefix_includepaths((includepaths or []) + ['.'])
+
     if self.is_monolithic():
       self.cflags += ['/D', '"BUILD_MONOLITHIC=1"']
+
+    if not 'nowarning' in variables or not variables['nowarning']:
+      self.cflags += self.cwarnflags
+    self.cxxflags = list(self.cflags)
 
     #Overrides
     self.objext = '.obj'
@@ -89,6 +88,7 @@ class MSVCToolchain(toolchain.Toolchain):
   def write_variables(self, writer):
     super(MSVCToolchain, self).write_variables(writer)
     writer.variable('cc', self.ccompiler)
+    writer.variable('cxx', self.cxxcompiler)
     writer.variable('ar', self.archiver)
     writer.variable('link', self.linker)
     writer.variable('dll', self.dller)
@@ -100,6 +100,7 @@ class MSVCToolchain(toolchain.Toolchain):
     writer.variable('carchflags', '')
     writer.variable('cconfigflags', '')
     writer.variable('cxxflags', self.cxxflags)
+    writer.variable('cmoreflags', self.cmoreflags)
     writer.variable('arflags', self.arflags)
     writer.variable('ararchflags', '')
     writer.variable('arconfigflags', '')
@@ -141,7 +142,7 @@ class MSVCToolchain(toolchain.Toolchain):
           try:
             query = subprocess.check_output(['reg', 'query', key, '/v', version ], stderr = subprocess.STDOUT).strip().splitlines()
             if len(query) == 2:
-              toolchain = query[1].split('REG_SZ')[-1].strip()
+              toolchain = str(query[1]).split('REG_SZ')[-1].strip(" '\"\n\r\t")
           except:
             continue
           if not toolchain == '':
@@ -173,13 +174,13 @@ class MSVCToolchain(toolchain.Toolchain):
           try:
             query = subprocess.check_output(['reg', 'query', key + '\\' + version, '/v', 'InstallationFolder'], stderr = subprocess.STDOUT).strip().splitlines()
             if len(query) == 2:
-              sdkpath = query[1].split('REG_SZ')[-1].strip()
+              sdkpath = str(query[1]).split('REG_SZ')[-1].strip(" '\"\n\r\t")
               if not sdkpath == '' and version == 'v10.0':
                 base_path = sdkpath
                 sdkpath = ''
                 query = subprocess.check_output(['reg', 'query', key + '\\' + version, '/v', 'ProductVersion'], stderr = subprocess.STDOUT).strip().splitlines()
                 if len(query) == 2:
-                  version_path = query[1].split('REG_SZ')[-1].strip()
+                  version_path = str(query[1]).split('REG_SZ')[-1].strip(" '\"\n\r\t")
                   if not version_path == '':
                     sdkpath = base_path
                     self.sdkversionpath = version_path
@@ -213,9 +214,12 @@ class MSVCToolchain(toolchain.Toolchain):
       return ['/I' + self.path_escape(path) for path in list(includepaths)]
     return []
 
+  def make_libpath(self, path):
+    return self.path_escape(path)
+
   def make_libpaths(self, libpaths):
     if not libpaths is None:
-      return ['/LIBPATH:' + self.path_escape(path) for path in list(libpaths)]
+      return ['/LIBPATH:' + self.make_libpath(path) for path in libpaths]
     return []
 
   def make_arch_toolchain_path(self, arch):
@@ -324,7 +328,7 @@ class MSVCToolchain(toolchain.Toolchain):
           libpaths += [os.path.join( self.sdkpath, 'lib', self.sdkversionpath, 'ucrt', 'x64')]
     return self.make_libpaths(libpaths)
 
-  def cc_variables(self, config, arch, targettype, variables, externalsources):
+  def cc_variables(self, config, arch, targettype, variables):
     localvariables = [('toolchain', self.make_arch_toolchain_path(arch))]
     if 'includepaths' in variables:
       moreincludepaths = self.make_includepaths(variables['includepaths'])
@@ -338,8 +342,11 @@ class MSVCToolchain(toolchain.Toolchain):
     cconfigflags = self.make_cconfigflags(config, targettype)
     if cconfigflags != []:
       localvariables += [('cconfigflags', cconfigflags)]
-    if externalsources:
-      localvariables += [('cflags', self.cexternflags), ('cxxflags', self.cxxexternflags)]
+    if 'defines' in variables:
+      definelist = []
+      for define in variables['defines']:
+        definelist += ['/D', '"' + define + '"']
+      localvariables += [('cmoreflags', definelist)]
     return localvariables
 
   def ar_variables(self, config, arch, targettype, variables):
@@ -372,19 +379,19 @@ class MSVCToolchain(toolchain.Toolchain):
     localvariables += [('configlibpaths', self.make_configlibpaths(config, arch, libpaths))]
     return localvariables
 
-  def builder_cc(self, writer, config, arch, targettype, infile, outfile, variables, externalsources):
-    return writer.build(outfile, 'cc', infile, implicit = self.implicit_deps(config, variables), variables = self.cc_variables(config, arch, targettype, variables, externalsources))
+  def builder_cc(self, writer, config, arch, targettype, infile, outfile, variables):
+    return writer.build(outfile, 'cc', infile, implicit = self.implicit_deps(config, variables), variables = self.cc_variables(config, arch, targettype, variables))
 
-  def builder_cxx(self, writer, config, arch, targettype, infile, outfile, variables, externalsources):
-    return writer.build(outfile, 'cxx', infile, implicit = self.implicit_deps(config, variables), variables = self.cc_variables(config, arch, targettype, variables, externalsources))
+  def builder_cxx(self, writer, config, arch, targettype, infile, outfile, variables):
+    return writer.build(outfile, 'cxx', infile, implicit = self.implicit_deps(config, variables), variables = self.cc_variables(config, arch, targettype, variables))
 
-  def builder_lib(self, writer, config, arch, targettype, infiles, outfile, variables, externalsources):
+  def builder_lib(self, writer, config, arch, targettype, infiles, outfile, variables):
     return writer.build(outfile, 'ar', infiles, implicit = self.implicit_deps(config, variables), variables = self.ar_variables(config, arch, targettype, variables))
 
-  def builder_sharedlib(self, writer, config, arch, targettype, infiles, outfile, variables, externalsources):
+  def builder_sharedlib(self, writer, config, arch, targettype, infiles, outfile, variables):
     return writer.build(outfile, 'dll', infiles, implicit = self.implicit_deps(config, variables), variables = self.link_variables(config, arch, targettype, variables))
 
-  def builder_bin(self, writer, config, arch, targettype, infiles, outfile, variables, externalsources):
+  def builder_bin(self, writer, config, arch, targettype, infiles, outfile, variables):
     return writer.build(outfile, 'link', infiles, implicit = self.implicit_deps(config, variables), variables = self.link_variables(config, arch, targettype, variables))
 
 def create(host, target, toolchain):

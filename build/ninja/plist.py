@@ -56,9 +56,9 @@ if not options.exename:
 if not options.prodname:
   options.prodname = 'unknown'
 if not options.target:
-  options.target = 'macosx'
+  options.target = 'macos'
 if not options.deploymenttarget:
-  if options.target == 'macosx':
+  if options.target == 'macos':
     options.deploymenttarget = '10.7'
   else:
     options.deploymenttarget = '6.0'

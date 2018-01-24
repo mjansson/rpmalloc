@@ -67,7 +67,13 @@ extern void RPMALLOC_CDECL
 cfree(void* ptr);
 
 extern size_t RPMALLOC_CDECL
-malloc_usable_size(void* ptr);
+malloc_usable_size(
+#if defined(__ANDROID__)
+	const void* ptr
+#else
+	void* ptr
+#endif
+	);
 
 extern size_t RPMALLOC_CDECL
 malloc_size(void* ptr);
@@ -320,10 +326,16 @@ cfree(void* ptr) {
 }
 
 size_t RPMALLOC_CDECL
-malloc_usable_size(void* ptr) {
+malloc_usable_size(
+#if defined(__ANDROID__)
+	const void* ptr
+#else
+	void* ptr
+#endif
+	) {
 	if (!rpmalloc_is_thread_initialized())
 		return 0;
-	return rpmalloc_usable_size(ptr);
+	return rpmalloc_usable_size((void*)(uintptr_t)ptr);
 }
 
 size_t RPMALLOC_CDECL

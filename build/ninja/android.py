@@ -3,7 +3,6 @@
 """Ninja toolchain abstraction for Android platform"""
 
 import os
-import urlparse
 import subprocess
 
 import toolchain
@@ -87,7 +86,7 @@ class Android(object):
           self.hostarchname = 'linux-x86_64'
         else:
           self.hostarchname = 'linux-x86'
-    elif self.host.is_macosx():
+    elif self.host.is_macos():
       self.hostarchname = 'darwin-x86_64'
 
   def build_toolchain(self):

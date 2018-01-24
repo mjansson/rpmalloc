@@ -8,20 +8,20 @@ import toolchain
 
 class GCCToolchain(toolchain.Toolchain):
 
-  def initialize(self, project, archs, configs, includepaths, dependlibs, libpaths, variables):
+  def initialize(self, project, archs, configs, includepaths, dependlibs, libpaths, variables, subninja):
     #Local variable defaults
     self.toolchain = ''
-    self.includepaths = includepaths
+    self.includepaths = []
     self.libpaths = libpaths
     self.ccompiler = 'gcc'
-    self.cxxompiler = 'g++'
+    self.cxxcompiler = 'g++'
     self.archiver = 'ar'
     self.linker = 'gcc'
     self.cxxlinker = 'g++'
 
     #Command definitions
-    self.cccmd = '$toolchain$cc -MMD -MT $out -MF $out.d -I. $includepaths $moreincludepaths $cflags $carchflags $cconfigflags $cmoreflags -c $in -o $out'
-    self.cxxcmd = '$toolchain$cxx -MMD -MT $out -MF $out.d -I. $includepaths $moreincludepaths $cxxflags $carchflags $cconfigflags $cmoreflags -c $in -o $out'
+    self.cccmd = '$toolchain$cc -MMD -MT $out -MF $out.d $includepaths $moreincludepaths $cflags $carchflags $cconfigflags $cmoreflags -c $in -o $out'
+    self.cxxcmd = '$toolchain$cxx -MMD -MT $out -MF $out.d $includepaths $moreincludepaths $cxxflags $carchflags $cconfigflags $cmoreflags -c $in -o $out'
     self.ccdeps = 'gcc'
     self.ccdepfile = '$out.d'
     self.arcmd = self.rmcmd('$out') + ' && $toolchain$ar crsD $ararchflags $arflags $out $in'
@@ -33,17 +33,13 @@ class GCCToolchain(toolchain.Toolchain):
                    '-fno-math-errno','-ffinite-math-only', '-funsafe-math-optimizations',
                    '-fno-trapping-math', '-ffast-math']
     self.cwarnflags = ['-Wextra', '-Wall', '-Werror']
+    self.cmoreflags = []
     self.mflags = []
     self.arflags = []
     self.linkflags = []
     self.oslibs = []
 
-    if self.target.is_linux() or self.target.is_bsd() or self.target.is_raspberrypi():
-      self.linkflags += ['-pthread']
-      self.oslibs += ['m']
-    if self.target.is_linux() or self.target.is_raspberrypi():
-      self.oslibs += ['dl']
-
+    self.initialize_subninja(subninja)
     self.initialize_archs(archs)
     self.initialize_configs(configs)
     self.initialize_project(project)
@@ -53,8 +49,32 @@ class GCCToolchain(toolchain.Toolchain):
     self.parse_default_variables(variables)
     self.read_build_prefs()
 
+    if self.target.is_linux() or self.target.is_bsd() or self.target.is_raspberrypi():
+      self.cflags += ['-D_GNU_SOURCE=1']
+      self.linkflags += ['-pthread']
+      self.oslibs += ['m']
+    if self.target.is_linux() or self.target.is_raspberrypi():
+      self.oslibs += ['dl']
+    if self.target.is_bsd():
+      self.oslibs += ['execinfo']
+
+    self.includepaths = self.prefix_includepaths((includepaths or []) + ['.'])
+
     if self.is_monolithic():
       self.cflags += ['-DBUILD_MONOLITHIC=1']
+    if self.use_coverage():
+      self.cflags += ['--coverage']
+      self.linkflags += ['--coverage']
+
+    if not 'nowarning' in variables or not variables['nowarning']:
+      self.cflags += self.cwarnflags
+    self.cxxflags = list(self.cflags)
+
+    self.cflags += ['-std=c11']
+    if self.target.is_macos() or self.target.is_ios():
+      self.cxxflags += ['-std=c++14', '-stdlib=libc++']
+    else:
+      self.cxxflags += ['-std=gnu++14']
 
     #Overrides
     self.objext = '.o'
@@ -73,15 +93,6 @@ class GCCToolchain(toolchain.Toolchain):
     #Setup target platform
     self.build_target_toolchain(self.target)
 
-    self.cmoreflags = []
-    self.cexternflags = []
-    self.cxxexternflags = []
-    self.cexternflags += self.cflags
-    self.cxxexternflags += self.cxxflags
-
-    self.cflags += self.cwarnflags
-    self.cxxflags += self.cwarnflags
-
   def name(self):
     return 'gcc'
 
@@ -98,7 +109,7 @@ class GCCToolchain(toolchain.Toolchain):
     super(GCCToolchain, self).write_variables(writer)
     writer.variable('toolchain', self.toolchain)
     writer.variable('cc', self.ccompiler)
-    writer.variable('cxx', self.cxxompiler)
+    writer.variable('cxx', self.cxxcompiler)
     writer.variable('ar', self.archiver)
     writer.variable('link', self.linker)
     writer.variable('includepaths', self.make_includepaths(self.includepaths))
@@ -133,31 +144,31 @@ class GCCToolchain(toolchain.Toolchain):
   def build_target_toolchain(self, target):
     if target.is_windows():
       self.build_windows_toolchain()
-    else:
-      self.build_default_toolchain()
     if self.toolchain != '' and not self.toolchain.endswith('/') and not self.toolchain.endswith('\\'):
       self.toolchain += os.sep
 
-  def build_default_toolchain(self):
-    self.cxxflags = self.cflags + ['-std=c++11', '-D_GNU_SOURCE=1']
-    self.cflags += ['-std=c11', '-D_GNU_SOURCE=1']
-    if self.target.is_macosx() or self.target.is_ios():
-      self.cxxflags += ['-stdlib=libc++']
-
   def build_windows_toolchain(self):
-    self.cxxflags = self.cflags
-    self.cxxflags += ['-U__STRICT_ANSI__', '-std=c++11']
-    self.cflags += ['-U__STRICT_ANSI__', '-std=c11']
+    self.cflags += ['-U__STRICT_ANSI__']
     self.oslibs = ['kernel32', 'user32', 'shell32', 'advapi32']
+
+  def make_includepath(self, path):
+    if os.path.isabs(path) or self.subninja == '':
+      return self.path_escape(path)
+    if path == '.':
+      return self.path_escape(self.subninja)
+    return self.path_escape(os.path.join(self.subninja, path))
 
   def make_includepaths(self, includepaths):
     if not includepaths is None:
-      return ['-I' + self.path_escape(path) for path in list(includepaths)]
+      return ['-I' + self.make_includepath(path) for path in list(includepaths)]
     return []
+
+  def make_libpath(self, path):
+    return self.path_escape(path)
 
   def make_libpaths(self, libpaths):
     if not libpaths is None:
-      return ['-L' + self.path_escape(path) for path in libpaths]
+      return ['-L' + self.make_libpath(path) for path in libpaths]
     return []
 
   def make_targetarchflags(self, arch, targettype):
@@ -209,12 +220,12 @@ class GCCToolchain(toolchain.Toolchain):
         flags += ['-Xlinker', '/DLL']
       elif targettype == 'bin':
         flags += ['-Xlinker', '/SUBSYSTEM:CONSOLE']
+    elif self.target.is_macos() or self.target.is_ios():
+      if targettype == 'sharedlib' or targettype == 'multisharedlib':
+        flags += ['-dynamiclib']
     else:
       if targettype == 'sharedlib':
-        if self.target.is_macosx() or self.target.is_ios():
-          flags += ['-dynamiclib']
-        else:
-          flags += ['-shared']
+        flags += ['-shared']
     return flags
 
   def make_libs(self, libs):
@@ -236,7 +247,7 @@ class GCCToolchain(toolchain.Toolchain):
       libpaths += [os.path.join(libpath, self.libpath, config, arch) for libpath in extralibpaths]
     return self.make_libpaths(libpaths)
 
-  def cc_variables(self, config, arch, targettype, variables, externalsources):
+  def cc_variables(self, config, arch, targettype, variables):
     localvariables = []
     if 'includepaths' in variables:
       moreincludepaths = self.make_includepaths(variables['includepaths'])
@@ -248,8 +259,6 @@ class GCCToolchain(toolchain.Toolchain):
     cconfigflags = self.make_cconfigflags(config, targettype)
     if cconfigflags != []:
       localvariables += [('cconfigflags', cconfigflags)]
-    if externalsources:
-      localvariables += [('cflags', self.cexternflags), ('cxxflags', self.cxxexternflags)]
     if 'defines' in variables:
       localvariables += [('cmoreflags', ['-D' + define for define in variables['defines']])]
     return localvariables
@@ -280,23 +289,25 @@ class GCCToolchain(toolchain.Toolchain):
     if 'libpaths' in variables:
       libpaths = variables['libpaths']
     localvariables += [('configlibpaths', self.make_configlibpaths(config, arch, libpaths))]
+
     if 'runtime' in variables and variables['runtime'] == 'c++':
       localvariables += [('link', self.cxxlinker)]
+
     return localvariables
 
-  def builder_cc(self, writer, config, arch, targettype, infile, outfile, variables, externalsources):
-    return writer.build(outfile, 'cc', infile, implicit = self.implicit_deps(config, variables), variables = self.cc_variables(config, arch, targettype, variables, externalsources))
+  def builder_cc(self, writer, config, arch, targettype, infile, outfile, variables):
+    return writer.build(outfile, 'cc', infile, implicit = self.implicit_deps(config, variables), variables = self.cc_variables(config, arch, targettype, variables))
 
-  def builder_cxx(self, writer, config, arch, targettype, infile, outfile, variables, externalsources):
-    return writer.build(outfile, 'cxx', infile, implicit = self.implicit_deps(config, variables), variables = self.cc_variables(config, arch, targettype, variables, externalsources))
+  def builder_cxx(self, writer, config, arch, targettype, infile, outfile, variables):
+    return writer.build(outfile, 'cxx', infile, implicit = self.implicit_deps(config, variables), variables = self.cc_variables(config, arch, targettype, variables))
 
-  def builder_lib(self, writer, config, arch, targettype, infiles, outfile, variables, externalsources):
+  def builder_lib(self, writer, config, arch, targettype, infiles, outfile, variables):
     return writer.build(outfile, 'ar', infiles, implicit = self.implicit_deps(config, variables), variables = self.ar_variables(config, arch, targettype, variables))
 
-  def builder_sharedlib(self, writer, config, arch, targettype, infiles, outfile, variables, externalsources):
+  def builder_sharedlib(self, writer, config, arch, targettype, infiles, outfile, variables):
     return writer.build(outfile, 'so', infiles, implicit = self.implicit_deps(config, variables), variables = self.link_variables(config, arch, targettype, variables))
 
-  def builder_bin(self, writer, config, arch, targettype, infiles, outfile, variables, externalsources):
+  def builder_bin(self, writer, config, arch, targettype, infiles, outfile, variables):
     return writer.build(outfile, 'link', infiles, implicit = self.implicit_deps(config, variables), variables = self.link_variables(config, arch, targettype, variables))
 
 def create(host, target, toolchain):
