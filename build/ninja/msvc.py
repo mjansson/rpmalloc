@@ -16,12 +16,14 @@ class MSVCToolchain(toolchain.Toolchain):
     self.includepaths = []
     self.libpaths = libpaths
     self.ccompiler = 'cl'
+    self.cxxcompiler = 'cl'
     self.archiver = 'lib'
     self.linker = 'link'
     self.dller = 'dll'
 
     #Command definitions
     self.cccmd = '$toolchain$cc /showIncludes /I. $includepaths $moreincludepaths $cflags $carchflags $cconfigflags $cmoreflags /c $in /Fo$out /Fd$pdbpath /FS /nologo'
+    self.cxxcmd = '$toolchain$cxx /showIncludes /I. $includepaths $moreincludepaths $cxxflags $carchflags $cconfigflags $cmoreflags /c $in /Fo$out /Fd$pdbpath /FS /nologo'
     self.ccdepfile = None
     self.ccdeps = 'msvc'
     self.arcmd = '$toolchain$ar $arflags $ararchflags $arconfigflags /NOLOGO /OUT:$out $in'
@@ -86,6 +88,7 @@ class MSVCToolchain(toolchain.Toolchain):
   def write_variables(self, writer):
     super(MSVCToolchain, self).write_variables(writer)
     writer.variable('cc', self.ccompiler)
+    writer.variable('cxx', self.cxxcompiler)
     writer.variable('ar', self.archiver)
     writer.variable('link', self.linker)
     writer.variable('dll', self.dller)
@@ -114,6 +117,7 @@ class MSVCToolchain(toolchain.Toolchain):
   def write_rules(self, writer):
     super(MSVCToolchain, self).write_rules(writer)
     writer.rule('cc', command = self.cccmd, depfile = self.ccdepfile, deps = self.ccdeps, description = 'CC $in')
+    writer.rule('cxx', command = self.cxxcmd, depfile = self.ccdepfile, deps = self.ccdeps, description = 'CXX $in')
     writer.rule('ar', command = self.arcmd, description = 'LIB $out')
     writer.rule('link', command = self.linkcmd, description = 'LINK $out')
     writer.rule('dll', command = self.dllcmd, description = 'DLL $out')
@@ -377,6 +381,9 @@ class MSVCToolchain(toolchain.Toolchain):
 
   def builder_cc(self, writer, config, arch, targettype, infile, outfile, variables):
     return writer.build(outfile, 'cc', infile, implicit = self.implicit_deps(config, variables), variables = self.cc_variables(config, arch, targettype, variables))
+
+  def builder_cxx(self, writer, config, arch, targettype, infile, outfile, variables):
+    return writer.build(outfile, 'cxx', infile, implicit = self.implicit_deps(config, variables), variables = self.cc_variables(config, arch, targettype, variables))
 
   def builder_lib(self, writer, config, arch, targettype, infiles, outfile, variables):
     return writer.build(outfile, 'ar', infiles, implicit = self.implicit_deps(config, variables), variables = self.ar_variables(config, arch, targettype, variables))
