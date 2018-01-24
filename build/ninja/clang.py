@@ -395,12 +395,12 @@ class ClangToolchain(toolchain.Toolchain):
         flags += ['-Xlinker', '/DLL']
       elif targettype == 'bin':
         flags += ['-Xlinker', '/SUBSYSTEM:CONSOLE']
+    elif self.target.is_macos() or self.target.is_ios():
+      if targettype == 'sharedlib' or targettype == 'multisharedlib':
+        flags += ['-dynamiclib']
     else:
       if targettype == 'sharedlib':
-        if self.target.is_macos() or self.target.is_ios():
-          flags += ['-dynamiclib']
-        else:
-          flags += ['-shared']
+        flags += ['-shared']
     return flags
 
   def make_linkarchlibs(self, arch, targettype):
@@ -528,7 +528,7 @@ class ClangToolchain(toolchain.Toolchain):
     return writer.build(os.path.join(outfile, self.buildtarget), 'ar', infiles, variables = localvariables);
 
   def builder_apple_multisharedlib(self, writer, config, arch, targettype, infiles, outfile, variables):
-    return writer.build(outfile, 'so', infiles, implicit = self.implicit_deps(config, variables), variables = self.link_variables(config, arch, targettype, variables))
+    return writer.build(os.path.join(outfile, self.buildtarget), 'so', infiles, implicit = self.implicit_deps(config, variables), variables = self.link_variables(config, arch, targettype, variables))
 
   def builder_apple_multibin(self, writer, config, arch, targettype, infiles, outfile, variables):
     return writer.build(os.path.join(outfile, self.buildtarget), 'lipo', infiles, variables = variables)
