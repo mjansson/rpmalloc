@@ -150,6 +150,15 @@ test_alloc(void) {
 		rpmalloc_finalize();
 	}
 
+	rpmalloc_initialize();
+	for (iloop = 16; iloop < (2 * 1024 * 1024); iloop += 16) {
+		void* addr = rpmalloc(iloop);
+		if (!addr)
+			return -1;
+		rpfree(addr);
+	}
+	rpmalloc_finalize();
+
 	printf("Memory allocation tests passed\n");
 
 	return 0;
