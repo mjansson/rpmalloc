@@ -856,6 +856,8 @@ use_active:
 static void*
 _memory_allocate_large_from_heap(heap_t* heap, size_t size) {
 	//Calculate number of needed max sized spans (including header)
+	//Since this function is never called if size > LARGE_SIZE_LIMIT
+	//the num_spans is guaranteed to be <= LARGE_CLASS_COUNT
 	size += SPAN_HEADER_SIZE;
 	size_t num_spans = size / SPAN_MAX_SIZE;
 	if (size % SPAN_MAX_SIZE)
@@ -912,7 +914,7 @@ _memory_allocate_large_from_heap(heap_t* heap, size_t size) {
 
 use_cache:
 	//Step 1: Check if cache for this large size class (or the following, unless first class) has a span
-	while (!heap->large_cache[idx] && (idx < LARGE_CLASS_COUNT) && (idx < num_spans + 1))
+	while (!heap->large_cache[idx] && (idx < (LARGE_CLASS_COUNT - 1)) && (idx < (num_spans + 1)))
 		++idx;
 	span_t* span = heap->large_cache[idx];
 	if (span) {
