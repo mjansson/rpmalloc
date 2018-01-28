@@ -1416,7 +1416,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		SYSTEM_INFO system_info;
 		memset(&system_info, 0, sizeof(system_info));
 		GetSystemInfo(&system_info);
-		if (system_info.dwAllocationGranularity < SPAN_ADDRESS_GRANULARITY)
+		if (system_info.dwAllocationGranularity < (64 * 1024))
 			return -1;
 		_memory_page_size = system_info.dwPageSize;
 #else
@@ -1674,6 +1674,7 @@ _memory_map_os(size_t size) {
 
 #ifdef PLATFORM_WINDOWS
 	ptr = VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	assert((ptr != 0) && "Failed to map virtual memory block");
 #else
 	size_t padding = _memory_span_size;
 
@@ -1694,10 +1695,14 @@ _memory_map_os(size_t size) {
 static void
 _memory_unmap_os(void* ptr, size_t size) {
 #ifdef PLATFORM_WINDOWS
-	VirtualFree(ptr, 0, MEM_RELEASE);
 	(void)sizeof(size);
+	if (!VirtualFree(ptr, 0, MEM_RELEASE)) {
+		assert(!"Failed to unmap virtual memory block");
+	}
 #else
-	munmap(ptr, size);
+	if (munmap(ptr, size)) {
+		assert(!"Failed to unmap virtual memory block");
+	}
 #endif
 }
 
