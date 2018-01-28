@@ -49,7 +49,7 @@ test_alloc(void) {
 			if (addr[ipass] == 0)
 				return -1;
 
-			memcpy(addr[ipass], data, 500);
+			memcpy(addr[ipass], data + ipass, 500);
 
 			for (icheck = 0; icheck < ipass; ++icheck) {
 				if (addr[icheck] == addr[ipass])
@@ -66,7 +66,7 @@ test_alloc(void) {
 		}
 
 		for (ipass = 0; ipass < 8142; ++ipass) {
-			if (memcmp(addr[ipass], data, 500))
+			if (memcmp(addr[ipass], data + ipass, 500))
 				return -1;
 		}
 
@@ -82,7 +82,7 @@ test_alloc(void) {
 			if (addr[ipass] == 0)
 				return -1;
 
-			memcpy(addr[ipass], data, cursize);
+			memcpy(addr[ipass], data + ipass, cursize);
 
 			for (icheck = 0; icheck < ipass; ++icheck) {
 				if (addr[icheck] == addr[ipass])
@@ -100,7 +100,7 @@ test_alloc(void) {
 
 		for (ipass = 0; ipass < 1024; ++ipass) {
 			unsigned int cursize = datasize[ipass%7] + ipass;
-			if (memcmp(addr[ipass], data, cursize))
+			if (memcmp(addr[ipass], data + ipass, cursize))
 				return -1;
 		}
 
@@ -114,7 +114,7 @@ test_alloc(void) {
 			if (addr[ipass] == 0)
 				return -1;
 
-			memcpy(addr[ipass], data, 500);
+			memcpy(addr[ipass], data + ipass, 500);
 
 			for (icheck = 0; icheck < ipass; ++icheck) {
 				if (addr[icheck] == addr[ipass])
@@ -131,7 +131,7 @@ test_alloc(void) {
 		}
 
 		for (ipass = 0; ipass < 1024; ++ipass) {
-			if (memcmp(addr[ipass], data, 500))
+			if (memcmp(addr[ipass], data + ipass, 500))
 				return -1;
 		}
 
@@ -141,6 +141,7 @@ test_alloc(void) {
 
 	rpmalloc_finalize();
 
+/*
 	for (iloop = 0; iloop < 2048; iloop += 16) {
 		rpmalloc_initialize();
 		addr[0] = rpmalloc(iloop);
@@ -167,7 +168,7 @@ test_alloc(void) {
 		rpfree(addr[0]);
 		rpmalloc_finalize();
 	}
-
+*/
 	rpmalloc_initialize();
 	for (iloop = 0; iloop < (2 * 1024 * 1024); iloop += 16) {
 		addr[0] = rpmalloc(iloop);
