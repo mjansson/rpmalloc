@@ -141,21 +141,39 @@ test_alloc(void) {
 
 	rpmalloc_finalize();
 
-	for (iloop = 16; iloop < (2 * 1024 * 1024); iloop += 16) {
+	for (iloop = 0; iloop < 2048; iloop += 16) {
 		rpmalloc_initialize();
-		void* addr = rpmalloc(iloop);
-		if (!addr)
+		addr[0] = rpmalloc(iloop);
+		if (!addr[0])
 			return -1;
-		rpfree(addr);
+		rpfree(addr[0]);
+		rpmalloc_finalize();
+	}
+
+	for (iloop = 2048; iloop < (64 * 1024); iloop += 512) {
+		rpmalloc_initialize();
+		addr[0] = rpmalloc(iloop);
+		if (!addr[0])
+			return -1;
+		rpfree(addr[0]);
+		rpmalloc_finalize();
+	}
+
+	for (iloop = (64 * 1024); iloop < (2 * 1024 * 1024); iloop += 4096) {
+		rpmalloc_initialize();
+		addr[0] = rpmalloc(iloop);
+		if (!addr[0])
+			return -1;
+		rpfree(addr[0]);
 		rpmalloc_finalize();
 	}
 
 	rpmalloc_initialize();
-	for (iloop = 16; iloop < (2 * 1024 * 1024); iloop += 16) {
-		void* addr = rpmalloc(iloop);
-		if (!addr)
+	for (iloop = 0; iloop < (2 * 1024 * 1024); iloop += 16) {
+		addr[0] = rpmalloc(iloop);
+		if (!addr[0])
 			return -1;
-		rpfree(addr);
+		rpfree(addr[0]);
 	}
 	rpmalloc_finalize();
 
