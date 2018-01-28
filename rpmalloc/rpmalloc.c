@@ -507,7 +507,7 @@ static void*
 _memory_map(size_t page_count, size_t* align_offset) {
 	void* mapped_address;
 	void* aligned_address;
-	size_t size = page_count * _memory_page_size;
+	const size_t size = page_count * _memory_page_size;
 
 	mapped_address = _memory_config.memory_map(size);
 
@@ -530,8 +530,8 @@ _memory_map(size_t page_count, size_t* align_offset) {
 	}
 
 #if ENABLE_STATISTICS
-	atomic_add32(&_mapped_pages, (int32_t)(size >> _memory_page_size_shift));
-	atomic_add32(&_mapped_total, (int32_t)(size >> _memory_page_size_shift));
+	atomic_add32(&_mapped_pages, (int32_t)page_count);
+	atomic_add32(&_mapped_total, (int32_t)page_count);
 #endif
  
  	return aligned_address;
@@ -544,6 +544,9 @@ _memory_unmap(void* address, size_t page_count, size_t align_offset) {
 	if (align_offset)
 		size += SPAN_ADDRESS_GRANULARITY;
 	_memory_config.memory_unmap(mapped_address, size);
+#if ENABLE_STATISTICS
+	atomic_add32(&_mapped_pages, -(int32_t)page_count);
+#endif
 }
 
 //! Insert the given list of memory page spans in the global cache for small/medium blocks
@@ -1696,19 +1699,16 @@ static void*
 _memory_map_os(size_t size) {
 	void* ptr;
 
-#if ENABLE_STATISTICS
-	atomic_add32(&_mapped_pages, (int32_t)(size >> _memory_page_size_shift));
-	atomic_add32(&_mapped_total, (int32_t)(size >> _memory_page_size_shift));
-#endif
-
 #ifdef PLATFORM_WINDOWS
 	ptr = VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 #else
 	size_t padding = SPAN_ADDRESS_GRANULARITY;
 
 	ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED, -1, 0);
-	if (ptr == MAP_FAILED)
+	if (ptr == MAP_FAILED) {
+		assert(!"Failed to map virtual memory block");
 		return 0;
+	}
 
 	padding -= (uintptr_t)ptr % SPAN_ADDRESS_GRANULARITY;
 	ptr = pointer_offset(ptr, padding);
@@ -1720,11 +1720,6 @@ _memory_map_os(size_t size) {
 //! Unmap pages from virtual memory
 static void
 _memory_unmap_os(void* ptr, size_t size) {
-#if ENABLE_STATISTICS
-	atomic_add32(&_mapped_pages, -(int32_t)(size >> _memory_page_size_shift));
-	atomic_add32(&_unmapped_total, (int32_t)(size >> _memory_page_size_shift));
-#endif
-
 #ifdef PLATFORM_WINDOWS
 	VirtualFree(ptr, 0, MEM_RELEASE);
 	(void)sizeof(size);
