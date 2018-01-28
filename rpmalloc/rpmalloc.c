@@ -719,9 +719,10 @@ _memory_allocate_from_heap(heap_t* heap, size_t size) {
 #endif
 
 	//Calculate the size class index and do a dependent lookup of the final class index (in case of merged classes)
-	const size_t class_idx = _memory_size_class[(size <= SMALL_SIZE_LIMIT) ?
-		((size + (SMALL_GRANULARITY - 1)) >> SMALL_GRANULARITY_SHIFT) - 1 :
-		SMALL_CLASS_COUNT + ((size - SMALL_SIZE_LIMIT + (MEDIUM_GRANULARITY - 1)) >> MEDIUM_GRANULARITY_SHIFT) - 1].class_idx;
+	const size_t base_idx = (size <= SMALL_SIZE_LIMIT) ?
+		((size + (SMALL_GRANULARITY - 1)) >> SMALL_GRANULARITY_SHIFT) :
+		SMALL_CLASS_COUNT + ((size - SMALL_SIZE_LIMIT + (MEDIUM_GRANULARITY - 1)) >> MEDIUM_GRANULARITY_SHIFT);
+	const size_t class_idx = _memory_size_class[base_idx ? (base_idx - 1) : 0].class_idx;
 
 	span_block_t* active_block = heap->active_block + class_idx;
 	size_class_t* size_class = _memory_size_class + class_idx;
