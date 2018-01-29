@@ -56,12 +56,12 @@
 
 #ifndef ENABLE_STATISTICS
 //! Enable statistics collection
-#define ENABLE_STATISTICS         1
+#define ENABLE_STATISTICS         0
 #endif
 
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            1
+#define ENABLE_ASSERTS            0
 #endif
 
 #ifndef ENABLE_PRELOAD
@@ -205,6 +205,8 @@ thread_yield(void);
 static size_t _memory_page_size;
 //! Shift to divide by page size
 static size_t _memory_page_size_shift;
+//! Granularity at which memor pages are mapped by OS
+static size_t _memory_map_granularity;
 
 //! Size of a span of memory pages
 static size_t _memory_span_size;
@@ -454,7 +456,7 @@ set_thread_heap(heap_t* heap) {
 }
 
 static void*
-_memory_map_os(size_t size, size_t align, size_t* offset);
+_memory_map_os(size_t size, size_t* offset);
 
 static void
 _memory_unmap_os(void* address, size_t size, size_t offset);
@@ -494,7 +496,7 @@ _memory_map(size_t page_count, size_t* offset) {
 	atomic_add32(&_mapped_total, (int32_t)page_count);
 #endif
 
-	return _memory_config.memory_map(size, _memory_span_size, offset);
+	return _memory_config.memory_map(size, offset);
 }
 
 static void
@@ -1394,11 +1396,11 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		SYSTEM_INFO system_info;
 		memset(&system_info, 0, sizeof(system_info));
 		GetSystemInfo(&system_info);
-		if (system_info.dwAllocationGranularity < (64 * 1024))
-			return -1;
 		_memory_page_size = system_info.dwPageSize;
+		_memory_map_granularity = system_info.dwAllocationGranularity;
 #else
 		_memory_page_size = (size_t)sysconf(_SC_PAGESIZE);
+		_memory_map_granularity = _memory_page_size;
 #endif
 	}
 	if (_memory_page_size < 512)
@@ -1645,24 +1647,20 @@ rpmalloc_config(void) {
 
 //! Map new pages to virtual memory
 static void*
-_memory_map_os(size_t size, size_t align, size_t* offset) {
+_memory_map_os(size_t size, size_t* offset) {
 	void* ptr;
 	size_t padding = 0;
-	assert(align == _memory_span_size);
+
+	if (_memory_span_size > _memory_map_granularity)
+		padding = _memory_span_size - _memory_map_granularity;
 
 #ifdef PLATFORM_WINDOWS
-	if (align > (64 * 1024))
-		padding = align;
-
 	ptr = VirtualAlloc(0, size + padding, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 	if (!ptr) {
 		assert("Failed to map virtual memory block" == 0);
 		return 0;
 	}
 #else
-	if (align > _memory_page_size)
-		padding = align;
-
 	ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED, -1, 0);
 	if (ptr == MAP_FAILED) {
 		assert("Failed to map virtual memory block" == 0);
@@ -1676,7 +1674,7 @@ _memory_map_os(size_t size, size_t align, size_t* offset) {
 		assert(padding <= _memory_span_size);
 		assert(!(padding & 3));
 		assert(!((uintptr_t)ptr & ~_memory_span_mask));
-		*offset = (size_t)padding >> 2;
+		*offset = padding >> 2;
 	}
 
 	return ptr;

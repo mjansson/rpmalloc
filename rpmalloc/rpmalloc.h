@@ -68,13 +68,12 @@ typedef struct rpmalloc_thread_statistics_t {
 
 typedef struct rpmalloc_config_t {
 	//! Map memory pages for the given number of bytes. The returned address MUST be
-	//  aligned to the requested align size, which will always be a power of two and
-	//  equal to the memory span size.
+	//  aligned to the rpmalloc span size, which will always be a power of two.
 	//  Optionally the function can store an alignment offset in the offset variable
 	//  in case it performs alignment and the returned pointer is offset from the
 	//  actual start of the memory region due to this alignment. The alignment offset
 	//  will be passed to the memory unmap function.
-	void* (*memory_map)(size_t size, size_t align, size_t* offset);
+	void* (*memory_map)(size_t size, size_t* offset);
 	//! Unmap the memory pages starting at address and spanning the given number of bytes.
 	//  The address, size and offset variables will always be a value triple as used
 	//  in and returned by an earlier call to memory_map
