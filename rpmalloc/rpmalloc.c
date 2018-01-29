@@ -35,15 +35,15 @@
 #define GLOBAL_SPAN_CACHE_MULTIPLIER 1
 #else
 // Default - performance priority cache limits
-//! Limit of thread cache in number of spans for each page count class (undefine for unlimited cache - i.e never release spans to global cache unless thread finishes)
+//! Limit of thread cache in number of spans (undefine for unlimited cache - i.e never release spans to global cache unless thread finishes)
 //! Minimum cache size to remain after a release to global cache
-#define MIN_SPAN_CACHE_SIZE 8
+#define MIN_SPAN_CACHE_SIZE 32
 //! Minimum number of spans to transfer between thread and global cache
-#define MIN_SPAN_CACHE_RELEASE 16
+#define MIN_SPAN_CACHE_RELEASE 32
 //! Maximum cache size divisor (max cache size will be max allocation count divided by this divisor)
-#define MAX_SPAN_CACHE_DIVISOR 8
+#define MAX_SPAN_CACHE_DIVISOR 4
 //! Multiplier for global span cache limit (max cache size will be calculated like thread cache and multiplied with this)
-#define GLOBAL_SPAN_CACHE_MULTIPLIER 4
+#define GLOBAL_SPAN_CACHE_MULTIPLIER 8
 #endif
 
 //! Size of heap hashmap
@@ -1112,6 +1112,7 @@ _memory_deallocate_large_to_heap(heap_t* heap, span_t* span) {
 	//Check if aliased with 64KiB small/medium spans
 	if (span->size_class == SIZE_CLASS_COUNT) {
 		//Track counters
+		assert(heap->span_counter.current_allocations > 0);
 		--heap->span_counter.current_allocations;
 		//Add to span cache
 		_memory_heap_cache_insert(heap, span);
@@ -1345,7 +1346,7 @@ _memory_adjust_size_class(size_t iclass) {
 
 	_memory_size_class[iclass].block_count = (uint16_t)block_count;
 	_memory_size_class[iclass].class_idx = (uint16_t)iclass;
-	
+
 	//Check if previous size classes can be merged
 	size_t prevclass = iclass;
 	while (prevclass > 0) {
@@ -1386,7 +1387,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		_memory_config.memory_map = _memory_map_os;
 	if (!_memory_config.memory_unmap)
 		_memory_config.memory_unmap = _memory_unmap_os;
-	
+
 	_memory_page_size = _memory_config.page_size;
 	if (!_memory_page_size) {
 #ifdef PLATFORM_WINDOWS
@@ -1422,7 +1423,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	_memory_span_size = 512;
 	while (_memory_span_size < span_size)
 		_memory_span_size <<= 1;
-	
+
 	_memory_span_mask = ~(uintptr_t)(_memory_span_size - 1);
 	_memory_span_pages = _memory_span_size >> _memory_page_size_shift;
 	if (!_memory_span_pages)
@@ -1613,16 +1614,6 @@ rpmalloc_thread_finalize(void) {
 		}
 		heap->large_cache[iclass] = 0;
 	}
-
-	//Reset allocation counters
-	memset(&heap->span_counter, 0, sizeof(heap->span_counter));
-	memset(heap->large_counter, 0, sizeof(heap->large_counter));
-#if ENABLE_STATISTICS
-	heap->requested = 0;
-	heap->allocated = 0;
-	heap->thread_to_global = 0;
-	heap->global_to_thread = 0;
-#endif
 
 	//Orphan the heap
 	void* raw_heap;

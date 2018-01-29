@@ -141,7 +141,6 @@ test_alloc(void) {
 
 	rpmalloc_finalize();
 
-/*
 	for (iloop = 0; iloop < 2048; iloop += 16) {
 		rpmalloc_initialize();
 		addr[0] = rpmalloc(iloop);
@@ -168,7 +167,7 @@ test_alloc(void) {
 		rpfree(addr[0]);
 		rpmalloc_finalize();
 	}
-*/
+
 	rpmalloc_initialize();
 	for (iloop = 0; iloop < (2 * 1024 * 1024); iloop += 16) {
 		addr[0] = rpmalloc(iloop);
@@ -255,7 +254,7 @@ allocator_thread(void* argp) {
 				ret = -1;
 				goto end;
 			}
-			
+
 			rpfree(addr[ipass]);
 		}
 	}
@@ -293,9 +292,9 @@ crossallocator_thread(void* argp) {
 		}
 	}
 
+end:
 	rpmalloc_thread_finalize();
 
-end:
 	thread_exit((uintptr_t)ret);
 }
 

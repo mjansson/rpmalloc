@@ -1,8 +1,12 @@
 1.2.3
 
+Make span size configurable and all spans equal in size, removing span size classes and streamlining the thread cache.
+
 Fixed an issue where an allocation of zero bytes would cause a segmentation fault from indexing size class array with index -1.
 
 Fixed an issue where an allocation of maximum large block size (2097120 bytes) would index the heap cache array out of bounds and potentially cause a segmentation fault depending on earlier allocation patterns.
+
+Fixed an issue where memory pages at start of aligned span run was not completely unmapped on POSIX systems.
 
 
 1.2.2
