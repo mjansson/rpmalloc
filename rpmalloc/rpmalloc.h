@@ -68,13 +68,17 @@ typedef struct rpmalloc_thread_statistics_t {
 
 typedef struct rpmalloc_config_t {
 	//! Map memory pages for the given number of bytes. The returned address MUST be
-	//  4 byte aligned, and should ideally be aligned to the memory span size (see below).
-	//  If memory returned is not aligned to the memory span size, rpmalloc will call unmap
-	//  and then another map request with size padded by span size in order to align it internally.
-	void* (*memory_map)(size_t size);
+	//  aligned to the requested align size, which will always be a power of two and
+	//  equal to the memory span size.
+	//  Optionally the function can store an alignment offset in the offset variable
+	//  in case it performs alignment and the returned pointer is offset from the
+	//  actual start of the memory region due to this alignment. The alignment offset
+	//  will be passed to the memory unmap function.
+	void* (*memory_map)(size_t size, size_t align, size_t* offset);
 	//! Unmap the memory pages starting at address and spanning the given number of bytes.
-	//  Address will always be an address returned by an earlier call to memory_map function.
-	void (*memory_unmap)(void* address, size_t size);
+	//  The address, size and offset variables will always be a value triple as used
+	//  in and returned by an earlier call to memory_map
+	void (*memory_unmap)(void* address, size_t size, size_t offset);
 	//! Size of memory pages. If set to 0, rpmalloc will use system calls to determine the page size.
 	//  The page size MUST be a power of two in [512,16384] range (2^9 to 2^14).
 	size_t page_size;
@@ -91,6 +95,9 @@ rpmalloc_initialize(void);
 
 extern int
 rpmalloc_initialize_config(const rpmalloc_config_t* config);
+
+extern const rpmalloc_config_t*
+rpmalloc_config(void);
 
 extern void
 rpmalloc_finalize(void);

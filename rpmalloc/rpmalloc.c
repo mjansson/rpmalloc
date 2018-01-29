@@ -454,10 +454,10 @@ set_thread_heap(heap_t* heap) {
 }
 
 static void*
-_memory_map_os(size_t page_count);
+_memory_map_os(size_t size, size_t align, size_t* offset);
 
 static void
-_memory_unmap_os(void* ptr, size_t page_count);
+_memory_unmap_os(void* address, size_t size, size_t offset);
 
 static int
 _memory_deallocate_deferred(heap_t* heap, size_t size_class);
@@ -486,50 +486,27 @@ _memory_counter_increase(span_counter_t* counter, uint32_t* global_counter) {
 }
 
 static void*
-_memory_map(size_t page_count, size_t* align_offset) {
-	void* mapped_address;
-	void* aligned_address;
+_memory_map(size_t page_count, size_t* offset) {
 	const size_t size = page_count * _memory_page_size;
-
-	mapped_address = _memory_config.memory_map(size);
-
-	if (!((uintptr_t)mapped_address & ~_memory_span_mask)) {
-		aligned_address = mapped_address;
-		*align_offset = 0;
-	}
-	else {
-		//Retry with space for alignment
-		_memory_config.memory_unmap(mapped_address, size);
-
-		size_t padding = _memory_span_size;
-		mapped_address = _memory_config.memory_map(size + padding);
-		padding -= (uintptr_t)mapped_address & ~_memory_span_mask;
-		aligned_address = pointer_offset(mapped_address, padding);
-		//Offset could be > 64KiB, divide by 4 to fit in uint16_t
-		assert(padding <= _memory_span_size);
-		assert(!((uintptr_t)mapped_address & ~_memory_span_mask));
-		*align_offset = (size_t)padding / 4;
-	}
 
 #if ENABLE_STATISTICS
 	atomic_add32(&_mapped_pages, (int32_t)page_count);
 	atomic_add32(&_mapped_total, (int32_t)page_count);
 #endif
- 
- 	return aligned_address;
+
+	return _memory_config.memory_map(size, _memory_span_size, offset);
 }
 
 static void
-_memory_unmap(void* address, size_t page_count, size_t align_offset) {
+_memory_unmap(void* address, size_t page_count, size_t offset) {
 	size_t size = page_count * _memory_page_size;
-	void* mapped_address = pointer_offset(address, -(offset_t)(align_offset * 4));
-	if (align_offset)
-		size += _memory_span_size;
-	_memory_config.memory_unmap(mapped_address, size);
+
 #if ENABLE_STATISTICS
 	atomic_add32(&_mapped_pages, -(int32_t)page_count);
 	atomic_add32(&_unmapped_total, (int32_t)page_count);
 #endif
+
+	_memory_config.memory_unmap(address, size, offset);
 }
 
 //! Insert the given list of memory page spans in the global cache for small/medium blocks
@@ -1667,40 +1644,64 @@ rpmalloc_is_thread_initialized(void) {
 	return (get_thread_heap() != 0) ? 1 : 0;
 }
 
+const rpmalloc_config_t*
+rpmalloc_config(void) {
+	return &_memory_config;
+}
+
 //! Map new pages to virtual memory
 static void*
-_memory_map_os(size_t size) {
+_memory_map_os(size_t size, size_t align, size_t* offset) {
 	void* ptr;
+	size_t padding = 0;
+	assert(align == _memory_span_size);
 
 #ifdef PLATFORM_WINDOWS
-	ptr = VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-	assert((ptr != 0) && "Failed to map virtual memory block");
+	if (align > (64 * 1024))
+		padding = align;
+
+	ptr = VirtualAlloc(0, size + padding, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	if (!ptr) {
+		assert("Failed to map virtual memory block" == 0);
+		return 0;
+	}
 #else
-	size_t padding = _memory_span_size;
+	if (align > _memory_page_size)
+		padding = align;
 
 	ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED, -1, 0);
 	if (ptr == MAP_FAILED) {
 		assert("Failed to map virtual memory block" == 0);
 		return 0;
 	}
-
-	padding -= (uintptr_t)ptr & ~_memory_span_mask;
-	ptr = pointer_offset(ptr, padding);
 #endif
+
+	if (padding) {
+		padding -= (uintptr_t)ptr & ~_memory_span_mask;
+		ptr = pointer_offset(ptr, padding);
+		assert(padding <= _memory_span_size);
+		assert(!(padding & 3));
+		assert(!((uintptr_t)ptr & ~_memory_span_mask));
+		*offset = (size_t)padding >> 2;
+	}
 
 	return ptr;
 }
 
 //! Unmap pages from virtual memory
 static void
-_memory_unmap_os(void* ptr, size_t size) {
+_memory_unmap_os(void* address, size_t size, size_t offset) {
+	if (offset) {
+		size += _memory_span_size;
+		address = pointer_offset(address, -(offset_t)(offset << 2));
+	}
 #ifdef PLATFORM_WINDOWS
 	(void)sizeof(size);
-	if (!VirtualFree(ptr, 0, MEM_RELEASE)) {
+	if (!VirtualFree(address, 0, MEM_RELEASE)) {
 		assert("Failed to unmap virtual memory block" == 0);
 	}
 #else
-	if (munmap(ptr, size)) {
+	if (munmap(address, size)) {
 		assert("Failed to unmap virtual memory block" == 0);
 	}
 #endif
@@ -1796,7 +1797,7 @@ void
 rpfree(void* ptr) {
 #if ENABLE_GUARDS
 	_memory_validate_integrity(ptr);
-#endif	
+#endif
 	_memory_deallocate(ptr);
 }
 
