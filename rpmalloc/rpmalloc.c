@@ -61,7 +61,7 @@
 
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            0
+#define ENABLE_ASSERTS            1
 #endif
 
 #ifndef ENABLE_PRELOAD
@@ -1680,7 +1680,7 @@ _memory_map_os(size_t size) {
 
 	ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED, -1, 0);
 	if (ptr == MAP_FAILED) {
-		assert(!"Failed to map virtual memory block");
+		assert("Failed to map virtual memory block" == 0);
 		return 0;
 	}
 
@@ -1697,11 +1697,11 @@ _memory_unmap_os(void* ptr, size_t size) {
 #ifdef PLATFORM_WINDOWS
 	(void)sizeof(size);
 	if (!VirtualFree(ptr, 0, MEM_RELEASE)) {
-		assert(!"Failed to unmap virtual memory block");
+		assert("Failed to unmap virtual memory block" == 0);
 	}
 #else
 	if (munmap(ptr, size)) {
-		assert(!"Failed to unmap virtual memory block");
+		assert("Failed to unmap virtual memory block" == 0);
 	}
 #endif
 }
