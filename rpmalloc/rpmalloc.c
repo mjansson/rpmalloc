@@ -1429,6 +1429,9 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	if (!_memory_span_pages)
 		_memory_span_pages = 1;
 
+	_memory_config.page_size = _memory_page_size;
+	_memory_config.span_size = _memory_span_size;
+
 #if defined(__APPLE__) && ENABLE_PRELOAD
 	if (pthread_key_create(&_memory_thread_heap, 0))
 		return -1;
