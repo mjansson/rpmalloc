@@ -527,8 +527,8 @@ _memory_global_cache_insert(span_t* first_span, size_t list_size) {
 			if ((global_list_size >= cache_limit) && (global_list_size > MIN_SPAN_CACHE_SIZE))
 				break;
 #endif
-			//We only have 16 bits for size of list, avoid overflow
-			if ((global_list_size + list_size) > 0xFFFF)
+			//We only have limited number of bits for size of list, avoid overflow
+			if ((global_list_size + list_size) & _memory_span_mask)
 				break;
 
 			//Use prev_span as skip pointer over this sublist range of spans
@@ -612,7 +612,7 @@ _memory_global_cache_large_insert(span_t* span_list, size_t list_size, size_t sp
 			if ((global_list_size >= cache_limit) && (global_list_size > MIN_SPAN_CACHE_SIZE))
 				break;
 #endif
-			if ((global_list_size + list_size) > 0xFFFF)
+			if ((global_list_size + list_size) & _memory_span_mask)
 				break;
 
 			span_list->data.list.size = (uint32_t)list_size;
@@ -953,12 +953,12 @@ _memory_allocate_heap(void) {
 	atomic_thread_fence_acquire();
 	do {
 		raw_heap = atomic_load_ptr(&_memory_orphan_heaps);
-		heap = (void*)((uintptr_t)raw_heap & ~(uintptr_t)0xFFFF);
+		heap = (void*)((uintptr_t)raw_heap & _memory_span_mask);
 		if (!heap)
 			break;
 		next_heap = heap->next_orphan;
 		orphan_counter = (uintptr_t)atomic_incr32(&_memory_orphan_counter);
-		next_raw_heap = (void*)((uintptr_t)next_heap | (orphan_counter & 0xFFFF));
+		next_raw_heap = (void*)((uintptr_t)next_heap | (orphan_counter & ~_memory_span_mask));
 	}
 	while (!atomic_cas_ptr(&_memory_orphan_heaps, next_raw_heap, raw_heap));
 
@@ -1626,9 +1626,9 @@ rpmalloc_thread_finalize(void) {
 	heap_t* last_heap;
 	do {
 		last_heap = atomic_load_ptr(&_memory_orphan_heaps);
-		heap->next_orphan = (void*)((uintptr_t)last_heap & ~(uintptr_t)0xFFFF);
+		heap->next_orphan = (void*)((uintptr_t)last_heap & _memory_span_mask);
 		orphan_counter = (uintptr_t)atomic_incr32(&_memory_orphan_counter);
-		raw_heap = (void*)((uintptr_t)heap | (orphan_counter & 0xFFFF));
+		raw_heap = (void*)((uintptr_t)heap | (orphan_counter & ~_memory_span_mask));
 	}
 	while (!atomic_cas_ptr(&_memory_orphan_heaps, raw_heap, last_heap));
 
@@ -1652,7 +1652,7 @@ _memory_map_os(size_t size, size_t* offset) {
 	size_t padding = 0;
 
 	if (_memory_span_size > _memory_map_granularity)
-		padding = _memory_span_size - _memory_map_granularity;
+		padding = _memory_span_size;
 
 #ifdef PLATFORM_WINDOWS
 	ptr = VirtualAlloc(0, size + padding, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
