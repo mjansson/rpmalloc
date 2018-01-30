@@ -213,7 +213,7 @@ static size_t _memory_map_granularity;
 static size_t _memory_span_size;
 //! Mask to get to start of a memory span
 static uintptr_t _memory_span_mask;
-//! Number of memory pages in a span
+//! Number of memory pages in a single span (or 1, if span < page)
 static size_t _memory_span_pages_single;
 
 //! Granularity of a small allocation block
@@ -509,7 +509,9 @@ _memory_map(size_t page_count, size_t* offset) {
 	atomic_add32(&_mapped_total, (int32_t)page_count);
 #endif
 
-	return _memory_config.memory_map(size, offset);
+	return _memory_config.memory_map ?
+		_memory_config.memory_map(size, offset) :
+		_memory_map_os(size, offset);
 }
 
 static void
@@ -521,7 +523,10 @@ _memory_unmap(void* address, size_t page_count, size_t offset) {
 	atomic_add32(&_unmapped_total, (int32_t)page_count);
 #endif
 
-	_memory_config.memory_unmap(address, size, offset);
+	if (_memory_config.memory_unmap)
+		_memory_config.memory_unmap(address, size, offset);
+	else
+		_memory_unmap_os(address, size, offset);
 }
 
 //! Insert the given list of memory page spans in the global cache for small/medium blocks
@@ -1402,10 +1407,6 @@ int
 rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	if (config)
 		memcpy(&_memory_config, config, sizeof(rpmalloc_config_t));
-	if (!_memory_config.memory_map)
-		_memory_config.memory_map = _memory_map_os;
-	if (!_memory_config.memory_unmap)
-		_memory_config.memory_unmap = _memory_unmap_os;
 
 	_memory_page_size = _memory_config.page_size;
 	if (!_memory_page_size) {
