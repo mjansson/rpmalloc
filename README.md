@@ -9,7 +9,7 @@ Platforms currently supported:
 - Linux
 - Android
 
-The code should be easily portable to any platform with atomic operations and an mmap-style virtual memory management API. The API used to map/unmap memory pages can be configured in runtime to a custom implementation.
+The code should be easily portable to any platform with atomic operations and an mmap-style virtual memory management API. The API used to map/unmap memory pages can be configured in runtime to a custom implementation and mapping granularity/size.
 
 This library is put in the public domain; you can redistribute it and/or modify it without any restrictions. Or, if you choose, you can use it under the MIT license.
 
@@ -18,7 +18,7 @@ Please consider our Patreon to support our work - https://www.patreon.com/rampan
 Created by Mattias Jansson ([@maniccoder](https://twitter.com/maniccoder)) / Rampant Pixels - http://www.rampantpixels.com
 
 # Performance
-We believe rpmalloc is faster than most popular memory allocators like tcmalloc, hoard, ptmalloc3 and others without causing extra allocated memory overhead in the thread caches. We also believe the implementation to be easier to read and modify compared to these allocators, as it is a single source file of ~2000 lines of C code.
+We believe rpmalloc is faster than most popular memory allocators like tcmalloc, hoard, ptmalloc3 and others without causing extra allocated memory overhead in the thread caches compared to these allocators. We also believe the implementation to be easier to read and modify compared to these allocators, as it is a single source file of ~2000 lines of C code.
 
 Contained in a parallel repository is a benchmark utility that performs interleaved allocations (both aligned to 8 or 16 bytes, and unaligned) and deallocations (both in-thread and cross-thread) in multiple threads. It measures number of memory operations performed per CPU second, as well as memory overhead by comparing the virtual memory mapped with the number of bytes requested in allocation calls. The setup of number of thread, cross-thread deallocation rate and allocation size limits is configured by command line arguments.
 
@@ -37,13 +37,15 @@ The easiest way to use the library is simply adding rpmalloc.[h|c] to your proje
 
 __rpmalloc_initialize__ : Call at process start to initialize the allocator
 
-__rpmalloc_initialize_config__ : Optional entry point to call at process start to initialize the allocator with a custom memory mapping backend and/or memory page size
+__rpmalloc_initialize_config__ : Optional entry point to call at process start to initialize the allocator with a custom memory mapping backend, memory page size and mapping granularity.
 
 __rpmalloc_finalize__: Call at process exit to finalize the allocator
 
 __rpmalloc_thread_initialize__: Call at each thread start to initialize the thread local data for the allocator
 
 __rpmalloc_thread_finalize__: Call at each thread exit to finalize and release thread cache back to global cache
+
+__rpmalloc_config__: Get the current runtime configuration of the allocator
 
 Then simply use the __rpmalloc__/__rpfree__ and the other malloc style replacement functions. Remember all allocations are 16-byte aligned, so no need to call the explicit rpmemalign/rpaligned_alloc/rpposix_memalign functions unless you need greater alignment, they are simply wrappers to make it easier to replace in existing code.
 
@@ -78,13 +80,13 @@ Overwrite and underwrite guards are enabled if __ENABLE_GUARDS__ is defined to 1
 The allocator is similar in spirit to tcmalloc from the [Google Performance Toolkit](https://github.com/gperftools/gperftools). It uses separate heaps for each thread and partitions memory blocks according to a preconfigured set of size classes, up to 2MiB. Larger blocks are mapped and unmapped directly. Allocations for different size classes will be served from different set of memory pages, each "span" of pages is dedicated to one size class. Spans of pages can flow between threads when the thread cache overflows and are released to a global cache, or when the thread ends. Unlike tcmalloc, single blocks do not flow between threads, only entire spans of pages.
 
 # Implementation details
-The allocator is based on 64KiB page alignment and 16 byte block alignment, where all runs of memory pages are mapped to 64KiB boundaries. On Windows this is automatically guaranteed by the VirtualAlloc granularity, and on mmap systems it is achieved by atomically incrementing the address where pages are mapped to. By aligning to 64KiB boundaries the free operation can locate the header of the memory block without having to do a table lookup (as tcmalloc does) by simply masking out the low 16 bits of the address.
+The allocator is based on a fixed but configurable page alignment (defaults to 64KiB) and 16 byte block alignment, where all runs of memory pages (spans) are mapped to this alignment boundary. On Windows this is automatically guaranteed up to 64KiB by the VirtualAlloc granularity, and on mmap systems it is achieved by oversizing the mapping and aligning the returned virtual memory address to the required boundaries. By aligning to a fixed size the free operation can locate the header of the memory span without having to do a table lookup (as tcmalloc does) by simply masking out the low bits of the address (for 64KiB this would be the low 16 bits).
 
-Memory blocks are divided into three categories. Small blocks are [16, 2032] bytes, medium blocks (2032, 32720] bytes, and large blocks (32720, 2097120] bytes. The three categories are further divided in size classes.
+Memory blocks are divided into three categories. For 64KiB span size/alignment the small blocks are [16, 2016] bytes, medium blocks (2016, 32720] bytes, and large blocks (32720, 2097120] bytes. The three categories are further divided in size classes. If the span size is changed, the small block classes remain but medium blocks go from (2016, span size] bytes.
 
-Small blocks have a size class granularity of 16 bytes each in 127 buckets. Medium blocks have a granularity of 512 bytes, 60 buckets. Large blocks have a 64KiB granularity, 32 buckets. All allocations are fitted to these size class boundaries (an allocation of 34 bytes will allocate a block of 48 bytes). Each small and medium size class has an associated span (meaning a contiguous set of memory pages) configuration describing how many pages the size class will allocate each time the cache is empty and a new allocation is requested.
+Small blocks have a size class granularity of 32 bytes each in 63 buckets. Medium blocks have a granularity of 512 bytes, 60 buckets (default). Large blocks have a the same granularity as the configured span size (default 64KiB). All allocations are fitted to these size class boundaries (an allocation of 42 bytes will allocate a block of 64 bytes). Each small and medium size class has an associated span (meaning a contiguous set of memory pages) configuration describing how many pages the size class will allocate each time the cache is empty and a new allocation is requested.
 
-Spans for small and medium blocks are cached in four levels to avoid calls to map/unmap memory pages. The first level is a per thread single active span for each size class. The second level is a per thread list of partially free spans for each size class. The third level is a per thread list of free spans for each number of pages in the span configuration. The fourth level is a global list of free spans for each number of pages in the span configuration.
+Spans for small and medium blocks are cached in four levels to avoid calls to map/unmap memory pages. The first level is a per thread single active span for each size class. The second level is a per thread list of partially free spans for each size class. The third level is a per thread list of free spans. The fourth level is a global list of free spans.
 
 Each span for a small and medium size class keeps track of how many blocks are allocated/free, as well as a list of which blocks that are free for allocation. To avoid locks, each span is completely owned by the allocating thread, and all cross-thread deallocations will be deferred to the owner thread.
 
@@ -93,9 +95,9 @@ Large blocks, or super spans, are cached in two levels. The first level is a per
 # Memory mapping
 By default the allocator uses OS APIs to map virtual memory pages as needed, either `VirtualAlloc` on Windows or `mmap` on POSIX systems. If you want to use your own custom memory mapping provider you can use __rpmalloc_initialize_config__ and pass function pointers to map and unmap virtual memory. These function should reserve and free the requested number of bytes.
 
-The functions do not need to deal with alignment, this is done by rpmalloc internally. However, ideally the map function should return pages aligned to 64KiB boundaries in order to avoid extra mapping requests (see caveats section below). What will happen is that if the first map call returns an address that is not 64KiB aligned, rpmalloc will immediately unmap that block and call a new mapping request with the size increased by 64KiB, then perform the alignment internally. To avoid this double mapping, always return blocks aligned to 64KiB.
+The functions must guarantee alignment to the configured span size. Either provide the span size during initialization using __rpmalloc_initialize_config__, or use __rpmalloc_config__ to find the required alignment which is equal to the span size. The span size MUST be a power of two in [512, 262144] range, and be a multiple (or divisor) of the memory page size.
 
-Memory mapping requests are always done in multiples of the memory page size. You can specify a custom page size when initializing rpmalloc with __rpmalloc_initialize_config__, or pass 0 to let rpmalloc determine the system memory page size using OS APIs. The page size MUST be a power of two in [512, 16384] range.
+Memory mapping requests are always done in multiples of the span size or memory page size, whichever is larger. You can specify a custom page size when initializing rpmalloc with __rpmalloc_initialize_config__, or pass 0 to let rpmalloc determine the system memory page size using OS APIs. The page size MUST be a power of two in [512, 16384] range.
 
 # Memory guards
 If you define the __ENABLE_GUARDS__ to 1, all memory allocations will be padded with extra guard areas before and after the memory block (while still honoring the requested alignment). These dead zones will be filled with a pattern and checked when the block is freed. If the patterns are not intact the callback set in initialization config is called, or if not set an assert is fired.
@@ -127,7 +129,7 @@ Threads that perform a lot of allocations and deallocations in a pattern that ha
 # Caveats
 Cross-thread deallocations are more costly than in-thread deallocations, since the spans are completely owned by the allocating thread. The free operation will be deferred using an atomic list operation and the actual free operation will be performed when the owner thread requires a new block of the corresponding size class.
 
-VirtualAlloc has an internal granularity of 64KiB. However, mmap lacks this granularity control, and the implementation instead oversizes the memory mapping with 64KiB to be able to always return a memory area with this alignment. Since the extra memory pages are never touched this will not result in extra committed physical memory pages, but rather only increase virtual memory address space.
+VirtualAlloc has an internal granularity of 64KiB. However, mmap lacks this granularity control, and the implementation instead oversizes the memory mapping with configured span size to be able to always return a memory area with the required alignment. Since the extra memory pages are never touched this will not result in extra committed physical memory pages, but rather only increase virtual memory address space.
 
 The free, realloc and usable size functions all require the passed pointer to be within the first 64KiB page block of the start of the memory block. You cannot pass in any pointer from the memory block address range. 
 
