@@ -552,6 +552,9 @@ _memory_map_spans(heap_t* heap, size_t num_spans) {
 
 		span->next_span = SPAN_LINK_COMBINE(0, SPAN_FLAG_MASTER | (request_spans << 2));
 	}
+	else {
+		span->next_span = 0;
+	}
 
 	return span;
 }
@@ -571,12 +574,13 @@ _memory_unmap_spans(span_t* span, size_t num_spans, size_t align_offset) {
 	int distance = (is_subspan ? (flags >> 2) : 0);
 	span_t* master = pointer_offset(span, -distance * _memory_span_size);
 	int remains = SPAN_LINK_FLAGS(master->next_span) >> 2;
-	if (remains == 1) {
+	if (remains <= num_spans) {
+		assert(remains == num_spans);
 		_memory_unmap(master, _memory_span_size * _memory_config.span_map_count, master->data.list.align_offset);
 	}
 	else {
-		assert(remains > 1);
-		--remains;
+		assert(remains > num_spans);
+		remains -= num_spans;
 		master->next_span = SPAN_LINK_COMBINE(master->next_span, ((uint32_t)remains << 2) | SPAN_FLAG_MASTER);
 	}
 }
