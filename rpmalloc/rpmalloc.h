@@ -85,6 +85,15 @@ typedef struct rpmalloc_config_t {
 	//  Set to 0 to use the default span size. All memory mapping requests to memory_map will be made with
 	//  size set to a multiple of the span size.
 	size_t span_size;
+	//! Number of spans to map at each request to map new virtual memory blocks. This can
+	//  be used to minimize the system call overhead at the cost of virtual memory address
+	//  space. The extra mapped pages will not be written until actually used, so physical
+	//  committed memory should not be affected in the default implementation.
+	size_t span_map_count;
+	//! Set to 1 if partial ranges can be unmapped of a mapped span of memory pages (like munmap
+	//  on POSIX systems). Set to 0 if the entire span needs to be unmapped at the same time (like
+	//  VirtualFree with MEM_RELEASE on Windows).
+	int unmap_partial;
 	//! Debug callback if memory guards are enabled. Called if a memory overwrite is detected
 	void (*memory_overwrite)(void* address);
 } rpmalloc_config_t;
