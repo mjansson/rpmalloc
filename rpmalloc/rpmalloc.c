@@ -513,6 +513,7 @@ _memory_map(size_t size, size_t* offset) {
 	atomic_add32(&_mapped_pages, (int32_t)page_count);
 	atomic_add32(&_mapped_total, (int32_t)page_count);
 #endif
+	assert(!(size % _memory_page_size));
 	return _memory_config.memory_map(size, offset);
 }
 
@@ -523,6 +524,8 @@ _memory_unmap(void* address, size_t size, size_t offset) {
 	atomic_add32(&_mapped_pages, -(int32_t)page_count);
 	atomic_add32(&_unmapped_total, (int32_t)page_count);
 #endif
+	assert(!((uintptr_t)address & ~_memory_span_mask));
+	assert(!(size % _memory_page_size));
 	_memory_config.memory_unmap(address, size, offset);
 }
 
@@ -550,7 +553,7 @@ _memory_map_spans(heap_t* heap, size_t num_spans) {
 		heap->span_reserve = pointer_offset(span, num_spans * _memory_span_size);
 		heap->span_reserve_master = span;
 
-		span->next_span = SPAN_LINK_COMBINE(0, SPAN_FLAG_MASTER | (request_spans << 2));
+		span->next_span = SPAN_LINK_COMBINE(0, SPAN_FLAG_MASTER | ((uint32_t)request_spans << 2));
 	}
 	else {
 		span->next_span = 0;
@@ -568,12 +571,12 @@ _memory_unmap_spans(span_t* span, size_t num_spans, size_t align_offset) {
 		return;
 	}
 
-	int is_subspan = flags & SPAN_FLAG_SUBSPAN;
-	int is_master = flags & SPAN_FLAG_MASTER;
+	uint32_t is_subspan = flags & SPAN_FLAG_SUBSPAN;
+	uint32_t is_master = flags & SPAN_FLAG_MASTER;
 	assert((is_subspan || is_master) && !(is_subspan && is_master));
-	int distance = (is_subspan ? (flags >> 2) : 0);
-	span_t* master = pointer_offset(span, -distance * _memory_span_size);
-	int remains = SPAN_LINK_FLAGS(master->next_span) >> 2;
+	uint32_t distance = (is_subspan ? (flags >> 2) : 0);
+	span_t* master = pointer_offset(span, -(int)distance * (int)_memory_span_size);
+	uint32_t remains = SPAN_LINK_FLAGS(master->next_span) >> 2;
 	if (remains <= num_spans) {
 		assert(remains == num_spans);
 		_memory_unmap(master, _memory_span_size * _memory_config.span_map_count, master->data.list.align_offset);
