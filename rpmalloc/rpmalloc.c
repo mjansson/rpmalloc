@@ -1791,8 +1791,9 @@ _memory_map_os(size_t size, size_t* offset) {
 static void
 _memory_unmap_os(void* address, size_t size, size_t offset) {
 	if (offset) {
-		size += _memory_span_size;
-		address = pointer_offset(address, -(offset_t)(offset << 2));
+		offset <<= 2;
+		size += offset;
+		address = pointer_offset(address, -(offset_t)offset);
 	}
 #ifdef PLATFORM_WINDOWS
 	(void)sizeof(size);

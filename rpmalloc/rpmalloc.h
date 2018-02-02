@@ -72,7 +72,9 @@ typedef struct rpmalloc_config_t {
 	//  Optionally the function can store an alignment offset in the offset variable
 	//  in case it performs alignment and the returned pointer is offset from the
 	//  actual start of the memory region due to this alignment. The alignment offset
-	//  will be passed to the memory unmap function.
+	//  will be passed to the memory unmap function. The alignment offset MUST NOT be
+	//  larger than 65535 (storable in an uint16_t), if it is you must use natural
+	//  alignment to shift it into 16 bits.
 	void* (*memory_map)(size_t size, size_t* offset);
 	//! Unmap the memory pages starting at address and spanning the given number of bytes.
 	//  The address, size and offset variables will always be a value triple as used
