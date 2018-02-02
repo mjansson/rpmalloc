@@ -772,6 +772,10 @@ _memory_allocate_from_heap(heap_t* heap, size_t size) {
 #if ENABLE_STATISTICS
 	heap->allocated += class_size;
 	heap->requested += size;
+	size_t stat_ofs = class_size - sizeof(size_t);
+#if ENABLE_GUARDS
+	stat_ofs -= 16;
+#endif
 #endif
 
 	//Step 1: Try to get a block from the currently active span. The span block bookkeeping
@@ -806,7 +810,7 @@ use_active:
 
 #if ENABLE_STATISTICS
 		//Store the requested size for statistics
-		*(size_t*)pointer_offset(block, class_size - sizeof(size_t)) = size;
+		*(size_t*)pointer_offset(block, stat_ofs) = size;
 #endif
 
 		return block;
@@ -884,7 +888,7 @@ use_active:
 
 #if ENABLE_STATISTICS
 	//Store the requested size for statistics
-	*(size_t*)pointer_offset(span, SPAN_HEADER_SIZE + class_size - sizeof(size_t)) = size;
+	*(size_t*)pointer_offset(span, SPAN_HEADER_SIZE + stat_ofs) = size;
 #endif
 
 	//Return first block if memory page span
@@ -1146,8 +1150,12 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 		&span->data.block;
 
 #if ENABLE_STATISTICS
+	size_t stat_ofs = size_class->size - sizeof(size_t);
+#if ENABLE_GUARDS
+	stat_ofs -= 16;
+#endif
 	heap->allocated -= size_class->size;
-	heap->requested -= *(size_t*)pointer_offset(p, size_class->size - sizeof(size_t));
+	heap->requested -= *(size_t*)pointer_offset(p, stat_ofs);
 #endif
 
 	//Check if the span will become completely free
@@ -1970,7 +1978,7 @@ void*
 rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize,
                   unsigned int flags) {
 #if ENABLE_VALIDATE_ARGS
-	if ((size + alignment < size) || (alignment > PAGE_SIZE)) {
+	if ((size + alignment < size) || (alignment > _memory_page_size)) {
 		errno = EINVAL;
 		return 0;
 	}
@@ -2008,7 +2016,7 @@ rpaligned_alloc(size_t alignment, size_t size) {
 		return rpmalloc(size);
 
 #if ENABLE_VALIDATE_ARGS
-	if ((size + alignment < size) || (alignment > PAGE_SIZE)) {
+	if ((size + alignment < size) || (alignment > _memory_page_size)) {
 		errno = EINVAL;
 		return 0;
 	}
