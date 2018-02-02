@@ -583,8 +583,8 @@ _memory_unmap_spans(span_t* span, size_t num_spans, size_t align_offset) {
 	}
 	else {
 		assert(remains > num_spans);
-		remains -= num_spans;
-		master->next_span = SPAN_LINK_COMBINE(master->next_span, ((uint32_t)remains << 2) | SPAN_FLAG_MASTER);
+		remains -= (uint32_t)num_spans;
+		master->next_span = SPAN_LINK_COMBINE(master->next_span, (remains << 2) | SPAN_FLAG_MASTER);
 	}
 }
 
