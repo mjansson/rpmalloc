@@ -48,10 +48,6 @@ typedef struct rpmalloc_global_statistics_t {
 } rpmalloc_global_statistics_t;
 
 typedef struct rpmalloc_thread_statistics_t {
-	//! Amount of memory currently requested in allocations (only if ENABLE_STATISTICS=1)
-	size_t requested;
-	//! Amount of memory actually allocated in memory blocks (only if ENABLE_STATISTICS=1)
-	size_t allocated;
 	//! Current number of bytes available for allocation from active spans
 	size_t active;
 	//! Current number of bytes available in thread size class caches
