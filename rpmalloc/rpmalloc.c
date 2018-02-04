@@ -67,7 +67,7 @@
 
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            1
+#define ENABLE_ASSERTS            0
 #endif
 
 #ifndef ENABLE_PRELOAD
@@ -77,7 +77,7 @@
 
 #ifndef ENABLE_GUARDS
 //! Enable overwrite/underwrite guards
-#define ENABLE_GUARDS             1
+#define ENABLE_GUARDS             0
 #endif
 
 // Platform and arch specifics
