@@ -487,17 +487,19 @@ _memory_heap_lookup(int32_t id) {
 
 //! Increase an allocation counter
 static void
-_memory_counter_increase(span_counter_t* counter, uint32_t* global_counter) {
+_memory_counter_increase(span_counter_t* counter, uint32_t* global_counter, uint32_t span_count) {
 	if (++counter->current_allocations > counter->max_allocations) {
 		counter->max_allocations = counter->current_allocations;
+		const uint32_t cache_limit_max = _memory_span_size - 2;
 #if MAX_SPAN_CACHE_DIVISOR > 0
 		counter->cache_limit = counter->max_allocations / MAX_SPAN_CACHE_DIVISOR;
-		if (counter->cache_limit > (_memory_span_size - 2))
-			counter->cache_limit = (_memory_span_size - 2);
-		if (counter->cache_limit < (MIN_SPAN_CACHE_RELEASE + MIN_SPAN_CACHE_SIZE))
-			counter->cache_limit = (MIN_SPAN_CACHE_RELEASE + MIN_SPAN_CACHE_SIZE);
+		const uint32_t cache_limit_min = (MIN_SPAN_CACHE_RELEASE + MIN_SPAN_CACHE_SIZE) / span_count;
+		if (counter->cache_limit > cache_limit_max)
+			counter->cache_limit = cache_limit_max;
+		if (counter->cache_limit < cache_limit_min)
+			counter->cache_limit = cache_limit_min;
 #else
-		counter->cache_limit = (_memory_span_size - 2);
+		counter->cache_limit = cache_limit_max;
 #endif
 		if (counter->max_allocations > *global_counter)
 			*global_counter = counter->max_allocations;
@@ -597,7 +599,7 @@ _memory_cache_insert(atomicptr_t* cache, span_t* span_list, size_t list_size, si
 		uintptr_t global_list_size = (uintptr_t)global_span_ptr & ~_memory_span_mask;
 		span_t* global_span = (span_t*)((void*)((uintptr_t)global_span_ptr & _memory_span_mask));
 
-		if ((global_list_size >= cache_limit) && (global_list_size > MIN_SPAN_CACHE_SIZE))
+		if ((global_list_size >= cache_limit) && (global_list_size > (MIN_SPAN_CACHE_SIZE / span_count)))
 			break;
 		if ((global_list_size + list_size) & _memory_span_mask)
 			break;
@@ -811,7 +813,7 @@ use_active:
 	}
 
 	//Track counters
-	_memory_counter_increase(&heap->span_counter, &_memory_max_allocation);
+	_memory_counter_increase(&heap->span_counter, &_memory_max_allocation, 1);
 
 	//Return first block if memory page span
 	return pointer_offset(span, SPAN_HEADER_SIZE);
@@ -869,7 +871,7 @@ _memory_allocate_large_from_heap(heap_t* heap, size_t size) {
 		span->size_class = SIZE_CLASS_COUNT;
 
 		//Track counters
-		_memory_counter_increase(&heap->span_counter, &_memory_max_allocation);
+		_memory_counter_increase(&heap->span_counter, &_memory_max_allocation, 1);
 
 		return pointer_offset(span, SPAN_HEADER_SIZE);
 	}
@@ -899,7 +901,7 @@ use_cache:
 		atomic_thread_fence_release();
 
 		//Increase counter
-		_memory_counter_increase(&heap->large_counter[idx], &_memory_max_allocation_large[idx]);
+		_memory_counter_increase(&heap->large_counter[idx], &_memory_max_allocation_large[idx], num_spans);
 
 		return pointer_offset(span, SPAN_HEADER_SIZE);
 	}
@@ -939,7 +941,7 @@ use_cache:
 	span->size_class = (uint16_t)(SIZE_CLASS_COUNT + idx);
 
 	//Increase counter
-	_memory_counter_increase(&heap->large_counter[idx], &_memory_max_allocation_large[idx]);
+	_memory_counter_increase(&heap->large_counter[idx], &_memory_max_allocation_large[idx], num_spans);
 
 	return pointer_offset(span, SPAN_HEADER_SIZE);
 }
@@ -1163,7 +1165,8 @@ _memory_deallocate_large_to_heap(heap_t* heap, span_t* span) {
 	count_t list_size = 1;
 	span_t* next = span->next_span;
 	span_t* last = span;
-	while (list_size < MIN_SPAN_CACHE_RELEASE) {
+	count_t min_list_size = (MIN_SPAN_CACHE_RELEASE / num_spans);
+	while (list_size < min_list_size) {
 		last = next;
 		next = next->next_span;
 		++list_size;
@@ -1643,11 +1646,11 @@ rpmalloc_thread_finalize(void) {
 		const size_t span_count = iclass + 1;
 		span = heap->large_cache[iclass];
 		while (span) {
-			if (span->data.list.size > MIN_SPAN_CACHE_RELEASE) {
+			if (span->data.list.size > (MIN_SPAN_CACHE_RELEASE / span_count)) {
 				count_t list_size = 1;
 				span_t* next = span->next_span;
 				span_t* last = span;
-				while (list_size < MIN_SPAN_CACHE_RELEASE) {
+				while (list_size < (MIN_SPAN_CACHE_RELEASE / span_count)) {
 					last = next;
 					next = next->next_span;
 					++list_size;
