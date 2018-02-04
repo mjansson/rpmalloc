@@ -67,7 +67,7 @@
 
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            0
+#define ENABLE_ASSERTS            1
 #endif
 
 #ifndef ENABLE_PRELOAD
@@ -77,7 +77,7 @@
 
 #ifndef ENABLE_GUARDS
 //! Enable overwrite/underwrite guards
-#define ENABLE_GUARDS             0
+#define ENABLE_GUARDS             1
 #endif
 
 // Platform and arch specifics
@@ -1133,13 +1133,14 @@ _memory_deallocate_large_to_heap(heap_t* heap, span_t* span) {
 #if MAX_SPAN_CACHE_DIVISOR == 0
 	const size_t list_size = 1;
 #else
-	if (!heap->span_cache && (num_spans <= heap->span_counter.cache_limit)) {
+	if (!heap->span_cache && (num_spans <= heap->span_counter.cache_limit) && !span->flags) {
 		//Break up as single span cache
 		span_t* master = span;
 		master->flags = SPAN_FLAG_MASTER | (num_spans << 2);
 		for (size_t ispan = 1; ispan < num_spans; ++ispan) {
 			span->next_span = pointer_offset(span, _memory_span_size);
 			span = span->next_span;
+			span->flags = SPAN_FLAG_SUBSPAN | (ispan << 2);
 		}
 		span->next_span = 0;
 		master->data.list.size = num_spans;
