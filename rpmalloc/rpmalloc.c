@@ -325,7 +325,7 @@ struct span_t {
 	uint16_t    flags;
 	//! Span data
 	span_data_t data;
-	//! Next span and flags/counter
+	//! Next span
 	span_t*     next_span;
 	//! Previous span
 	span_t*     prev_span;
