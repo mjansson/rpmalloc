@@ -10,6 +10,8 @@ Fixed an issue where an allocation of maximum large block size (2097120 bytes) w
 
 Fixed an issue where memory pages at start of aligned span run was not completely unmapped on POSIX systems.
 
+Fixed an issue where spans were not correctly marked as owned by the heap after traversing the global span cache.
+
 Added function to access the allocator configuration after initialization to find default values.
 
 Removed allocated and reserved statistics to reduce code complexity.
