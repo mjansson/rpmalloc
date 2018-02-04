@@ -492,12 +492,12 @@ _memory_counter_increase(span_counter_t* counter, uint32_t* global_counter) {
 		counter->max_allocations = counter->current_allocations;
 #if MAX_SPAN_CACHE_DIVISOR > 0
 		counter->cache_limit = counter->max_allocations / MAX_SPAN_CACHE_DIVISOR;
-		if (counter->cache_limit > 65534)
-			counter->cache_limit = 65534;
+		if (counter->cache_limit > (_memory_span_size - 2))
+			counter->cache_limit = (_memory_span_size - 2);
 		if (counter->cache_limit < (MIN_SPAN_CACHE_RELEASE + MIN_SPAN_CACHE_SIZE))
 			counter->cache_limit = (MIN_SPAN_CACHE_RELEASE + MIN_SPAN_CACHE_SIZE);
 #else
-		counter->cache_limit = 65534;
+		counter->cache_limit = (_memory_span_size - 2);
 #endif
 		if (counter->max_allocations > *global_counter)
 			*global_counter = counter->max_allocations;
