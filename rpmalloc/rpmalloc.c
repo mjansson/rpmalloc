@@ -218,8 +218,6 @@ static size_t _memory_map_granularity;
 static size_t _memory_span_size;
 //! Mask to get to start of a memory span
 static uintptr_t _memory_span_mask;
-//! Number of memory pages in a single span (or 1, if span < page)
-static size_t _memory_span_pages;
 
 //! Granularity of a small allocation block
 #define SMALL_GRANULARITY         32
@@ -487,13 +485,13 @@ _memory_heap_lookup(int32_t id) {
 
 //! Increase an allocation counter
 static void
-_memory_counter_increase(span_counter_t* counter, uint32_t* global_counter, uint32_t span_count) {
+_memory_counter_increase(span_counter_t* counter, uint32_t* global_counter, size_t span_count) {
 	if (++counter->current_allocations > counter->max_allocations) {
 		counter->max_allocations = counter->current_allocations;
-		const uint32_t cache_limit_max = _memory_span_size - 2;
+		const uint32_t cache_limit_max = (uint32_t)_memory_span_size - 2;
 #if MAX_SPAN_CACHE_DIVISOR > 0
 		counter->cache_limit = counter->max_allocations / MAX_SPAN_CACHE_DIVISOR;
-		const uint32_t cache_limit_min = (MIN_SPAN_CACHE_RELEASE + MIN_SPAN_CACHE_SIZE) / span_count;
+		const uint32_t cache_limit_min = (MIN_SPAN_CACHE_RELEASE + MIN_SPAN_CACHE_SIZE) / (uint32_t)span_count;
 		if (counter->cache_limit > cache_limit_max)
 			counter->cache_limit = cache_limit_max;
 		if (counter->cache_limit < cache_limit_min)
@@ -538,7 +536,7 @@ _memory_map_spans(heap_t* heap, size_t num_spans) {
 		heap->spans_reserved -= num_spans;
 		//set flag in span that it is a subspan with a master span
 		uint16_t distance = (uint16_t)((uintptr_t)pointer_diff(span, heap->span_reserve_master) / _memory_span_size);
-		span->flags = SPAN_FLAG_SUBSPAN | (distance << 2);
+		span->flags = (uint16_t)(SPAN_FLAG_SUBSPAN | (distance << 2));
 		return span;
 	}
 
@@ -554,7 +552,7 @@ _memory_map_spans(heap_t* heap, size_t num_spans) {
 		heap->span_reserve = pointer_offset(span, num_spans * _memory_span_size);
 		heap->span_reserve_master = span;
 
-		span->flags = SPAN_FLAG_MASTER | ((uint16_t)request_spans << 2);
+		span->flags = (uint16_t)(SPAN_FLAG_MASTER | ((uint16_t)request_spans << 2));
 	}
 	else {
 		span->flags = 0;
@@ -574,7 +572,7 @@ _memory_unmap_spans(span_t* span, size_t num_spans, size_t align_offset) {
 
 	uint32_t is_subspan = span->flags & SPAN_FLAG_SUBSPAN;
 	uint32_t is_master = span->flags & SPAN_FLAG_MASTER;
-	assert((is_subspan || is_master) && !(is_subspan && is_master));
+	assert((is_subspan || is_master) && !(is_subspan && is_master)); (void)sizeof(is_master);
 	uint32_t distance = (is_subspan ? (span->flags >> 2) : 0);
 	span_t* master = pointer_offset(span, -(int)distance * (int)_memory_span_size);
 	uint32_t remains = master->flags >> 2;
@@ -585,7 +583,7 @@ _memory_unmap_spans(span_t* span, size_t num_spans, size_t align_offset) {
 	else {
 		assert(remains > num_spans);
 		remains -= (uint32_t)num_spans;
-		master->flags = ((uint16_t)remains << 2) | SPAN_FLAG_MASTER;
+		master->flags = (uint16_t)(SPAN_FLAG_MASTER | ((uint16_t)remains << 2));
 	}
 }
 
@@ -627,7 +625,7 @@ _memory_cache_insert(atomicptr_t* cache, span_t* span_list, size_t list_size, si
 
 //! Extract a number of memory page spans from the global cache
 static span_t*
-_memory_cache_extract(atomicptr_t* cache, size_t span_count) {
+_memory_cache_extract(atomicptr_t* cache) {
 	span_t* span = 0;
 	atomic_thread_fence_acquire();
 	void* global_span_ptr = atomic_load_ptr(cache);
@@ -672,7 +670,7 @@ _memory_global_cache_insert(span_t* span_list, size_t list_size) {
 //! Extract a number of memory page spans from the global cache for small/medium blocks
 static span_t*
 _memory_global_cache_extract(void) {
-	return _memory_cache_extract(&_memory_span_cache, 1);
+	return _memory_cache_extract(&_memory_span_cache);
 }
 
 //! Insert the given list of memory page spans in the global cache for large blocks
@@ -690,7 +688,7 @@ _memory_global_cache_large_insert(span_t* span_list, size_t list_size, size_t sp
 //! Extract a number of memory page spans from the global cache for large blocks
 static span_t*
 _memory_global_cache_large_extract(size_t span_count) {
-	return _memory_cache_extract(&_memory_large_cache[span_count - 1], span_count);
+	return _memory_cache_extract(&_memory_large_cache[span_count - 1]);
 }
 
 //! Allocate a small/medium sized memory block from the given heap
@@ -1138,14 +1136,14 @@ _memory_deallocate_large_to_heap(heap_t* heap, span_t* span) {
 	if (!heap->span_cache && (num_spans <= heap->span_counter.cache_limit) && !span->flags) {
 		//Break up as single span cache
 		span_t* master = span;
-		master->flags = SPAN_FLAG_MASTER | (num_spans << 2);
+		master->flags = (uint16_t)(SPAN_FLAG_MASTER | ((uint16_t)num_spans << 2));
 		for (size_t ispan = 1; ispan < num_spans; ++ispan) {
 			span->next_span = pointer_offset(span, _memory_span_size);
 			span = span->next_span;
-			span->flags = SPAN_FLAG_SUBSPAN | (ispan << 2);
+			span->flags = (uint16_t)(SPAN_FLAG_SUBSPAN | ((uint16_t)ispan << 2));
 		}
 		span->next_span = 0;
-		master->data.list.size = num_spans;
+		master->data.list.size = (uint32_t)num_spans;
 		heap->span_cache = master;
 		return;
 	}
@@ -1538,7 +1536,7 @@ rpmalloc_finalize(void) {
 					if (!remaining)
 						_memory_unmap(master, _memory_span_size * _memory_config.span_map_count, master->data.list.align_offset);
 					else
-						master->flags = ((uint16_t)remaining << 2) | SPAN_FLAG_MASTER;
+						master->flags = (uint16_t)(SPAN_FLAG_MASTER | ((uint16_t)remaining << 2));
 				}
 			}
 
