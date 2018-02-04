@@ -97,7 +97,9 @@ By default the allocator uses OS APIs to map virtual memory pages as needed, eit
 
 The functions must guarantee alignment to the configured span size. Either provide the span size during initialization using __rpmalloc_initialize_config__, or use __rpmalloc_config__ to find the required alignment which is equal to the span size. The span size MUST be a power of two in [512, 262144] range, and be a multiple (or divisor) of the memory page size.
 
-Memory mapping requests are always done in multiples of the span size or memory page size, whichever is larger. You can specify a custom page size when initializing rpmalloc with __rpmalloc_initialize_config__, or pass 0 to let rpmalloc determine the system memory page size using OS APIs. The page size MUST be a power of two in [512, 16384] range.
+Memory mapping requests are always done in multiples of the memory page size, whichever is larger. You can specify a custom page size when initializing rpmalloc with __rpmalloc_initialize_config__, or pass 0 to let rpmalloc determine the system memory page size using OS APIs. The page size MUST be a power of two in [512, 16384] range.
+
+To reduce system call overhead, memory spans are mapped in batches controlled by the `span_map_count` configuration variable (which defaults to the `DEFAULT_SPAN_MAP_COUNT` value if 0, which in turn is sized according to the cache configuration define, defaulting to 8). If the platform can handle partial unmaps (unmapping one or more spans of memory pages mapped in a larger batch) the `unmap_partial` configuration variable should be set to non-zero. If not, spans will be kept until the entire batch can be unmapped.
 
 # Memory guards
 If you define the __ENABLE_GUARDS__ to 1, all memory allocations will be padded with extra guard areas before and after the memory block (while still honoring the requested alignment). These dead zones will be filled with a pattern and checked when the block is freed. If the patterns are not intact the callback set in initialization config is called, or if not set an assert is fired.
