@@ -77,12 +77,12 @@
 
 #ifndef ENABLE_STATISTICS
 //! Enable statistics collection
-#define ENABLE_STATISTICS         1
+#define ENABLE_STATISTICS         0
 #endif
 
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            1
+#define ENABLE_ASSERTS            0
 #endif
 
 #ifndef ENABLE_PRELOAD
@@ -136,6 +136,12 @@
 #include <string.h>
 
 #if ENABLE_ASSERTS
+#  ifdef NDEBUG
+#    undef NDEBUG
+#  endif
+#  ifndef _DEBUG
+#    define _DEBUG
+#  endif
 #  include <assert.h>
 #else
 #  undef  assert
@@ -509,7 +515,7 @@ _memory_counter_increase(span_counter_t* counter, uint32_t* global_counter, size
 #if MAX_SPAN_CACHE_DIVISOR > 0
 		counter->cache_limit = counter->max_allocations / ((span_count == 1) ? MAX_SPAN_CACHE_DIVISOR : MAX_LARGE_SPAN_CACHE_DIVISOR);
 		if (counter->cache_limit < cache_limit_min)
-			counter->cache_limit = cache_limit_min;
+			counter->cache_limit = (uint32_t)cache_limit_min;
 		if (counter->cache_limit > cache_limit_max)
 			counter->cache_limit = cache_limit_max;
 #else
@@ -569,7 +575,9 @@ _memory_map_spans(heap_t* heap, size_t num_spans) {
 		heap->span_reserve = pointer_offset(span, num_spans * _memory_span_size);
 		heap->span_reserve_master = span;
 		span->flags = (uint16_t)(SPAN_FLAG_MASTER | ((uint16_t)request_spans << 2));
+#if ENABLE_STATISTICS
 		atomic_add32(&_reserved_spans, (int32_t)request_spans);
+#endif
 	}
 	else {
 		span->flags = 0;
@@ -593,7 +601,9 @@ _memory_unmap_spans(span_t* span, size_t num_spans, size_t align_offset) {
 			_memory_unmap(span, _memory_span_size * num_spans, span->data.list.align_offset, 0);
 		if (!remains) {
 			_memory_unmap(master, _memory_span_size, master->data.list.align_offset, 1); //Master span is always 1 span wide
+#if ENABLE_STATISTICS
 			atomic_add32(&_reserved_spans, -(int32_t)_memory_config.span_map_count);
+#endif
 		}
 	}
 	else {
@@ -675,10 +685,11 @@ static void
 _memory_global_cache_insert(span_t* span_list, size_t list_size) {
 #ifdef GLOBAL_CACHE_MULTIPLIER
 	const size_t cache_limit = GLOBAL_CACHE_MULTIPLIER * (_memory_max_allocation / MAX_SPAN_CACHE_DIVISOR);
+	const size_t cache_limit_min = GLOBAL_CACHE_MULTIPLIER * MIN_SPAN_CACHE_SIZE;
 #else
 	const size_t cache_limit = _memory_span_size - 2;
 #endif
-	_memory_cache_insert(&_memory_span_cache, span_list, list_size, 1, cache_limit);
+	_memory_cache_insert(&_memory_span_cache, span_list, list_size, 1, cache_limit > cache_limit_min ? cache_limit : cache_limit_min);
 }
 
 //! Extract a number of memory page spans from the global cache for small/medium blocks
@@ -693,10 +704,11 @@ _memory_global_cache_large_insert(span_t* span_list, size_t list_size, size_t sp
 	assert(span_list->size_class == (SIZE_CLASS_COUNT + (span_count - 1)));
 #ifdef GLOBAL_CACHE_MULTIPLIER
 	const size_t cache_limit = (GLOBAL_CACHE_MULTIPLIER * _memory_max_allocation_large[span_count - 1]) / (MAX_LARGE_SPAN_CACHE_DIVISOR * span_count * 2);
+	const size_t cache_limit_min = GLOBAL_CACHE_MULTIPLIER * MIN_LARGE_SPAN_CACHE_SIZE;
 #else
-	const size_t cache_limit = 0;
+	const size_t cache_limit = _memory_span_size - 2;
 #endif
-	_memory_cache_insert(&_memory_large_cache[span_count - 1], span_list, list_size, span_count, cache_limit);
+	_memory_cache_insert(&_memory_large_cache[span_count - 1], span_list, list_size, span_count, cache_limit > cache_limit_min ? cache_limit : cache_limit_min);
 }
 
 //! Extract a number of memory page spans from the global cache for large blocks
@@ -1535,8 +1547,16 @@ rpmalloc_finalize(void) {
 				_memory_unmap(heap->span_reserve, _memory_span_size * heap->spans_reserved, 0, 0);
 				span_t* master = heap->span_reserve_master;
 				uint32_t remains = master->flags >> 2;
-				if (remains <= heap->spans_reserved)
-					_memory_unmap(master, _memory_span_size, master->data.list.align_offset, 1);
+				if (remains <= heap->spans_reserved) {
+					_memory_unmap(master, _memory_span_size, master->data.list.align_offset, 1); //Master span is always 1 span wide
+#if ENABLE_STATISTICS
+					atomic_add32(&_reserved_spans, -(int32_t)_memory_config.span_map_count);
+#endif
+				}
+				else {
+					remains -= (uint32_t)heap->spans_reserved;
+					master->flags = (uint16_t)(SPAN_FLAG_MASTER | ((uint16_t)remains << 2));
+				}
 			}
 
 			heap_t* next_heap = heap->next_heap;
@@ -1658,7 +1678,8 @@ rpmalloc_thread_finalize(void) {
 					++list_size;
 				}
 				last->next_span = 0;
-				next->data.list.size = span->data.list.size - list_size;
+				if (next)
+					next->data.list.size = span->data.list.size - list_size;
 				_memory_global_cache_large_insert(span, list_size, span_count);
 				span = next;
 			}
