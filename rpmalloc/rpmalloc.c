@@ -232,11 +232,13 @@ thread_yield(void);
 static size_t _memory_page_size;
 //! Shift to divide by page size
 static size_t _memory_page_size_shift;
-//! Granularity at which memor pages are mapped by OS
+//! Granularity at which memory pages are mapped by OS
 static size_t _memory_map_granularity;
 
 //! Size of a span of memory pages
 static size_t _memory_span_size;
+//! Shift to divide by span size
+static size_t _memory_span_size_shift;
 //! Mask to get to start of a memory span
 static uintptr_t _memory_span_mask;
 
@@ -557,7 +559,7 @@ _memory_map_spans(heap_t* heap, size_t num_spans) {
 		heap->span_reserve = pointer_offset(span, num_spans * _memory_span_size);
 		heap->spans_reserved -= num_spans;
 		//set flag in span that it is a subspan with a master span
-		uint16_t distance = (uint16_t)((uintptr_t)pointer_diff(span, heap->span_reserve_master) / _memory_span_size);
+		uint16_t distance = (uint16_t)((uintptr_t)pointer_diff(span, heap->span_reserve_master) >> _memory_span_size_shift);
 		span->flags = (uint16_t)(SPAN_FLAG_SUBSPAN | (distance << 2));
 		return span;
 	}
@@ -850,8 +852,8 @@ _memory_allocate_large_from_heap(heap_t* heap, size_t size) {
 	//Since this function is never called if size > LARGE_SIZE_LIMIT
 	//the num_spans is guaranteed to be <= LARGE_CLASS_COUNT
 	size += SPAN_HEADER_SIZE;
-	size_t num_spans = size / _memory_span_size;
-	if (size & ~_memory_span_mask)
+	size_t num_spans = size >> _memory_span_size_shift;
+	if (size & (_memory_span_size - 1))
 		++num_spans;
 	size_t idx = num_spans - 1;
 
@@ -1159,20 +1161,23 @@ _memory_deallocate_large_to_heap(heap_t* heap, span_t* span) {
 #if MAX_LARGE_SPAN_CACHE_DIVISOR == 0
 	const size_t list_size = 1;
 #else
-	if (!heap->span_cache && (num_spans <= heap->span_counter.cache_limit) && !span->flags) {
+	/* TODO: Once requirement that master span is one page and keeps track of how
+	   many spans are part of the superspan, reenable this */
+	/*if (!heap->span_cache && (num_spans <= heap->span_counter.cache_limit) && !span->flags) {
 		//Break up as single span cache
 		span_t* master = span;
 		master->flags = (uint16_t)(SPAN_FLAG_MASTER | ((uint16_t)num_spans << 2));
 		for (size_t ispan = 1; ispan < num_spans; ++ispan) {
 			span->next_span = pointer_offset(span, _memory_span_size);
 			span = span->next_span;
+			span->data.list.align_offset = 0;
 			span->flags = (uint16_t)(SPAN_FLAG_SUBSPAN | ((uint16_t)ispan << 2));
 		}
 		span->next_span = 0;
 		master->data.list.size = (uint32_t)num_spans;
 		heap->span_cache = master;
 		return;
-	}
+	}*/
 
 	//Insert into cache list
 	span_t** cache = heap->large_cache + idx;
@@ -1322,8 +1327,8 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 			else {
 				//Large block
 				size_t total_size = size + SPAN_HEADER_SIZE;
-				size_t num_spans = total_size / _memory_span_size;
-				if (total_size & ~_memory_span_mask)
+				size_t num_spans = total_size >> _memory_span_size_shift;
+				if (total_size & (_memory_span_mask - 1))
 					++num_spans;
 				size_t current_spans = (span->size_class - SIZE_CLASS_COUNT) + 1;
 				if ((current_spans >= num_spans) && (num_spans >= (current_spans / 2)))
@@ -1350,7 +1355,7 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 	//Size is greater than block size, need to allocate a new block and deallocate the old
 	//Avoid hysteresis by overallocating if increase is small (below 37%)
 	size_t lower_bound = oldsize + (oldsize >> 2) + (oldsize >> 3);
-	void* block = _memory_allocate(size > lower_bound ? size : lower_bound);
+	void* block = _memory_allocate((size > lower_bound) ? size : ((size > oldsize) ? lower_bound : size));
 	if (p) {
 		if (!(flags & RPMALLOC_NO_PRESERVE))
 			memcpy(block, p, oldsize < size ? oldsize : size);
@@ -1461,7 +1466,6 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		++_memory_page_size_shift;
 		page_size_bit >>= 1;
 	}
-
 	_memory_page_size = ((size_t)1 << _memory_page_size_shift);
 
 	size_t span_size = _memory_config.span_size;
@@ -1470,9 +1474,11 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	if (span_size > (256 * 1024))
 		span_size = (256 * 1024);
 	_memory_span_size = 512;
-	while (_memory_span_size < span_size)
+	_memory_span_size_shift = 9;
+	while (_memory_span_size < span_size) {
 		_memory_span_size <<= 1;
-
+		++_memory_span_size_shift;
+	}
 	_memory_span_mask = ~(uintptr_t)(_memory_span_size - 1);
 
 	_memory_config.page_size = _memory_page_size;
@@ -2054,12 +2060,22 @@ rpmalloc_global_statistics(rpmalloc_global_statistics_t* stats) {
 	stats->unmapped_total = (size_t)atomic_load32(&_unmapped_total) * _memory_page_size;
 #endif
 	void* global_span_ptr = atomic_load_ptr(&_memory_span_cache);
+	while (global_span_ptr == CACHE_IN_PROGRESS) {
+		thread_yield();
+		atomic_thread_fence_acquire();
+		global_span_ptr = atomic_load_ptr(&_memory_span_cache);
+	}
 	uintptr_t global_span_count = (uintptr_t)global_span_ptr & ~_memory_span_mask;
 	size_t list_bytes = global_span_count * _memory_span_size;
 	stats->cached += list_bytes;
 
 	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
 		global_span_ptr = atomic_load_ptr(&_memory_large_cache[iclass]);
+		while (global_span_ptr == CACHE_IN_PROGRESS) {
+			thread_yield();
+			atomic_thread_fence_acquire();
+			global_span_ptr = atomic_load_ptr(&_memory_large_cache[iclass]);
+		}
 		global_span_count = (uintptr_t)global_span_ptr & ~_memory_span_mask;
 		list_bytes = global_span_count * (iclass + 1) * _memory_span_size;
 		stats->cached_large += list_bytes;
