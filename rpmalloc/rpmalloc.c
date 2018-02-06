@@ -77,12 +77,12 @@
 
 #ifndef ENABLE_STATISTICS
 //! Enable statistics collection
-#define ENABLE_STATISTICS         1
+#define ENABLE_STATISTICS         0
 #endif
 
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            1
+#define ENABLE_ASSERTS            0
 #endif
 
 #ifndef ENABLE_PRELOAD
@@ -92,7 +92,7 @@
 
 #ifndef ENABLE_GUARDS
 //! Enable overwrite/underwrite guards
-#define ENABLE_GUARDS             1
+#define ENABLE_GUARDS             0
 #endif
 
 // Platform and arch specifics
@@ -1859,7 +1859,7 @@ _memory_guard_block(void* block, size_t size) {
 	}
 }
 #define _memory_guard_pre_alloc(size) size += 32
-#define _memory_guard_post_alloc(block, size) size = _memory_guard_block(block, size); block = pointer_offset(block, 16); size -= 32
+#define _memory_guard_post_alloc(block, size) _memory_guard_block(block, size); block = pointer_offset(block, 16); size -= 32
 #else
 #define _memory_guard_pre_alloc(size)
 #define _memory_guard_post_alloc(block, size)
