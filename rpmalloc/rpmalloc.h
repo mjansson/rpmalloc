@@ -39,8 +39,6 @@ typedef struct rpmalloc_global_statistics_t {
 	size_t mapped;
 	//! Current amount of memory in global caches for small and medium sizes (<64KiB)
 	size_t cached;
-	//! Curren amount of memory in global caches for large sizes (>=64KiB)
-	size_t cached_large;
 	//! Total amount of memory mapped (only if ENABLE_STATISTICS=1)
 	size_t mapped_total;
 	//! Total amount of memory unmapped (only if ENABLE_STATISTICS=1)
