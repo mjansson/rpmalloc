@@ -77,12 +77,12 @@
 
 #ifndef ENABLE_STATISTICS
 //! Enable statistics collection
-#define ENABLE_STATISTICS         0
+#define ENABLE_STATISTICS         1
 #endif
 
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            0
+#define ENABLE_ASSERTS            1
 #endif
 
 #ifndef ENABLE_PRELOAD
@@ -92,7 +92,7 @@
 
 #ifndef ENABLE_GUARDS
 //! Enable overwrite/underwrite guards
-#define ENABLE_GUARDS             0
+#define ENABLE_GUARDS             1
 #endif
 
 // Platform and arch specifics
@@ -561,6 +561,7 @@ _memory_map_spans(heap_t* heap, size_t num_spans) {
 		//set flag in span that it is a subspan with a master span
 		uint16_t distance = (uint16_t)((uintptr_t)pointer_diff(span, heap->span_reserve_master) >> _memory_span_size_shift);
 		span->flags = (uint16_t)(SPAN_FLAG_SUBSPAN | (distance << 2));
+		span->data.block.align_offset = 0;
 		return span;
 	}
 
@@ -590,26 +591,30 @@ _memory_map_spans(heap_t* heap, size_t num_spans) {
 //! Unmap memory pages for the given number of spans (or mark as unused if no partial unmappings)
 static void
 _memory_unmap_spans(span_t* span, size_t num_spans, size_t align_offset) {
-	if (span->flags) {
-		uint32_t is_subspan = span->flags & SPAN_FLAG_SUBSPAN;
-		uint32_t is_master = span->flags & SPAN_FLAG_MASTER;
-		assert((is_subspan || is_master) && !(is_subspan && is_master)); (void)sizeof(is_master);
-		uint32_t distance = (is_subspan ? (span->flags >> 2) : 0);
-		span_t* master = pointer_offset(span, -(int)distance * (int)_memory_span_size);
-		uint32_t remains = master->flags >> 2;
-		remains = ((uint32_t)num_spans >= remains) ? 0 : (remains - (uint32_t)num_spans);
-		master->flags = (uint16_t)(SPAN_FLAG_MASTER | ((uint16_t)remains << 2));
-		if (is_subspan)
-			_memory_unmap(span, _memory_span_size * num_spans, span->data.list.align_offset, 0);
-		if (!remains) {
-			_memory_unmap(master, _memory_span_size, master->data.list.align_offset, 1); //Master span is always 1 span wide
-#if ENABLE_STATISTICS
-			atomic_add32(&_reserved_spans, -(int32_t)_memory_config.span_map_count);
-#endif
-		}
-	}
-	else {
+	if (!span->flags) {
 		_memory_unmap(span, _memory_span_size * num_spans, span->data.list.align_offset, 1);
+		return;
+	}
+
+	uint32_t is_master = (span->flags & SPAN_FLAG_MASTER);
+	span_t* master = is_master ? span : (pointer_offset(span, -(int)(span->flags >> 2) * (int)_memory_span_size));
+	uint32_t remains = master->flags >> 2;
+
+	assert(is_master || (span->flags & SPAN_FLAG_SUBSPAN));
+	assert((master->flags & SPAN_FLAG_MASTER) && !(master->flags & SPAN_FLAG_SUBSPAN));
+	assert(remains >= num_spans);
+
+	remains = ((uint32_t)num_spans >= remains) ? 0 : (remains - (uint32_t)num_spans);
+	master->flags = (uint16_t)(SPAN_FLAG_MASTER | ((uint16_t)remains << 2));
+	if (!is_master) {
+		assert(span->data.list.align_offset == 0);
+		_memory_unmap(span, _memory_span_size * num_spans, 0, 0);
+	}
+	if (!remains) {
+		_memory_unmap(master, _memory_span_size, master->data.list.align_offset, 1); //Master span is always 1 span wide
+#if ENABLE_STATISTICS
+		atomic_add32(&_reserved_spans, -(int32_t)_memory_config.span_map_count);
+#endif
 	}
 }
 
@@ -690,6 +695,7 @@ _memory_global_cache_insert(span_t* span_list, size_t list_size) {
 	const size_t cache_limit_min = GLOBAL_CACHE_MULTIPLIER * MIN_SPAN_CACHE_SIZE;
 #else
 	const size_t cache_limit = _memory_span_size - 2;
+	const size_t cache_limit_min = cache_limit;
 #endif
 	_memory_cache_insert(&_memory_span_cache, span_list, list_size, 1, cache_limit > cache_limit_min ? cache_limit : cache_limit_min);
 }
@@ -709,6 +715,7 @@ _memory_global_cache_large_insert(span_t* span_list, size_t list_size, size_t sp
 	const size_t cache_limit_min = GLOBAL_CACHE_MULTIPLIER * MIN_LARGE_SPAN_CACHE_SIZE;
 #else
 	const size_t cache_limit = _memory_span_size - 2;
+	const size_t cache_limit_min = cache_limit;
 #endif
 	_memory_cache_insert(&_memory_large_cache[span_count - 1], span_list, list_size, span_count, cache_limit > cache_limit_min ? cache_limit : cache_limit_min);
 }
@@ -1372,11 +1379,9 @@ _memory_usable_size(void* p) {
 	span_t* span = (void*)((uintptr_t)p & _memory_span_mask);
 	int32_t heap_id = atomic_load32(&span->heap_id);
 	if (heap_id) {
-		if (span->size_class < SIZE_CLASS_COUNT) {
-			//Small/medium block
-			size_class_t* size_class = _memory_size_class + span->size_class;
-			return size_class->size;
-		}
+		//Small/medium block
+		if (span->size_class < SIZE_CLASS_COUNT)
+			return _memory_size_class[span->size_class].size;
 
 		//Large block
 		size_t current_spans = (span->size_class - SIZE_CLASS_COUNT) + 1;
@@ -1550,17 +1555,23 @@ rpmalloc_finalize(void) {
 			}
 
 			if (heap->spans_reserved) {
-				_memory_unmap(heap->span_reserve, _memory_span_size * heap->spans_reserved, 0, 0);
+				span_t* span = heap->span_reserve;
 				span_t* master = heap->span_reserve_master;
 				uint32_t remains = master->flags >> 2;
-				if (remains <= heap->spans_reserved) {
+							
+				assert(master != span);
+				assert(remains >= heap->spans_reserved);
+				
+				remains = ((uint32_t)heap->spans_reserved >= remains) ? 0 : (remains - (uint32_t)heap->spans_reserved);
+				assert(span->data.list.align_offset == 0);
+				_memory_unmap(span, _memory_span_size * heap->spans_reserved, 0, 0);
+				if (!remains) {
 					_memory_unmap(master, _memory_span_size, master->data.list.align_offset, 1); //Master span is always 1 span wide
 #if ENABLE_STATISTICS
 					atomic_add32(&_reserved_spans, -(int32_t)_memory_config.span_map_count);
 #endif
 				}
 				else {
-					remains -= (uint32_t)heap->spans_reserved;
 					master->flags = (uint16_t)(SPAN_FLAG_MASTER | ((uint16_t)remains << 2));
 				}
 			}
@@ -1725,20 +1736,16 @@ rpmalloc_config(void) {
 //! Map new pages to virtual memory
 static void*
 _memory_map_os(size_t size, size_t* offset) {
-	void* ptr;
-	size_t padding = 0;
-
-	if (_memory_span_size > _memory_map_granularity)
-		padding = _memory_span_size;
+	size_t padding = (_memory_span_size > _memory_map_granularity) ? _memory_span_size : 0;
 
 #ifdef PLATFORM_WINDOWS
-	ptr = VirtualAlloc(0, size + padding, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	void* ptr = VirtualAlloc(0, size + padding, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 	if (!ptr) {
 		assert("Failed to map virtual memory block" == 0);
 		return 0;
 	}
 #else
-	ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED, -1, 0);
+	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED, -1, 0);
 	if (ptr == MAP_FAILED) {
 		assert("Failed to map virtual memory block" == 0);
 		return 0;
@@ -1759,14 +1766,15 @@ _memory_map_os(size_t size, size_t* offset) {
 
 //! Unmap pages from virtual memory
 static void
-_memory_unmap_os(void* address, size_t size, size_t offset, int master) {
+_memory_unmap_os(void* address, size_t size, size_t offset, int release) {
+	assert(release || (offset == 0));
 	if (offset) {
 		offset <<= 2;
 		size += offset;
 		address = pointer_offset(address, -(offset_t)offset);
 	}
 #ifdef PLATFORM_WINDOWS
-	if (!VirtualFree(address, master ? 0 : size, master ? MEM_RELEASE : MEM_DECOMMIT )) {
+	if (!VirtualFree(address, release ? 0 : size, release ? MEM_RELEASE : MEM_DECOMMIT)) {
 		assert("Failed to unmap virtual memory block" == 0);
 	}
 #else
@@ -1786,36 +1794,9 @@ thread_yield(void) {
 #endif
 }
 
-// Extern interface
-
-RPMALLOC_RESTRICT void*
-rpmalloc(size_t size) {
-#if ENABLE_VALIDATE_ARGS
-	if (size >= MAX_ALLOC_SIZE) {
-		errno = EINVAL;
-		return 0;
-	}
-#endif
-#if ENABLE_GUARDS
-	size += 32;
-#endif
-	void* block = _memory_allocate(size);
-#if ENABLE_GUARDS
-	if (block) {
-		size_t block_size = _memory_usable_size(block);
-		uint32_t* deadzone = block;
-		deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] = MAGIC_GUARD;
-		deadzone = (uint32_t*)pointer_offset(block, block_size - 16);
-		deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] = MAGIC_GUARD;
-		block = pointer_offset(block, 16);
-	}
-#endif
-	return block;
-}
-
 #if ENABLE_GUARDS
 static void
-_memory_validate_integrity(void* p) {
+_memory_guard_validate(void* p) {
 	if (!p)
 		return;
 	void* block_start;
@@ -1828,49 +1809,81 @@ _memory_validate_integrity(void* p) {
 			size_class_t* size_class = _memory_size_class + span->size_class;
 			count_t block_offset = (count_t)pointer_diff(p, span_blocks_start);
 			count_t block_idx = block_offset / (count_t)size_class->size;
-	 		block_start = pointer_offset(span_blocks_start, block_idx * size_class->size);
-	 	}
-	 	else {
+			block_start = pointer_offset(span_blocks_start, block_idx * size_class->size);
+		}
+		else {
 			block_start = pointer_offset(span, SPAN_HEADER_SIZE);
-	 	}
-  	}
+		}
+	}
 	else {
 		block_start = pointer_offset(span, SPAN_HEADER_SIZE);
 	}
 	uint32_t* deadzone = block_start;
 	//If these asserts fire, you have written to memory before the block start
 	for (int i = 0; i < 4; ++i) {
-		if (deadzone[i] == MAGIC_GUARD) {
-			deadzone[i] = 0;
-			continue;
+		if (deadzone[i] != MAGIC_GUARD) {
+			if (_memory_config.memory_overwrite)
+				_memory_config.memory_overwrite(p);
+			else
+				assert("Memory overwrite before block start" == 0);
+			return;
 		}
-		if (_memory_config.memory_overwrite)
-			_memory_config.memory_overwrite(p);
-		else
-			assert(deadzone[i] == MAGIC_GUARD && "Memory overwrite before block start");
-		return;
+		deadzone[i] = 0;
 	}
 	deadzone = (uint32_t*)pointer_offset(block_start, block_size - 16);
 	//If these asserts fire, you have written to memory after the block end
 	for (int i = 0; i < 4; ++i) {
-		if (deadzone[i] == MAGIC_GUARD) {
-			deadzone[i] = 0;
-			continue;
+		if (deadzone[i] != MAGIC_GUARD) {
+			if (_memory_config.memory_overwrite)
+				_memory_config.memory_overwrite(p);
+			else
+				assert("Memory overwrite after block end" == 0);
+			return;
 		}
-		if (_memory_config.memory_overwrite)
-			_memory_config.memory_overwrite(p);
-		else
-			assert(deadzone[i] == MAGIC_GUARD && "Memory overwrite after block end");
-		return;
+		deadzone[i] = 0;
 	}
 }
+#else
+#define _memory_guard_validate(block)
 #endif
+
+#if ENABLE_GUARDS
+static void
+_memory_guard_block(void* block, size_t size) {
+	if (block) {
+		size_t block_size = _memory_usable_size(block);
+		uint32_t* deadzone = block;
+		deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] = MAGIC_GUARD;
+		deadzone = (uint32_t*)pointer_offset(block, block_size - 16);
+		deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] = MAGIC_GUARD;
+	}
+}
+#define _memory_guard_pre_alloc(size) size += 32
+#define _memory_guard_post_alloc(block, size) size = _memory_guard_block(block, size); block = pointer_offset(block, 16); size -= 32
+#else
+#define _memory_guard_pre_alloc(size)
+#define _memory_guard_post_alloc(block, size)
+#endif
+
+// Extern interface
+
+RPMALLOC_RESTRICT void*
+rpmalloc(size_t size) {
+#if ENABLE_VALIDATE_ARGS
+	if (size >= MAX_ALLOC_SIZE) {
+		errno = EINVAL;
+		return 0;
+	}
+#endif
+	_memory_guard_pre_alloc(size);
+	void* block = _memory_allocate(size);
+	_memory_guard_post_alloc(block, size);
+	return block;
+}
 
 void
 rpfree(void* ptr) {
-#if ENABLE_GUARDS
-	_memory_validate_integrity(ptr);
-#endif
+	_memory_guard_validate(ptr);
 	_memory_deallocate(ptr);
 }
 
@@ -1894,21 +1907,9 @@ rpcalloc(size_t num, size_t size) {
 #else
 	total = num * size;
 #endif
-#if ENABLE_GUARDS
-	total += 32;
-#endif
+	_memory_guard_pre_alloc(total);
 	void* block = _memory_allocate(total);
-#if ENABLE_GUARDS
-	if (block) {
-		size_t block_size = _memory_usable_size(block);
-		uint32_t* deadzone = block;
-		deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] = MAGIC_GUARD;
-		deadzone = (uint32_t*)pointer_offset(block, block_size - 16);
-		deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] = MAGIC_GUARD;
-		block = pointer_offset(block, 16);
-		total -= 32;
-	}
-#endif
+	_memory_guard_post_alloc(block, total);
 	memset(block, 0, total);
 	return block;
 }
@@ -1921,21 +1922,10 @@ rprealloc(void* ptr, size_t size) {
 		return ptr;
 	}
 #endif
-#if ENABLE_GUARDS
-	_memory_validate_integrity(ptr);
-	size += 32;
-#endif
+	_memory_guard_validate(ptr);
+	_memory_guard_pre_alloc(size);
 	void* block = _memory_reallocate(ptr, size, 0, 0);
-#if ENABLE_GUARDS
-	if (block) {
-		size_t block_size = _memory_usable_size(block);
-		uint32_t* deadzone = block;
-		deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] = MAGIC_GUARD;
-		deadzone = (uint32_t*)pointer_offset(block, block_size - 16);
-		deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] = MAGIC_GUARD;
-		block = pointer_offset(block, 16);
-	}
-#endif
+	_memory_guard_post_alloc(block, size);
 	return block;
 }
 
@@ -1956,21 +1946,10 @@ rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize,
 		rpfree(ptr);
 	}
 	else {
-#if ENABLE_GUARDS
-		_memory_validate_integrity(ptr);
-		size += 32;
-#endif
+		_memory_guard_validate(ptr);
+		_memory_guard_pre_alloc(size);
 		block = _memory_reallocate(ptr, size, oldsize, flags);
-#if ENABLE_GUARDS
-		if (block) {
-			size_t block_size = _memory_usable_size(block);
-			uint32_t* deadzone = block;
-			deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] = MAGIC_GUARD;
-			deadzone = (uint32_t*)pointer_offset(block, block_size - 16);
-			deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] = MAGIC_GUARD;
-			block = pointer_offset(block, 16);
-		}
-#endif
+		_memory_guard_post_alloc(block, size);
 	}
 	return block;
 }
