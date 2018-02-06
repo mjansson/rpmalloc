@@ -13,31 +13,16 @@
 
 // Build time configurable limits
 
-// Presets, if none is defined it will default to performance priority
-//#define ENABLE_UNLIMITED_CACHE
-//#define DISABLE_CACHE
-//#define ENABLE_SPACE_PRIORITY_CACHE
+#ifndef ENABLE_UNLIMITED_CACHE
+#define ENABLE_UNLIMITED_CACHE      0
+#endif
+
+#ifndef ENABLE_SPACE_PRIORITY_CACHE
+#define ENABLE_SPACE_PRIORITY_CACHE 0
+#endif
 
 // Presets for cache limits
-#if defined(ENABLE_UNLIMITED_CACHE)
-// Unlimited caches
-#define MIN_SPAN_CACHE_RELEASE 64
-#define MAX_SPAN_CACHE_DIVISOR 1
-#define MIN_SPAN_CACHE_SIZE 0
-#define MIN_LARGE_SPAN_CACHE_RELEASE 64
-#define MAX_LARGE_SPAN_CACHE_DIVISOR 1
-#define MIN_LARGE_SPAN_CACHE_SIZE 0
-#define DEFAULT_SPAN_MAP_COUNT 16
-#elif defined(DISABLE_CACHE)
-//Disable cache
-#define MIN_SPAN_CACHE_RELEASE 1
-#define MAX_SPAN_CACHE_DIVISOR 0
-#define MIN_SPAN_CACHE_SIZE 0
-#define MIN_LARGE_SPAN_CACHE_RELEASE 1
-#define MAX_LARGE_SPAN_CACHE_DIVISOR 0
-#define MIN_LARGE_SPAN_CACHE_SIZE 0
-#define DEFAULT_SPAN_MAP_COUNT 1
-#elif defined(ENABLE_SPACE_PRIORITY_CACHE)
+#if ENABLE_SPACE_PRIORITY_CACHE
 // Space priority cache limits
 #define MIN_SPAN_CACHE_SIZE 8
 #define MIN_SPAN_CACHE_RELEASE 8
@@ -63,12 +48,32 @@
 #define MAX_LARGE_SPAN_CACHE_DIVISOR 16
 //! Multiplier for global span cache limit (max cache size will be calculated like thread cache and multiplied with this)
 #define GLOBAL_CACHE_MULTIPLIER 8
-//! Default number of spans to map in call to map more virtual memory
-#define DEFAULT_SPAN_MAP_COUNT 8
 #endif
 
+#ifndef DEFAULT_SPAN_MAP_COUNT
+//! Default number of spans to map in call to map more virtual memory
+#define DEFAULT_SPAN_MAP_COUNT    8
+#endif
+
+#ifndef HEAP_ARRAY_SIZE
 //! Size of heap hashmap
 #define HEAP_ARRAY_SIZE           79
+#endif
+
+#ifndef ENABLE_THREAD_CACHE
+//! Enable per-thread cache
+#define ENABLE_THREAD_CACHE       1
+#endif
+
+#ifndef ENABLE_GLOBAL_CACHE
+//! Enable global cache shared between all threads
+#define ENABLE_GLOBAL_CACHE       1
+#endif
+
+#ifndef ENABLE_UNLIMITED_CACHE
+//! Unlimited cache disables any cache limitations
+#define ENABLE_UNLIMITED_CACHE    1
+#endif
 
 #ifndef ENABLE_VALIDATE_ARGS
 //! Enable validation of args to public entry points
@@ -93,6 +98,11 @@
 #ifndef ENABLE_GUARDS
 //! Enable overwrite/underwrite guards
 #define ENABLE_GUARDS             0
+#endif
+
+#if !ENABLE_THREAD_CACHE
+#  undef ENABLE_GLOBAL_CACHE
+#  define ENABLE_GLOBAL_CACHE 0
 #endif
 
 // Platform and arch specifics
@@ -373,10 +383,12 @@ struct heap_t {
 	span_t*      active_span[SIZE_CLASS_COUNT];
 	//! List of semi-used spans with free blocks for each size class (double linked list)
 	span_t*      size_cache[SIZE_CLASS_COUNT];
+#if ENABLE_THREAD_CACHE
 	//! List of free spans (single linked list)
 	span_t*      span_cache[LARGE_CLASS_COUNT];
 	//! Allocation counters
 	span_counter_t span_counter[LARGE_CLASS_COUNT];
+#endif
 	//! Mapped but unused spans
 	span_t*      span_reserve;
 	//! Master span for mapped but unused spans
@@ -416,8 +428,10 @@ static size_class_t _memory_size_class[SIZE_CLASS_COUNT];
 //! Heap ID counter
 static atomic32_t _memory_heap_id;
 
+#if ENABLE_GLOBAL_CACHE
 //! Global span cache
 static atomicptr_t _memory_span_cache[LARGE_CLASS_COUNT];
+#endif
 
 //! All heaps
 static atomicptr_t _memory_heaps[HEAP_ARRAY_SIZE];
@@ -431,8 +445,10 @@ static atomic32_t _memory_orphan_counter;
 //! Active heap count
 static atomic32_t _memory_active_heaps;
 
+#if ENABLE_THREAD_CACHE
 //! Adaptive cache max allocation count
 static uint32_t _memory_max_allocation[LARGE_CLASS_COUNT];
+#endif
 
 #if ENABLE_STATISTICS
 //! Total number of currently mapped memory pages
@@ -444,6 +460,8 @@ static atomic32_t _mapped_total;
 //! Running counter of total number of unmapped memory pages since start
 static atomic32_t _unmapped_total;
 #endif
+
+#define MEMORY_UNUSED(x) (void)sizeof((x))
 
 //! Current thread heap
 #if defined(__APPLE__) && ENABLE_PRELOAD
@@ -498,13 +516,15 @@ _memory_heap_lookup(int32_t id) {
 	return heap;
 }
 
+#if ENABLE_THREAD_CACHE
+
 //! Increase an allocation counter
 static void
 _memory_counter_increase(span_counter_t* counter, uint32_t* global_counter, size_t span_count) {
 	if (++counter->current_allocations > counter->max_allocations) {
 		counter->max_allocations = counter->current_allocations;
 		const uint32_t cache_limit_max = (uint32_t)_memory_span_size - 2;
-#if MAX_SPAN_CACHE_DIVISOR > 0
+#if !ENABLE_UNLIMITED_CACHE
 		counter->cache_limit = counter->max_allocations / ((span_count == 1) ? MAX_SPAN_CACHE_DIVISOR : MAX_LARGE_SPAN_CACHE_DIVISOR);
 		const uint32_t cache_limit_min = (span_count == 1) ? (MIN_SPAN_CACHE_RELEASE + MIN_SPAN_CACHE_SIZE) : (MIN_LARGE_SPAN_CACHE_RELEASE + MIN_LARGE_SPAN_CACHE_SIZE);
 		if (counter->cache_limit < cache_limit_min)
@@ -518,6 +538,10 @@ _memory_counter_increase(span_counter_t* counter, uint32_t* global_counter, size
 			*global_counter = counter->max_allocations;
 	}
 }
+
+#else
+#  define _memory_counter_increase(counter, global_counter, span_count) do {} while (0)
+#endif
 
 static void*
 _memory_map(size_t size, size_t* offset) {
@@ -685,13 +709,13 @@ _memory_span_list_doublelink_remove(span_t** head, span_t* span) {
 	}
 }
 
+#if ENABLE_GLOBAL_CACHE
 #define CACHE_IN_PROGRESS ((void*)1)
 
 //! Insert the given list of memory page spans in the global cache
 static void
 _memory_cache_insert(atomicptr_t* cache, span_t* span, size_t span_count, size_t cache_limit) {
 	assert((span->data.list.size == 1) || (span->next_span != 0));
-#if MAX_SPAN_CACHE_DIVISOR > 0
 	while (cache_limit) {
 		atomic_thread_fence_acquire();
 		void* global_span_ptr = atomic_load_ptr(cache);
@@ -710,7 +734,6 @@ _memory_cache_insert(atomicptr_t* cache, span_t* span, size_t span_count, size_t
 		}
 		thread_yield();
 	}
-#endif
 	//Global cache full, release spans
 	_memory_unmap_span_list(span, span_count);
 }
@@ -723,7 +746,7 @@ _memory_cache_extract(atomicptr_t* cache) {
 	void* global_span_ptr = atomic_load_ptr(cache);
 	while (global_span_ptr) {
 		if ((global_span_ptr != CACHE_IN_PROGRESS) && atomic_cas_ptr(cache, CACHE_IN_PROGRESS, global_span_ptr)) {
-			/*uintptr_t global_list_size = (uintptr_t)global_span_ptr & ~_memory_span_mask;
+			uintptr_t global_list_size = (uintptr_t)global_span_ptr & ~_memory_span_mask;
 			span = (span_t*)((void*)((uintptr_t)global_span_ptr & _memory_span_mask));
 			assert((span->data.list.size == 1) || (span->next_span != 0));
 			assert(span->data.list.size <= global_list_size);
@@ -732,11 +755,9 @@ _memory_cache_extract(atomicptr_t* cache) {
 			global_list_size -= span->data.list.size;
 			assert(!(global_list_size & _memory_span_mask));
 
-			void* new_global_span_ptr = global_list_size && new_global_span ?
-			                            ((void*)((uintptr_t)new_global_span | global_list_size)) :
-			                            0;
-			atomic_store_ptr(cache, new_global_span_ptr);
-			atomic_thread_fence_release();*/
+			global_span_ptr = global_list_size && new_global_span ?
+			                  ((void*)((uintptr_t)new_global_span | global_list_size)) :
+			                  0;
 			atomic_store_ptr(cache, global_span_ptr);
 			atomic_thread_fence_release();
 			break;
@@ -762,24 +783,29 @@ _memory_cache_finalize(atomicptr_t* cache, size_t span_count) {
 	atomic_store_ptr(cache, 0);
 }
 
+#endif
+
 //! Insert the given list of memory page spans in the global cache
 static void
-_memory_global_cache_insert(span_t* span_list, size_t span_count) {
-#ifdef GLOBAL_CACHE_MULTIPLIER
+_memory_global_cache_insert(span_t* span, size_t span_count) {
+#if ENABLE_GLOBAL_CACHE
 	const size_t cache_divisor = (span_count == 1) ? MAX_SPAN_CACHE_DIVISOR : (MAX_LARGE_SPAN_CACHE_DIVISOR * span_count * 2);
 	const size_t cache_limit = (GLOBAL_CACHE_MULTIPLIER * _memory_max_allocation[span_count - 1]) / cache_divisor;
 	const size_t cache_limit_min = GLOBAL_CACHE_MULTIPLIER * (span_count == 1 ? MIN_SPAN_CACHE_SIZE : MIN_LARGE_SPAN_CACHE_SIZE);
+	_memory_cache_insert(&_memory_span_cache[span_count - 1], span, span_count, cache_limit > cache_limit_min ? cache_limit : cache_limit_min);
 #else
-	const size_t cache_limit = _memory_span_size - 2;
-	const size_t cache_limit_min = cache_limit;
+	_memory_unmap_span_list(span, span_count);
 #endif
-	_memory_cache_insert(&_memory_span_cache[span_count - 1], span_list, span_count, cache_limit > cache_limit_min ? cache_limit : cache_limit_min);
 }
 
 //! Extract a number of memory page spans from the global cache for large blocks
 static span_t*
 _memory_global_cache_extract(size_t span_count) {
+#if ENABLE_GLOBAL_CACHE
 	return _memory_cache_extract(&_memory_span_cache[span_count - 1]);
+#else
+	return 0;
+#endif
 }
 
 //! Allocate a small/medium sized memory block from the given heap
@@ -855,6 +881,7 @@ use_active:
 	}
 
 	//Step 4: No semi-used span available, try grab a span from the thread cache
+#if ENABLE_THREAD_CACHE
 	span_t* span = heap->span_cache[0];
 	if (!span) {
 		//Step 5: No span available in the thread cache, try grab a list of spans from the global cache
@@ -880,6 +907,9 @@ use_active:
 		//Step 6: All caches empty, map in new memory pages
 		span = _memory_map_spans(heap, 1);
 	}
+#else
+	span_t* span = _memory_map_spans(heap, 1);
+#endif
 
 	//Mark span as owned by this heap and set base data
 	atomic_store32(&span->heap_id, heap->id);
@@ -919,12 +949,14 @@ _memory_allocate_large_from_heap(heap_t* heap, size_t size) {
 	if (size & (_memory_span_size - 1))
 		++span_count;
 	size_t idx = span_count - 1;
+	span_t* span;
 
+#if ENABLE_THREAD_CACHE
 use_cache:
 	//Step 1: Check if cache for this large size class (or the following, unless first class) has a span
 	while (!heap->span_cache[idx] && (idx < (LARGE_CLASS_COUNT - 1)) && (idx < (span_count + 1)))
 		++idx;
-	span_t* span = heap->span_cache[idx];
+	span = heap->span_cache[idx];
 	if (span) {
 		//Happy path, use from cache
 		if (span->data.list.size > 1) {
@@ -956,7 +988,11 @@ use_cache:
 	if (_memory_deallocate_deferred(heap, SIZE_CLASS_COUNT + idx))
 		goto use_cache;
 	assert(!heap->span_cache[idx]);
+#else
+	_memory_deallocate_deferred(heap, SIZE_CLASS_COUNT + idx);
+#endif
 
+#if ENABLE_GLOBAL_CACHE
 	//Step 3: Extract a list of spans from global cache
 	span = _memory_global_cache_extract(span_count);
 	if (span) {
@@ -976,6 +1012,10 @@ use_cache:
 		//Step 4: Map in more memory pages
 		span = _memory_map_spans(heap, span_count);
 	}
+#else
+	span = _memory_map_spans(heap, span_count);
+#endif
+
 	//Mark span as owned by this heap
 	atomic_store32(&span->heap_id, heap->id);
 	atomic_thread_fence_release();
@@ -1042,17 +1082,17 @@ _memory_allocate_heap(void) {
 //! Insert span into thread heap cache, releasing to global cache if overflow
 static void
 _memory_heap_cache_insert(heap_t* heap, span_t* span, size_t span_count) {
-#if MAX_SPAN_CACHE_DIVISOR == 0
-	(void)sizeof(heap);
-	span->data.list.size = 1;
-#else
+#if ENABLE_THREAD_CACHE
 	size_t idx = span_count - 1;
 	if (_memory_span_list_add(&heap->span_cache[idx], span) <= heap->span_counter[idx].cache_limit)
 		return;
 	heap->span_cache[idx] = _memory_span_list_split(span, heap->span_counter[idx].cache_limit);
-#endif
 #if ENABLE_STATISTICS
 	heap->thread_to_global += (size_t)span->data.list.size * span_count * _memory_span_size;
+#endif
+#else
+	MEMORY_UNUSED(heap);
+	span->data.list.size = 1;
 #endif
 	_memory_global_cache_insert(span, span_count);
 }
@@ -1071,10 +1111,12 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 
 	//Check if the span will become completely free
 	if (block_data->free_count == ((count_t)size_class->block_count - 1)) {
+#if ENABLE_THREAD_CACHE
 		//Track counters
 		assert(heap->span_counter[0].current_allocations > 0);
 		if (heap->span_counter[0].current_allocations)
 			--heap->span_counter[0].current_allocations;
+#endif
 
 		//If it was active, reset counter. Otherwise, if not active, remove from
 		//partial free list if we had a previous free block (guard for classes with only 1 block)
@@ -1112,9 +1154,11 @@ _memory_deallocate_large_to_heap(heap_t* heap, span_t* span) {
 	size_t span_count = idx + 1;
 	assert(span->size_class > SIZE_CLASS_COUNT);
 	assert(idx < LARGE_CLASS_COUNT);
+#if ENABLE_THREAD_CACHE
 	assert(heap->span_counter[idx].current_allocations > 0);
 	if (heap->span_counter[idx].current_allocations)
 		--heap->span_counter[idx].current_allocations;
+#endif
 
 	/* TODO: Once requirement that master span is one page and keeps track of how
 	   many spans are part of the superspan, reenable this */
@@ -1455,8 +1499,10 @@ rpmalloc_finalize(void) {
 			_memory_deallocate_deferred(heap, 0);
 
 			//Free span caches
+#if ENABLE_THREAD_CACHE
 			for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass)
 				_memory_unmap_span_list(heap->span_cache[iclass], iclass + 1);
+#endif
 
 			if (heap->spans_reserved) {
 				span_t* span = heap->span_reserve;
@@ -1490,8 +1536,10 @@ rpmalloc_finalize(void) {
 	atomic_store_ptr(&_memory_orphan_heaps, 0);
 
 	//Free global caches
+#if ENABLE_GLOBAL_CACHE
 	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass)
 		_memory_cache_finalize(&_memory_span_cache[iclass], iclass + 1);
+#endif
 
 	atomic_thread_fence_release();
 
@@ -1531,6 +1579,7 @@ rpmalloc_thread_finalize(void) {
 	_memory_deallocate_deferred(heap, 0);
 
 	//Release thread cache spans back to global cache
+#if ENABLE_THREAD_CACHE
 	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
 		const size_t span_count = iclass + 1;
 		span_t* span = heap->span_cache[iclass];
@@ -1541,6 +1590,7 @@ rpmalloc_thread_finalize(void) {
 		}
 		heap->span_cache[iclass] = 0;
 	}
+#endif
 
 	//Orphan the heap
 	void* raw_heap;
@@ -1860,10 +1910,12 @@ rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats) {
 		}
 	}
 
+#if ENABLE_THREAD_CACHE
 	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
 		if (heap->span_cache[iclass])
 			stats->spancache = (size_t)heap->span_cache[iclass]->data.list.size * (iclass + 1) * _memory_span_size;
 	}
+#endif
 }
 
 void
@@ -1874,6 +1926,7 @@ rpmalloc_global_statistics(rpmalloc_global_statistics_t* stats) {
 	stats->mapped_total = (size_t)atomic_load32(&_mapped_total) * _memory_page_size;
 	stats->unmapped_total = (size_t)atomic_load32(&_unmapped_total) * _memory_page_size;
 #endif
+#if ENABLE_GLOBAL_CACHE
 	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
 		void* global_span_ptr = atomic_load_ptr(&_memory_span_cache[iclass]);
 		while (global_span_ptr == CACHE_IN_PROGRESS) {
@@ -1884,4 +1937,5 @@ rpmalloc_global_statistics(rpmalloc_global_statistics_t* stats) {
 		uintptr_t global_span_count = (uintptr_t)global_span_ptr & ~_memory_span_mask;
 		stats->cached += global_span_count * (iclass + 1) * _memory_span_size;
 	}
+#endif
 }
