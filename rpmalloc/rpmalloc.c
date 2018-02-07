@@ -143,10 +143,8 @@
 #include <string.h>
 
 #if ENABLE_ASSERTS
-#  ifdef NDEBUG
-#    undef NDEBUG
-#  endif
-#  ifndef _DEBUG
+#  undef NDEBUG
+#  if defined(_MSC_VER) && !defined(_DEBUG)
 #    define _DEBUG
 #  endif
 #  include <assert.h>
@@ -229,9 +227,6 @@ atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref) {
 	return __sync_bool_compare_and_swap(&dst->nonatomic, ref, val);
 #endif
 }
-
-static void
-thread_yield(void);
 
 // Preconfigured limits and sizes
 
@@ -607,7 +602,7 @@ _memory_map_spans(heap_t* heap, size_t span_count) {
 
 //! Unmap memory pages for the given number of spans (or mark as unused if no partial unmappings)
 static void
-_memory_unmap_spans(span_t* span, size_t span_count, size_t align_offset) {
+_memory_unmap_spans(span_t* span, size_t span_count) {
 	if (!span->flags) {
 		_memory_unmap(span, _memory_span_size * span_count, span->data.list.align_offset, 1);
 		return;
@@ -649,7 +644,7 @@ _memory_unmap_span_list(span_t* span, size_t span_count) {
 	size_t list_size = span ? span->data.list.size : 0;
 	for (size_t ispan = 0; ispan < list_size; ++ispan) {
 		span_t* next_span = span->next_span;
-		_memory_unmap_spans(span, span_count, span->data.list.align_offset);
+		_memory_unmap_spans(span, span_count);
 		span = next_span;
 	}
 }
@@ -737,6 +732,8 @@ static atomic32_t _global_cache_counter;
 //! Insert the given list of memory page spans in the global cache
 static void
 _memory_cache_insert(atomicptr_t* cache, span_t* span, size_t span_count, size_t cache_limit) {
+	MEMORY_UNUSED(span_count);
+	MEMORY_UNUSED(cache_limit);
 	assert((span->data.list.size == 1) || (span->next_span != 0));
 	void* current_cache, *new_cache;
 	do {
@@ -1627,19 +1624,10 @@ _memory_unmap_os(void* address, size_t size, size_t offset, int release) {
 		assert("Failed to unmap virtual memory block" == 0);
 	}
 #else
+	MEMORY_UNUSED(release);
 	if (munmap(address, size)) {
 		assert("Failed to unmap virtual memory block" == 0);
 	}
-#endif
-}
-
-//! Yield the thread remaining timeslice
-static void
-thread_yield(void) {
-#ifdef PLATFORM_WINDOWS
-	YieldProcessor();
-#else
-	sched_yield();
 #endif
 }
 
@@ -1698,7 +1686,7 @@ _memory_guard_validate(void* p) {
 
 #if ENABLE_GUARDS
 static void
-_memory_guard_block(void* block, size_t size) {
+_memory_guard_block(void* block) {
 	if (block) {
 		size_t block_size = _memory_usable_size(block);
 		uint32_t* deadzone = block;
@@ -1708,7 +1696,7 @@ _memory_guard_block(void* block, size_t size) {
 	}
 }
 #define _memory_guard_pre_alloc(size) size += 32
-#define _memory_guard_post_alloc(block, size) _memory_guard_block(block, size); block = pointer_offset(block, 16); size -= 32
+#define _memory_guard_post_alloc(block, size) _memory_guard_block(block); block = pointer_offset(block, 16); size -= 32
 #else
 #define _memory_guard_pre_alloc(size)
 #define _memory_guard_post_alloc(block, size)
