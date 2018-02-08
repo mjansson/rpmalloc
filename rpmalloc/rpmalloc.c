@@ -159,17 +159,17 @@
 
 // Atomic access abstraction
 ALIGNED_STRUCT(atomic32_t, 4) {
-	int32_t nonatomic;
+	volatile int32_t nonatomic;
 };
 typedef struct atomic32_t atomic32_t;
 
 ALIGNED_STRUCT(atomic64_t, 8) {
-	int64_t nonatomic;
+	volatile int64_t nonatomic;
 };
 typedef struct atomic64_t atomic64_t;
 
 ALIGNED_STRUCT(atomicptr_t, 8) {
-	void* nonatomic;
+	volatile void* nonatomic;
 };
 typedef struct atomicptr_t atomicptr_t;
 
@@ -205,7 +205,7 @@ atomic_add32(atomic32_t* val, int32_t add) {
 
 static FORCEINLINE void*
 atomic_load_ptr(atomicptr_t* src) {
-	return src->nonatomic;
+	return (void*)((uintptr_t)src->nonatomic);
 }
 
 static FORCEINLINE void
@@ -416,6 +416,8 @@ _Static_assert(sizeof(size_class_t) == 8, "Size class size mismatch");
 struct global_cache_t {
 	//! Cache list pointer
 	atomicptr_t cache;
+	//! Cache size
+	atomic32_t size;
 	//! ABA counter
 	atomic32_t counter;
 };
@@ -673,6 +675,7 @@ _memory_unmap_span_list(span_t* span, size_t span_count) {
 		_memory_unmap_spans(span, span_count);
 		span = next_span;
 	}
+	assert(!span);
 }
 
 //! Make a span list out of a super span
@@ -786,18 +789,17 @@ _memory_span_list_doublelink_remove(span_t** head, span_t* span) {
 static void
 _memory_cache_insert(global_cache_t* cache, span_t* span, size_t span_count, size_t cache_limit) {
 	assert((span->data.list.size == 1) || (span->next_span != 0));
-	uintptr_t list_size = span->data.list.size;
+	int32_t list_size = (int32_t)span->data.list.size;
+	if (atomic_add32(&cache->size, list_size) > (int32_t)cache_limit) {
+		_memory_unmap_span_list(span, span_count);
+		atomic_add32(&cache->size, -list_size);
+		return;
+	}
 	void* current_cache, *new_cache;
 	do {
 		current_cache = atomic_load_ptr(&cache->cache);
-		span->prev_span = current_cache;
-		uintptr_t prev_size = ((uintptr_t)current_cache & ~_memory_span_mask);
-		uintptr_t new_size = prev_size + list_size;
-		if ((new_size > cache_limit) || (new_size & _memory_span_mask)) {
-			_memory_unmap_span_list(span, span_count);
-			return;
-		}
-		new_cache = (void*)((uintptr_t)span | new_size);
+		span->prev_span = (void*)((uintptr_t)current_cache & _memory_span_mask);
+		new_cache = (void*)((uintptr_t)span | ((uintptr_t)atomic_incr32(&cache->counter) & ~_memory_span_mask));
 	} while (!atomic_cas_ptr(&cache->cache, new_cache, current_cache));
 }
 
@@ -812,9 +814,11 @@ _memory_cache_extract(global_cache_t* cache) {
 			span_t* span = (void*)span_ptr;
 			//By accessing the span ptr before it is swapped out of list we assume that a contending thread
 			//does not manage to traverse the span to being unmapped before we access it
-			//void* new_cache = (void*)((uintptr_t)span->prev_span | ((uintptr_t)atomic_incr32(&cache->counter) & ~_memory_span_mask));
-			if (atomic_cas_ptr(&cache->cache, span->prev_span, global_span))
+			void* new_cache = (void*)((uintptr_t)span->prev_span | ((uintptr_t)atomic_incr32(&cache->counter) & ~_memory_span_mask));
+			if (atomic_cas_ptr(&cache->cache, new_cache, global_span)) {
+				atomic_add32(&cache->size, -(int32_t)span->data.list.size);
 				return span;
+			}
 		}
 	} while (span_ptr);
 	return 0;
@@ -827,14 +831,13 @@ _memory_cache_finalize(global_cache_t* cache, size_t span_count) {
 	span_t* span = (void*)((uintptr_t)current_cache & _memory_span_mask);
 	while (span) {
 		span_t* skip_span = (void*)((uintptr_t)span->prev_span & _memory_span_mask);
-		uintptr_t next_size = ((uintptr_t)span->prev_span & ~_memory_span_mask);
-		uintptr_t total_size = (uintptr_t)current_cache & ~_memory_span_mask;
-		current_cache = span->prev_span;
-		assert(total_size == ((int32_t)span->data.list.size + next_size));
+		atomic_add32(&cache->size, -(int32_t)span->data.list.size);
 		_memory_unmap_span_list(span, span_count);
 		span = skip_span;
 	}
+	assert(!atomic_load32(&cache->size));
 	atomic_store_ptr(&cache->cache, 0);
+	atomic_store32(&cache->size, 0);
 }
 
 #endif
@@ -1923,9 +1926,7 @@ rpmalloc_global_statistics(rpmalloc_global_statistics_t* stats) {
 #endif
 #if ENABLE_GLOBAL_CACHE
 	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
-		uintptr_t global_span_ptr = (uintptr_t)atomic_load_ptr(&_memory_span_cache[iclass].cache);
-		span_t* cache = (span_t*)(global_span_ptr & _memory_span_mask);
-		stats->cached += (size_t)(cache ? atomic_load32(&cache->heap_id) : 0) * (iclass + 1) * _memory_span_size;
+		stats->cached += (size_t)atomic_load32(&_memory_span_cache[iclass].size) * (iclass + 1) * _memory_span_size;
 	}
 #endif
 }

@@ -658,6 +658,8 @@ test_run(int argc, char** argv) {
 #  if defined(__IPHONE__) || (defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE) || (defined(TARGET_IPHONE_SIMULATOR) && TARGET_IPHONE_SIMULATOR)
 #    define NO_MAIN 1
 #  endif
+#elif (defined(__linux__) || defined(__linux))
+#  include <sched.h>
 #endif
 
 #if !defined(NO_MAIN)
