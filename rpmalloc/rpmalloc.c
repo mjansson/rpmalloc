@@ -94,7 +94,7 @@
 
 #ifndef ENABLE_GUARDS
 //! Enable overwrite/underwrite guards
-#define ENABLE_GUARDS             1
+#define ENABLE_GUARDS             0
 #endif
 
 #if !ENABLE_THREAD_CACHE
@@ -576,14 +576,10 @@ _memory_unmap(void* address, size_t size, size_t offset, int release) {
 #define SPAN_COUNT(flags) (1 + (((flags) >> 9) & 0x7f))
 #define SPAN_SET_REMAINS(flags, remains) flags = ((uint16_t)(((flags) & 0xfe03) | ((uint16_t)((remains) - 1) << 2))); assert((remains) < 128)
 
-static atomic32_t _created_masters;
-static atomic32_t _created_subspans;
-static atomic32_t _freed_masters;
-static atomic32_t _freed_subspans;
-
 static void
 _memory_set_span_remainder_as_reserved(heap_t* heap, span_t* span, size_t use_count) {
 	size_t current_count = SPAN_COUNT(span->flags);
+	assert(!SPAN_HAS_FLAG(span->flags, SPAN_FLAG_MASTER) || !SPAN_HAS_FLAG(span->flags, SPAN_FLAG_SUBSPAN));
 	assert((current_count > 1) && (current_count < 127));
 	assert(!heap->spans_reserved);
 	assert(SPAN_COUNT(span->flags) == current_count);
@@ -593,7 +589,6 @@ _memory_set_span_remainder_as_reserved(heap_t* heap, span_t* span, size_t use_co
 	if (!SPAN_HAS_FLAG(span->flags, SPAN_FLAG_MASTER | SPAN_FLAG_SUBSPAN)) {
 		heap->span_reserve_master = span;
 		span->flags = SPAN_MAKE_FLAGS(SPAN_FLAG_MASTER, current_count, use_count);
-		atomic_incr32(&_created_masters);
 #if ENABLE_STATISTICS
 		atomic_add32(&_reserved_spans, (int32_t)current_count);
 #endif
@@ -612,6 +607,7 @@ _memory_set_span_remainder_as_reserved(heap_t* heap, span_t* span, size_t use_co
 		assert(SPAN_REMAINS(master->flags) >= current_count);
 		span->flags = SPAN_MAKE_FLAGS(SPAN_FLAG_SUBSPAN, distance, use_count);
 	}
+	assert((SPAN_COUNT(span->flags) + heap->spans_reserved) == current_count);
 }
 
 //! Map in memory pages for the given number of spans (or use previously reserved pages)
@@ -625,7 +621,6 @@ _memory_map_spans(heap_t* heap, size_t span_count) {
 		uint16_t distance = (uint16_t)((uintptr_t)pointer_diff(span, heap->span_reserve_master) >> _memory_span_size_shift);
 		span->flags = SPAN_MAKE_FLAGS(SPAN_FLAG_SUBSPAN, distance, span_count);
 		span->data.block.align_offset = 0;
-		atomic_incr32(&_created_subspans);
 		return span;
 	}
 
@@ -644,6 +639,7 @@ _memory_map_spans(heap_t* heap, size_t span_count) {
 static void
 _memory_unmap_spans(span_t* span) {
 	size_t span_count = SPAN_COUNT(span->flags);
+	assert(!SPAN_HAS_FLAG(span->flags, SPAN_FLAG_MASTER) || !SPAN_HAS_FLAG(span->flags, SPAN_FLAG_SUBSPAN));
 	if (!SPAN_HAS_FLAG(span->flags, SPAN_FLAG_MASTER | SPAN_FLAG_SUBSPAN)) {
 		_memory_unmap(span, _memory_span_size * span_count, span->data.list.align_offset, 1);
 		return;
@@ -654,29 +650,26 @@ _memory_unmap_spans(span_t* span) {
 	uint32_t remains = SPAN_REMAINS(master->flags);
 
 	assert(is_master || SPAN_HAS_FLAG(span->flags, SPAN_FLAG_SUBSPAN));
-	assert(SPAN_HAS_FLAG(master->flags, SPAN_FLAG_MASTER) && !SPAN_HAS_FLAG(master->flags, SPAN_FLAG_SUBSPAN));
+	assert(SPAN_HAS_FLAG(master->flags, SPAN_FLAG_MASTER));
 	assert(remains >= span_count);
 
 	remains = ((uint32_t)span_count >= remains) ? 0 : (remains - (uint32_t)span_count);
 	if (!is_master) {
 		assert(span->data.list.align_offset == 0);
-		assert(span_count == SPAN_COUNT(span->flags));
 		_memory_unmap(span, span_count * _memory_span_size, 0, 0);
-#if ENABLE_STATISTICS
-		atomic_add32(&_reserved_spans, -(int32_t)span_count);
-#endif
-		atomic_incr32(&_freed_subspans);
 	}
 	else {
-		atomic_incr32(&_freed_masters);
+		//Special double flag to denote an unmapped master
+		span->flags |= SPAN_FLAG_MASTER | SPAN_FLAG_SUBSPAN;
 	}
-	if (!remains) {
-		uint32_t master_span_count = SPAN_COUNT(master->flags);
-		assert(!is_master || (span_count == master_span_count));
-		_memory_unmap(master, master_span_count * _memory_span_size, master->data.list.align_offset, 1);
 #if ENABLE_STATISTICS
-		atomic_add32(&_reserved_spans, -(int32_t)master_span_count);
+	atomic_add32(&_reserved_spans, -(int32_t)span_count);
 #endif
+
+	if (!remains) {
+		assert(SPAN_HAS_FLAG(master->flags, SPAN_FLAG_MASTER) && SPAN_HAS_FLAG(master->flags, SPAN_FLAG_SUBSPAN));
+		span_count = SPAN_COUNT(master->flags);
+		_memory_unmap(master, span_count * _memory_span_size, master->data.list.align_offset, 1);
 	}
 	else {
 		SPAN_SET_REMAINS(master->flags, remains);
@@ -700,6 +693,8 @@ static span_t*
 _memory_span_split(span_t* span, size_t use_count) {
 	uint16_t distance = 0;
 	size_t current_count = SPAN_COUNT(span->flags);
+	assert(current_count > use_count);
+	assert(!SPAN_HAS_FLAG(span->flags, SPAN_FLAG_MASTER) || !SPAN_HAS_FLAG(span->flags, SPAN_FLAG_SUBSPAN));
 	if (!SPAN_HAS_FLAG(span->flags, SPAN_FLAG_MASTER | SPAN_FLAG_SUBSPAN)) {
 		span->flags = SPAN_MAKE_FLAGS(SPAN_FLAG_MASTER, current_count, use_count);
 #if ENABLE_STATISTICS
@@ -1500,6 +1495,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 
 	atomic_store32(&_memory_heap_id, 0);
 	atomic_store32(&_memory_orphan_counter, 0);
+	atomic_store32(&_memory_active_heaps, 0);
 
 	//Setup all small and medium size classes
 	size_t iclass;
@@ -1536,12 +1532,24 @@ rpmalloc_finalize(void) {
 		while (heap) {
 			_memory_deallocate_deferred(heap, 0);
 
-			//Free span caches
+			//Free span caches (other thread might have deferred after the thread using this heap finalized)
 #if ENABLE_THREAD_CACHE
 			for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass)
 				_memory_unmap_span_list(heap->span_cache[iclass]);
 #endif
+			heap = heap->next_heap;
+		}
+	}
 
+#if ENABLE_GLOBAL_CACHE
+	//Free global caches
+	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass)
+		_memory_cache_finalize(&_memory_span_cache[iclass]);
+#endif
+
+	for (size_t list_idx = 0; list_idx < HEAP_ARRAY_SIZE; ++list_idx) {
+		heap_t* heap = atomic_load_ptr(&_memory_heaps[list_idx]);
+		while (heap) {
 			if (heap->spans_reserved) {
 				span_t* span = heap->span_reserve;
 				span_t* master = heap->span_reserve_master;
@@ -1556,10 +1564,11 @@ rpmalloc_finalize(void) {
 				remains = ((uint32_t)heap->spans_reserved >= remains) ? 0 : (remains - (uint32_t)heap->spans_reserved);
 				if (!remains) {
 					uint32_t master_span_count = SPAN_COUNT(master->flags);
-					_memory_unmap(master, master_span_count * _memory_span_size, master->data.list.align_offset, 1);
 #if ENABLE_STATISTICS
-					atomic_add32(&_reserved_spans, -(int32_t)master_span_count);
+					if (!SPAN_HAS_FLAG(master->flags, SPAN_FLAG_SUBSPAN))
+						atomic_add32(&_reserved_spans, -(int32_t)master_span_count);
 #endif
+					_memory_unmap(master, master_span_count * _memory_span_size, master->data.list.align_offset, 1);
 				}
 				else {
 					SPAN_SET_REMAINS(master->flags, remains);
@@ -1576,12 +1585,6 @@ rpmalloc_finalize(void) {
 	atomic_store_ptr(&_memory_orphan_heaps, 0);
 	atomic_thread_fence_release();
 
-	//Free global caches
-#if ENABLE_GLOBAL_CACHE
-	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass)
-		_memory_cache_finalize(&_memory_span_cache[iclass]);
-#endif
-
 #if ENABLE_STATISTICS
 	//If you hit these asserts you probably have memory leaks or double frees in your code
 	assert(!atomic_load32(&_mapped_pages));
@@ -1597,7 +1600,7 @@ rpmalloc_finalize(void) {
 void
 rpmalloc_thread_initialize(void) {
 	if (!get_thread_heap()) {
-		heap_t* heap =  _memory_allocate_heap();
+		heap_t* heap = _memory_allocate_heap();
 #if ENABLE_STATISTICS
 		heap->thread_to_global = 0;
 		heap->global_to_thread = 0;
