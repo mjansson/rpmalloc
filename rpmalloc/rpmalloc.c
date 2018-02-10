@@ -641,7 +641,7 @@ _memory_unmap_spans(span_t* span) {
 	size_t span_count = SPAN_COUNT(span->flags);
 	assert(!SPAN_HAS_FLAG(span->flags, SPAN_FLAG_MASTER) || !SPAN_HAS_FLAG(span->flags, SPAN_FLAG_SUBSPAN));
 	if (!SPAN_HAS_FLAG(span->flags, SPAN_FLAG_MASTER | SPAN_FLAG_SUBSPAN)) {
-		_memory_unmap(span, _memory_span_size * span_count, span->data.list.align_offset, 1);
+		_memory_unmap(span, span_count * _memory_span_size, span->data.list.align_offset, 1);
 		return;
 	}
 
@@ -657,19 +657,21 @@ _memory_unmap_spans(span_t* span) {
 	if (!is_master) {
 		assert(span->data.list.align_offset == 0);
 		_memory_unmap(span, span_count * _memory_span_size, 0, 0);
+#if ENABLE_STATISTICS
+		atomic_add32(&_reserved_spans, -(int32_t)span_count);
+#endif
 	}
 	else {
 		//Special double flag to denote an unmapped master
 		span->flags |= SPAN_FLAG_MASTER | SPAN_FLAG_SUBSPAN;
 	}
-#if ENABLE_STATISTICS
-	atomic_add32(&_reserved_spans, -(int32_t)span_count);
-#endif
-
 	if (!remains) {
 		assert(SPAN_HAS_FLAG(master->flags, SPAN_FLAG_MASTER) && SPAN_HAS_FLAG(master->flags, SPAN_FLAG_SUBSPAN));
 		span_count = SPAN_COUNT(master->flags);
 		_memory_unmap(master, span_count * _memory_span_size, master->data.list.align_offset, 1);
+#if ENABLE_STATISTICS
+		atomic_add32(&_reserved_spans, -(int32_t)span_count);
+#endif
 	}
 	else {
 		SPAN_SET_REMAINS(master->flags, remains);
@@ -679,7 +681,7 @@ _memory_unmap_spans(span_t* span) {
 //! Unmap a single linked list of spans
 static void
 _memory_unmap_span_list(span_t* span) {
-	size_t list_size = span ? span->data.list.size : 0;
+	size_t list_size = span->data.list.size;
 	for (size_t ispan = 0; ispan < list_size; ++ispan) {
 		span_t* next_span = span->next_span;
 		_memory_unmap_spans(span);
@@ -927,15 +929,19 @@ _memory_heap_cache_extract(heap_t* heap, size_t span_count) {
 		}
 	}
 	if (span) {
-		assert(SPAN_COUNT(span->flags) > span_count);
+		size_t got_count = SPAN_COUNT(span->flags);
+		assert(got_count > span_count);
+		span_t* subspan = _memory_span_split(span, span_count);
+		assert((SPAN_COUNT(span->flags) + SPAN_COUNT(subspan->flags)) == got_count);
+		assert(SPAN_COUNT(span->flags) == span_count);
 		if (!heap->spans_reserved) {
-			_memory_set_span_remainder_as_reserved(heap, span, span_count);
+			heap->spans_reserved = got_count - span_count;
+			heap->span_reserve = subspan;
+			heap->span_reserve_master = pointer_offset(subspan, -(int32_t)SPAN_DISTANCE(subspan->flags) * (int32_t)_memory_span_size);
 		}
 		else {
-			span_t* subspan = _memory_span_split(span, span_count);
 			_memory_heap_cache_insert(heap, subspan);
 		}
-		assert(SPAN_COUNT(span->flags) == span_count);
 		return span;
 	}
 #endif
@@ -1565,8 +1571,7 @@ rpmalloc_finalize(void) {
 				if (!remains) {
 					uint32_t master_span_count = SPAN_COUNT(master->flags);
 #if ENABLE_STATISTICS
-					if (!SPAN_HAS_FLAG(master->flags, SPAN_FLAG_SUBSPAN))
-						atomic_add32(&_reserved_spans, -(int32_t)master_span_count);
+					atomic_add32(&_reserved_spans, -(int32_t)master_span_count);
 #endif
 					_memory_unmap(master, master_span_count * _memory_span_size, master->data.list.align_offset, 1);
 				}
