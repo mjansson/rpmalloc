@@ -643,6 +643,7 @@ _memory_unmap_defer(int32_t heap_id, span_t* span) {
 	heap_t* heap = _memory_heap_lookup(heap_id);
 	if (!heap)
 		return 0;
+	atomic_store32(&span->heap_id, heap_id);
 	void* last_ptr;
 	do {
 		last_ptr = atomic_load_ptr(&heap->defer_unmap);
@@ -672,7 +673,7 @@ _memory_unmap_spans(heap_t* heap, span_t* span) {
 	remains = ((uint32_t)span_count >= remains) ? 0 : (remains - (uint32_t)span_count);
 	//Check if we own the master span if we need to store remaining spans
 	int32_t master_heap_id = atomic_load32(&master->heap_id);
-	if (/*remains &&*/ heap && (master_heap_id != heap->id)) {
+	if (heap && (master_heap_id != heap->id)) {
 		if (_memory_unmap_defer(master_heap_id, span))
 			return;
 	}
@@ -711,10 +712,13 @@ _memory_unmap_deferred(heap_t* heap, size_t wanted_count) {
 	span_t* found_span = 0;
 	do {
 		void* next = *(void**)pointer_offset(span, SPAN_HEADER_SIZE);
-		if (!found_span && SPAN_COUNT(span->flags) == wanted_count)
+		if (!found_span && SPAN_COUNT(span->flags) == wanted_count) {
+			assert(!SPAN_HAS_FLAG(span->flags, SPAN_FLAG_MASTER) || !SPAN_HAS_FLAG(span->flags, SPAN_FLAG_SUBSPAN));
 			found_span = span;
-		else
+		}
+		else {
 			_memory_unmap_spans(heap, span);
+		}
 		span = next;
 	} while (span);
 	return found_span;
@@ -916,7 +920,7 @@ _memory_global_cache_insert(heap_t* heap, span_t* span) {
 	const size_t cache_limit_min = GLOBAL_CACHE_MULTIPLIER * (span_count == 1 ? MIN_SPAN_CACHE_SIZE : MIN_LARGE_SPAN_CACHE_SIZE);
 	_memory_cache_insert(heap, &_memory_span_cache[span_count - 1], span, cache_limit > cache_limit_min ? cache_limit : cache_limit_min);
 #else
-	_memory_unmap_span_list(span, span_count);
+	_memory_unmap_span_list(heap, span);
 #endif
 }
 
@@ -1601,8 +1605,6 @@ rpmalloc_finalize(void) {
 		heap_t* heap = atomic_load_ptr(&_memory_heaps[list_idx]);
 		atomic_store_ptr(&_memory_heaps[list_idx], 0);
 		while (heap) {
-			_memory_unmap_deferred(heap, 0);
-
 			if (heap->spans_reserved) {
 				span_t* span = heap->span_reserve;
 				span_t* master = heap->span_reserve_master;
@@ -1626,6 +1628,8 @@ rpmalloc_finalize(void) {
 					SPAN_SET_REMAINS(master->flags, remains);
 				}
 			}
+
+			_memory_unmap_deferred(heap, 0);
 
 			heap_t* next_heap = heap->next_heap;
 			_memory_unmap(heap, (1 + (sizeof(heap_t) >> _memory_page_size_shift)) * _memory_page_size, heap->align_offset, 1);
