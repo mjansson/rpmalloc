@@ -58,7 +58,7 @@
 
 #ifndef DEFAULT_SPAN_MAP_COUNT
 //! Default number of spans to map in call to map more virtual memory
-#define DEFAULT_SPAN_MAP_COUNT    8
+#define DEFAULT_SPAN_MAP_COUNT    16
 #endif
 
 // Presets for cache limits
@@ -69,27 +69,6 @@
 #define ENABLE_UNLIMITED_CACHE      0
 #endif
 
-#ifndef ENABLE_SPACE_PRIORITY_CACHE
-//! Minimize overhead
-#define ENABLE_SPACE_PRIORITY_CACHE 0
-#endif
-
-#if ENABLE_SPACE_PRIORITY_CACHE
-// Space priority cache limits
-#define MIN_SPAN_CACHE_SIZE 8
-#define MIN_SPAN_CACHE_RELEASE 8
-#define MAX_SPAN_CACHE_DIVISOR 16
-#define MIN_LARGE_SPAN_CACHE_SIZE 2
-#define MIN_LARGE_SPAN_CACHE_RELEASE 2
-#define MAX_LARGE_SPAN_CACHE_DIVISOR 32
-#if ENABLE_GLOBAL_CACHE
-#define GLOBAL_CACHE_MULTIPLIER 1
-#endif
-#ifndef DEFAULT_SPAN_MAP_COUNT
-#define DEFAULT_SPAN_MAP_COUNT 4
-#endif
-#else
-// Default - performance priority cache limits
 //! Minimum cache size to remain after a release to global cache
 #define MIN_SPAN_CACHE_SIZE 64
 //! Minimum number of spans to transfer between thread and global cache
@@ -102,10 +81,9 @@
 #define MIN_LARGE_SPAN_CACHE_RELEASE 4
 //! Maximum cache size divisor, large spans (max cache size will be max allocation count divided by this divisor)
 #define MAX_LARGE_SPAN_CACHE_DIVISOR 16
-//! Multiplier for global span cache limit (max cache size will be calculated like thread cache and multiplied with this)
 #if ENABLE_GLOBAL_CACHE
+//! Multiplier for global span cache limit (max cache size will be calculated like thread cache and multiplied with this)
 #define GLOBAL_CACHE_MULTIPLIER 8
-#endif
 #endif
 #endif
 
@@ -573,28 +551,30 @@ _memory_counter_increase(span_counter_t* counter, uint32_t* global_counter, size
 #  define _memory_counter_increase(counter, global_counter, span_count) do {} while (0)
 #endif
 
+#if ENABLE_STATISTICS
+#  define _memory_statistics_add(atomic_counter, value) atomic_add32(atomic_counter, (int32_t)(value))
+#  define _memory_statistics_sub(atomic_counter, value) atomic_add32(atomic_counter, -(int32_t)(value))
+#else
+#  define _memory_statistics_add(atomic_counter, value) do {} while(0)
+#  define _memory_statistics_sub(atomic_counter, value) do {} while(0)
+#endif
+
 //! Map more virtual memory
 static void*
 _memory_map(size_t size, size_t* offset) {
-#if ENABLE_STATISTICS
-	const size_t page_count = (size >> _memory_page_size_shift);
-	atomic_add32(&_mapped_pages, (int32_t)page_count);
-	atomic_add32(&_mapped_total, (int32_t)page_count);
-#endif
 	assert(!(size % _memory_page_size));
+	_memory_statistics_add(&_mapped_pages, (size >> _memory_page_size_shift));
+	_memory_statistics_add(&_mapped_total, (size >> _memory_page_size_shift));
 	return _memory_config.memory_map(size, offset);
 }
 
 //! Unmap virtual memory
 static void
 _memory_unmap(void* address, size_t size, size_t offset, int release) {
-#if ENABLE_STATISTICS
-	const size_t page_count = (size >> _memory_page_size_shift);
-	atomic_add32(&_mapped_pages, -(int32_t)page_count);
-	atomic_add32(&_unmapped_total, (int32_t)page_count);
-#endif
 	assert(!((uintptr_t)address & ~_memory_span_mask));
 	assert(!(size % _memory_page_size));
+	_memory_statistics_sub(&_mapped_pages, (size >> _memory_page_size_shift));
+	_memory_statistics_add(&_unmapped_total, (size >> _memory_page_size_shift));
 	_memory_config.memory_unmap(address, size, offset, release);
 }
 
@@ -630,9 +610,7 @@ _memory_set_span_remainder_as_reserved(heap_t* heap, span_t* span, size_t use_co
 		atomic_thread_fence_release();
 		heap->span_reserve_master = span;
 		span->flags = SPAN_MAKE_FLAGS(SPAN_FLAG_MASTER, current_count, use_count);
-#if ENABLE_STATISTICS
-		atomic_add32(&_reserved_spans, (int32_t)current_count);
-#endif
+		_memory_statistics_add(&_reserved_spans, current_count);
 	}
 	else if (SPAN_HAS_FLAG(span->flags, SPAN_FLAG_MASTER)) {
 		//Only owner heap thread can modify a master span
@@ -724,9 +702,7 @@ _memory_unmap_spans(heap_t* heap, span_t* span) {
 		//Directly unmap subspans
 		assert(span->data.list.align_offset == 0);
 		_memory_unmap(span, span_count * _memory_span_size, 0, 0);
-#if ENABLE_STATISTICS
-		atomic_add32(&_reserved_spans, -(int32_t)span_count);
-#endif
+		_memory_statistics_sub(&_reserved_spans, span_count);
 	}
 	else {
 		//Special double flag to denote an unmapped master
@@ -742,9 +718,7 @@ _memory_unmap_spans(heap_t* heap, span_t* span) {
 		assert(SPAN_HAS_FLAG(master->flags, SPAN_FLAG_MASTER) && SPAN_HAS_FLAG(master->flags, SPAN_FLAG_SUBSPAN));
 		span_count = SPAN_COUNT(master->flags);
 		_memory_unmap(master, span_count * _memory_span_size, master->data.list.align_offset, 1);
-#if ENABLE_STATISTICS
-		atomic_add32(&_reserved_spans, -(int32_t)span_count);
-#endif
+		_memory_statistics_sub(&_reserved_spans, span_count);
 	}
 	else {
 		//Set remaining spans
@@ -809,9 +783,7 @@ _memory_span_split(heap_t* heap, span_t* span, size_t use_count) {
 		atomic_store32(&span->heap_id, heap->id);
 		atomic_thread_fence_release();
 		span->flags = SPAN_MAKE_FLAGS(SPAN_FLAG_MASTER, current_count, use_count);
-#if ENABLE_STATISTICS
-		atomic_add32(&_reserved_spans, (int32_t)current_count);
-#endif
+		_memory_statistics_add(&_reserved_spans, current_count);
 	}
 	else if (SPAN_HAS_FLAG(span->flags, SPAN_FLAG_MASTER)) {
 		//Only valid to call on master span if we own it
@@ -1604,8 +1576,8 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		span_size = (64 * 1024);
 	if (span_size > (256 * 1024))
 		span_size = (256 * 1024);
-	_memory_span_size = 512;
-	_memory_span_size_shift = 9;
+	_memory_span_size = 4096;
+	_memory_span_size_shift = 12;
 	while (_memory_span_size < span_size) {
 		_memory_span_size <<= 1;
 		++_memory_span_size_shift;
@@ -1695,15 +1667,11 @@ rpmalloc_finalize(void) {
 				assert(master != span);
 				assert(remains >= heap->spans_reserved);
 				_memory_unmap(span, heap->spans_reserved * _memory_span_size, 0, 0);
-#if ENABLE_STATISTICS
-				atomic_add32(&_reserved_spans, -(int32_t)heap->spans_reserved);
-#endif
+				_memory_statistics_sub(&_reserved_spans, heap->spans_reserved);
 				remains = ((uint32_t)heap->spans_reserved >= remains) ? 0 : (remains - (uint32_t)heap->spans_reserved);
 				if (!remains) {
 					uint32_t master_span_count = SPAN_COUNT(master->flags);
-#if ENABLE_STATISTICS
-					atomic_add32(&_reserved_spans, -(int32_t)master_span_count);
-#endif
+					_memory_statistics_sub(&_reserved_spans, master_span_count);
 					_memory_unmap(master, master_span_count * _memory_span_size, master->data.list.align_offset, 1);
 				}
 				else {
@@ -1880,7 +1848,7 @@ _memory_guard_validate(void* p) {
 	}
 	uint32_t* deadzone = block_start;
 	//If these asserts fire, you have written to memory before the block start
-	for (int i = 0; i < 4; ++i) {
+	for (int i = 0; i < 8; ++i) {
 		if (deadzone[i] != MAGIC_GUARD) {
 			if (_memory_config.memory_overwrite)
 				_memory_config.memory_overwrite(p);
@@ -1890,9 +1858,9 @@ _memory_guard_validate(void* p) {
 		}
 		deadzone[i] = 0;
 	}
-	deadzone = (uint32_t*)pointer_offset(block_start, block_size - 16);
+	deadzone = (uint32_t*)pointer_offset(block_start, block_size - 32);
 	//If these asserts fire, you have written to memory after the block end
-	for (int i = 0; i < 4; ++i) {
+	for (int i = 0; i < 8; ++i) {
 		if (deadzone[i] != MAGIC_GUARD) {
 			if (_memory_config.memory_overwrite)
 				_memory_config.memory_overwrite(p);
@@ -1913,13 +1881,15 @@ _memory_guard_block(void* block) {
 	if (block) {
 		size_t block_size = _memory_usable_size(block);
 		uint32_t* deadzone = block;
-		deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] = MAGIC_GUARD;
-		deadzone = (uint32_t*)pointer_offset(block, block_size - 16);
-		deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] = MAGIC_GUARD;
+		deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] =
+		deadzone[4] = deadzone[5] = deadzone[6] = deadzone[7] = MAGIC_GUARD;
+		deadzone = (uint32_t*)pointer_offset(block, block_size - 32);
+		deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] =
+		deadzone[4] = deadzone[5] = deadzone[6] = deadzone[7] = MAGIC_GUARD;
 	}
 }
-#define _memory_guard_pre_alloc(size) size += 32
-#define _memory_guard_post_alloc(block, size) _memory_guard_block(block); block = pointer_offset(block, 16); size -= 32
+#define _memory_guard_pre_alloc(size) size += 64
+#define _memory_guard_post_alloc(block, size) _memory_guard_block(block); block = pointer_offset(block, 32); size -= 64
 #else
 #define _memory_guard_pre_alloc(size)
 #define _memory_guard_post_alloc(block, size)
@@ -1999,7 +1969,7 @@ rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize,
 	}
 #endif
 	void* block;
-	if (alignment > 16) {
+	if (alignment > 32) {
 		block = rpaligned_alloc(alignment, size);
 		if (!(flags & RPMALLOC_NO_PRESERVE))
 			memcpy(block, ptr, oldsize < size ? oldsize : size);
@@ -2016,7 +1986,7 @@ rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize,
 
 RPMALLOC_RESTRICT void*
 rpaligned_alloc(size_t alignment, size_t size) {
-	if (alignment <= 16)
+	if (alignment <= 32)
 		return rpmalloc(size);
 
 #if ENABLE_VALIDATE_ARGS
@@ -2052,7 +2022,7 @@ rpmalloc_usable_size(void* ptr) {
 	if (ptr) {
 		size = _memory_usable_size(ptr);
 #if ENABLE_GUARDS
-		size -= 32;
+		size -= 64;
 #endif
 	}
 	return size;

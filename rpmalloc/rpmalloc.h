@@ -79,7 +79,7 @@ typedef struct rpmalloc_config_t {
 	//! Size of memory pages. If set to 0, rpmalloc will use system calls to determine the page size.
 	//  The page size MUST be a power of two in [512,16384] range (2^9 to 2^14).
 	size_t page_size;
-	//! Size of a span of memory pages. MUST be a multiple of page size, and in [512,262144] range (unless 0).
+	//! Size of a span of memory pages. MUST be a multiple of page size, and in [4096,262144] range (unless 0).
 	//  Set to 0 to use the default span size. All memory mapping requests to memory_map will be made with
 	//  size set to a multiple of the span size.
 	size_t span_size;
