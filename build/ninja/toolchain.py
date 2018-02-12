@@ -139,7 +139,7 @@ class Toolchain(object):
       elif localarch == 'i686':
         self.archs = ['x86']
       else:
-        self.archs = [localarch]
+        self.archs = [str(localarch)]
     elif self.target.is_macos():
       self.archs = ['x86-64']
     elif self.target.is_ios():
@@ -159,7 +159,7 @@ class Toolchain(object):
       self.initialize_default_configs()
 
   def initialize_default_configs(self):
-    self.configs = ['debug', 'release'] #, 'profile', 'deploy']
+    self.configs = ['debug', 'release']
 
   def initialize_toolchain(self):
     if self.android != None:
