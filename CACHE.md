@@ -1,5 +1,5 @@
 # Thread caches
-rpmalloc has a thread cache of free memory blocks which can be used in allocations without interfering with other threads or going to system to map more memory, as well as a global cache shared by all threads to let pages flow between threads. Configuring the size of these caches can be crucial to obtaining good performance while minimizing memory overhead blowup. Below is a simple case study using the benchmark tool to compare different thread cache configurations for rpmalloc.
+rpmalloc has a thread cache of free memory blocks which can be used in allocations without interfering with other threads or going to system to map more memory, as well as a global cache shared by all threads to let spans of memory pages flow between threads. Configuring the size of these caches can be crucial to obtaining good performance while minimizing memory overhead blowup. Below is a simple case study using the benchmark tool to compare different thread cache configurations for rpmalloc.
 
 The rpmalloc thread cache is configured to be unlimited, performance oriented as meaning default values, size oriented where both thread cache and global cache is reduced significantly, or disabled where both thread and global caches are disabled and completely free pages are directly unmapped.
 

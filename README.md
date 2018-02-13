@@ -59,7 +59,7 @@ The configure + ninja build also produces two shared object/dynamic libraries. T
 The latest stable release is available in the master branch. For latest development code, use the develop branch.
 
 # Cache configuration options
-Free memory pages are cached both per thread and in a global cache for all threads. The size of the thread caches is determined by an adaptive scheme where each cache is limited by a percentage of the maximum allocation count of the corresponding size class. The size of the global caches is determined by a multiple of the maximum of all thread caches. The factors controlling the cache sizes can be set by either defining one of four presets, or by editing the individual defines in the `rpmalloc.c` source file for fine tuned control. If you do not define any of the following three directives, the default preset will be used which is to increase caches and prioritize performance over memory overhead (but not making caches unlimited).
+Free memory pages are cached both per thread and in a global cache for all threads. The size of the thread caches is determined by an adaptive scheme where each cache is limited by a percentage of the maximum allocation count of the corresponding size class. The size of the global caches is determined by a multiple of the maximum of all thread caches. The factors controlling the cache sizes can be set by editing the individual defines in the `rpmalloc.c` source file for fine tuned control.
 
 __ENABLE_UNLIMITED_CACHE__: By default defined to 0, set to 1 to make all caches infinite, i.e never release spans to global cache unless thread finishes and never unmap memory pages back to the OS. Highest performance but largest memory overhead.
 
