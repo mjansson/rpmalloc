@@ -23,10 +23,7 @@
 #define ENABLE_THREAD_CACHE       1
 #endif
 
-#if !ENABLE_THREAD_CACHE
-#  undef ENABLE_GLOBAL_CACHE
-#  define ENABLE_GLOBAL_CACHE     0
-#elif !defined(ENABLE_GLOBAL_CACHE)
+#ifndef ENABLE_GLOBAL_CACHE
 //! Enable global cache shared between all threads, requires thread cache
 #define ENABLE_GLOBAL_CACHE       1
 #endif
@@ -56,17 +53,14 @@
 #define ENABLE_GUARDS             0
 #endif
 
+#ifndef ENABLE_UNLIMITED_CACHE
+//! Unlimited cache disables any cache limitations
+#define ENABLE_UNLIMITED_CACHE    0
+#endif
+
 #ifndef DEFAULT_SPAN_MAP_COUNT
 //! Default number of spans to map in call to map more virtual memory
 #define DEFAULT_SPAN_MAP_COUNT    16
-#endif
-
-// Presets for cache limits
-#if ENABLE_THREAD_CACHE
-
-#ifndef ENABLE_UNLIMITED_CACHE
-//! Unlimited cache disables any cache limitations
-#define ENABLE_UNLIMITED_CACHE      0
 #endif
 
 //! Minimum cache size to remain after a release to global cache
@@ -81,10 +75,21 @@
 #define MIN_LARGE_SPAN_CACHE_RELEASE 4
 //! Maximum cache size divisor, large spans (max cache size will be max allocation count divided by this divisor)
 #define MAX_LARGE_SPAN_CACHE_DIVISOR 16
-#if ENABLE_GLOBAL_CACHE
 //! Multiplier for global span cache limit (max cache size will be calculated like thread cache and multiplied with this)
 #define GLOBAL_CACHE_MULTIPLIER 8
+
+#if !ENABLE_THREAD_CACHE
+#  undef ENABLE_GLOBAL_CACHE
+#  define ENABLE_GLOBAL_CACHE 0
+#  undef MIN_SPAN_CACHE_SIZE
+#  undef MIN_SPAN_CACHE_RELEASE
+#  undef MAX_SPAN_CACHE_DIVISOR
+#  undef MIN_LARGE_SPAN_CACHE_SIZE
+#  undef MIN_LARGE_SPAN_CACHE_RELEASE
+#  undef MAX_LARGE_SPAN_CACHE_DIVISOR
 #endif
+#if !ENABLE_GLOBAL_CACHE
+#  undef GLOBAL_CACHE_MULTIPLIER
 #endif
 
 // Platform and arch specifics
@@ -1578,7 +1583,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		span_size = (256 * 1024);
 	_memory_span_size = 4096;
 	_memory_span_size_shift = 12;
-	while (_memory_span_size < span_size) {
+	while ((_memory_span_size < span_size) || (_memory_span_size < _memory_page_size)) {
 		_memory_span_size <<= 1;
 		++_memory_span_size_shift;
 	}
