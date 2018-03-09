@@ -1974,9 +1974,14 @@ rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize,
 	void* block;
 	if (alignment > 32) {
 		block = rpaligned_alloc(alignment, size);
-		if (!(flags & RPMALLOC_NO_PRESERVE))
-			memcpy(block, ptr, oldsize < size ? oldsize : size);
-		rpfree(ptr);
+		if (ptr) {
+			if (!(flags & RPMALLOC_NO_PRESERVE)) {
+				if (!oldsize)
+					oldsize = _memory_usable_size(ptr);
+				memcpy(block, ptr, oldsize < size ? oldsize : size);
+			}
+			rpfree(ptr);
+		}
 	}
 	else {
 		_memory_guard_validate(ptr);
