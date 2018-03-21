@@ -1782,18 +1782,44 @@ _memory_map_os(size_t size, size_t* offset) {
 
 	if (padding) {
 		size_t final_padding = padding - ((uintptr_t)ptr & ~_memory_span_mask);
-#if PLATFORM_POSIX
-		//Unmap the last unused pages, for Windows this is done with the final VirtualFree with MEM_RELEASE call
+		//Unmap the last unused pages
 		size_t remains = padding - final_padding;
-		if (remains)
-			munmap(pointer_offset(ptr, final_padding + size), remains);
+		if (final_padding) {
+#if PLATFORM_WINDOWS
+			//Avoid extra system calls, just keep pages mapped until MEM_RELEASE since they will not allocate actual physical pages
+			//if (!VirtualFree(ptr, final_padding, MEM_DECOMMIT)) {
+			//	DWORD err = GetLastError();
+			//	assert("Failed to decommit pre-padding of virtual memory block" == 0);
+			//}
+#else
+			if (munmap(ptr, final_padding)) {
+				assert("Failed to unmap pre-padding of virtual memory block" == 0);
+			}
 #endif
+		}
+		if (remains) {
+#if PLATFORM_WINDOWS
+			//if (!VirtualFree(pointer_offset(ptr, final_padding + size), remains, MEM_DECOMMIT)) {
+			//	DWORD err = GetLastError();
+			//	assert("Failed to decommit post-padding of virtual memory block" == 0);
+			//}
+#else
+			if (munmap(pointer_offset(ptr, final_padding + size), remains)) {
+				assert("Failed to unmap post-padding of virtual memory block" == 0);
+			}
+#endif
+		}
 		ptr = pointer_offset(ptr, final_padding);
 		assert(final_padding <= _memory_span_size);
 		assert(!(final_padding & 5));
 		assert(!((uintptr_t)ptr & ~_memory_span_mask));
+#if PLATFORM_WINDOWS
 		*offset = final_padding >> 3;
 		assert(*offset < 65536);
+#else
+		//No need to keep track of offset since pre-padding pages are unmapped
+		*offset = 0;
+#endif
 	}
 
 	return ptr;
