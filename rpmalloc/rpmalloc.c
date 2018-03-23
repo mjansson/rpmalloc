@@ -48,6 +48,10 @@
 //! Enable overwrite/underwrite guards
 #define ENABLE_GUARDS             0
 #endif
+#ifndef DISABLE_UNMAP
+//! Disable unmapping memory pages
+#define DISABLE_UNMAP             0
+#endif
 #ifndef ENABLE_UNLIMITED_CACHE
 //! Unlimited thread and global cache unified control
 #define ENABLE_UNLIMITED_CACHE    0
@@ -1841,6 +1845,7 @@ _memory_unmap_os(void* address, size_t size, size_t offset, int release) {
 #endif
 		address = pointer_offset(address, -(int32_t)offset);
 	}
+#if !DISABLE_UNMAP
 #if PLATFORM_WINDOWS
 	if (!VirtualFree(address, release ? 0 : size, release ? MEM_RELEASE : MEM_DECOMMIT)) {
 		DWORD err = GetLastError();
@@ -1851,6 +1856,7 @@ _memory_unmap_os(void* address, size_t size, size_t offset, int release) {
 	if (munmap(address, size)) {
 		assert("Failed to unmap virtual memory block" == 0);
 	}
+#endif
 #endif
 }
 
