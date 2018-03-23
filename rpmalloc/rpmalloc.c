@@ -83,6 +83,11 @@
 //! Multiplier for global span cache limit (max cache size will be calculated like thread cache and multiplied with this)
 #define MAX_GLOBAL_CACHE_MULTIPLIER 8
 
+#if !ENABLE_THREAD_CACHE
+#  undef ENABLE_GLOBAL_CACHE
+#  define ENABLE_GLOBAL_CACHE 0
+#endif
+
 /// Platform and arch specifics
 #ifdef _MSC_VER
 #  define ALIGNED_STRUCT(name, alignment) __declspec(align(alignment)) struct name
