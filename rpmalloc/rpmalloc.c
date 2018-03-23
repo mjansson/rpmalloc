@@ -567,13 +567,13 @@ _memory_unmap(void* address, size_t size, size_t offset, int release) {
 //! Check if span has any of the given flags
 #define SPAN_HAS_FLAG(flags, flag) ((flags) & (flag))
 //! Get the distance from flags field
-#define SPAN_DISTANCE(flags) (1 + (((flags) >> 2) & 0x7f))
+#define SPAN_DISTANCE(flags) (1U + (((flags) >> 2U) & 0x7fU))
 //! Get the remainder from flags field
-#define SPAN_REMAINS(flags) (1 + (((flags) >> 2) & 0x7f))
+#define SPAN_REMAINS(flags) (1U + (((flags) >> 2U) & 0x7fU))
 //! Get the count from flags field
-#define SPAN_COUNT(flags) (1 + (((flags) >> 9) & 0x7f))
+#define SPAN_COUNT(flags) (1U + (((flags) >> 9U) & 0x7fU))
 //! Set the remainder in the flags field (MUST be done from the owner heap thread)
-#define SPAN_SET_REMAINS(flags, remains) flags = ((uint16_t)(((flags) & 0xfe03) | ((uint16_t)((remains) - 1) << 2))); assert((remains) < 128)
+#define SPAN_SET_REMAINS(flags, remains) flags = ((uint16_t)(((flags) & 0xfe03U) | (uint16_t)((uint16_t)((remains) - 1) << 2U))); assert((remains) < 128U)
 
 //! Resize the given super span to the given count of spans, store the remainder in the heap reserved spans fields
 static void
@@ -722,7 +722,7 @@ _memory_unmap_deferred(heap_t* heap, size_t wanted_count) {
 	do {
 		//Verify that we own the master span, otherwise re-defer to owner
 		void* next = span->next_span;
-		if (!found_span && SPAN_COUNT(span->flags) == wanted_count) {
+		if (!found_span && (SPAN_COUNT(span->flags) == wanted_count)) {
 			assert(!SPAN_HAS_FLAG(span->flags, SPAN_FLAG_MASTER) || !SPAN_HAS_FLAG(span->flags, SPAN_FLAG_SUBSPAN));
 			found_span = span;
 		}
@@ -1528,9 +1528,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	if (config)
 		memcpy(&_memory_config, config, sizeof(rpmalloc_config_t));
 
-	int default_mapper = 0;
 	if (!_memory_config.memory_map || !_memory_config.memory_unmap) {
-		default_mapper = 1;
 		_memory_config.memory_map = _memory_map_os;
 		_memory_config.memory_unmap = _memory_unmap_os;
 	}
