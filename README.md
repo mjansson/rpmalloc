@@ -63,6 +63,10 @@ Free memory pages are cached both per thread and in a global cache for all threa
 
 __ENABLE_UNLIMITED_CACHE__: By default defined to 0, set to 1 to make all caches infinite, i.e never release spans to global cache unless thread finishes and never unmap memory pages back to the OS. Highest performance but largest memory overhead.
 
+__ENABLE_UNLIMITED_GLOBAL_CACHE__: By default defined to 0, set to 1 to make global caches infinite, i.e never unmap memory pages back to the OS.
+
+__ENABLE_UNLIMITED_THREAD_CACHE__: By default defined to 0, set to 1 to make thread caches infinite, i.e never release spans to global cache unless thread finishes.
+
 __ENABLE_GLOBAL_CACHE__: By default defined to 1, enables the global cache shared between all threads. Set to 0 to disable the global cache and directly unmap pages evicted from the thread cache.
 
 __ENABLE_THREAD_CACHE__: By default defined to 1, enables the per-thread cache. Set to 0 to disable the thread cache and directly unmap pages no longer in use (also disables the global cache).
@@ -97,7 +101,7 @@ By default the allocator uses OS APIs to map virtual memory pages as needed, eit
 
 The functions must guarantee alignment to the configured span size. Either provide the span size during initialization using __rpmalloc_initialize_config__, or use __rpmalloc_config__ to find the required alignment which is equal to the span size. The span size MUST be a power of two in [4096, 262144] range, and be a multiple (or divisor) of the memory page size.
 
-Memory mapping requests are always done in multiples of the memory page size, whichever is larger. You can specify a custom page size when initializing rpmalloc with __rpmalloc_initialize_config__, or pass 0 to let rpmalloc determine the system memory page size using OS APIs. The page size MUST be a power of two in [512, 16384] range.
+Memory mapping requests are always done in multiples of the memory page size, whichever is larger. You can specify a custom page size when initializing rpmalloc with __rpmalloc_initialize_config__, or pass 0 to let rpmalloc determine the system memory page size using OS APIs. The page size MUST be a power of two in [512, 65536] range.
 
 To reduce system call overhead, memory spans are mapped in batches controlled by the `span_map_count` configuration variable (which defaults to the `DEFAULT_SPAN_MAP_COUNT` value if 0, which in turn is sized according to the cache configuration define, defaulting to 8). If the platform can handle partial unmaps (unmapping one or more spans of memory pages mapped in a larger batch) the `unmap_partial` configuration variable should be set to non-zero. If not, spans will be kept until the entire batch can be unmapped.
 

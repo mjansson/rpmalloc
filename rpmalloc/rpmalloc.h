@@ -76,8 +76,8 @@ typedef struct rpmalloc_config_t {
 	//  If release is set to 0, the unmap is a partial decommit of a subset of the mapped
 	//  memory range.
 	void (*memory_unmap)(void* address, size_t size, size_t offset, int release);
-	//! Size of memory pages. The page size MUST be a power of two in [512,16384] range
-	//  (2^9 to 2^14) unless 0 - set to 0 to use system page size. All memory mapping
+	//! Size of memory pages. The page size MUST be a power of two in [512,65536] range
+	//  (2^9 to 2^16) unless 0 - set to 0 to use system page size. All memory mapping
 	//  requests to memory_map will be made with size set to a multiple of the page size.
 	size_t page_size;
 	//! Size of a span of memory pages. MUST be a multiple of page size, and in [4096,262144]

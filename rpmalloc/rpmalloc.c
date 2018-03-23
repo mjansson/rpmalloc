@@ -11,6 +11,10 @@
 
 #include "rpmalloc.h"
 
+#if defined(__clang__)
+#  pragma clang diagnostic ignored "-Wunused-macros"
+#endif
+
 /// Build time configurable limits
 #ifndef HEAP_ARRAY_SIZE
 //! Size of heap hashmap
@@ -44,9 +48,21 @@
 //! Enable overwrite/underwrite guards
 #define ENABLE_GUARDS             0
 #endif
+#ifndef DISABLE_UNMAP
+//! Disable unmapping memory pages
+#define DISABLE_UNMAP             0
+#endif
 #ifndef ENABLE_UNLIMITED_CACHE
-//! Unlimited cache disables any cache limitations
+//! Unlimited thread and global cache unified control
 #define ENABLE_UNLIMITED_CACHE    0
+#endif
+#ifndef ENABLE_UNLIMITED_THREAD_CACHE
+//! Unlimited cache disables any thread cache limitations
+#define ENABLE_UNLIMITED_THREAD_CACHE    ENABLE_UNLIMITED_CACHE
+#endif
+#ifndef ENABLE_UNLIMITED_GLOBAL_CACHE
+//! Unlimited cache disables any global cache limitations
+#define ENABLE_UNLIMITED_GLOBAL_CACHE    ENABLE_UNLIMITED_CACHE
 #endif
 #ifndef DEFAULT_SPAN_MAP_COUNT
 //! Default number of spans to map in call to map more virtual memory
@@ -66,20 +82,6 @@
 #define MAX_LARGE_SPAN_CACHE_DIVISOR 16
 //! Multiplier for global span cache limit (max cache size will be calculated like thread cache and multiplied with this)
 #define MAX_GLOBAL_CACHE_MULTIPLIER 8
-
-#if !ENABLE_THREAD_CACHE
-#  undef ENABLE_GLOBAL_CACHE
-#  define ENABLE_GLOBAL_CACHE 0
-#  undef MIN_SPAN_CACHE_SIZE
-#  undef MIN_SPAN_CACHE_RELEASE
-#  undef MAX_SPAN_CACHE_DIVISOR
-#  undef MIN_LARGE_SPAN_CACHE_SIZE
-#  undef MIN_LARGE_SPAN_CACHE_RELEASE
-#  undef MAX_LARGE_SPAN_CACHE_DIVISOR
-#endif
-#if !ENABLE_GLOBAL_CACHE
-#  undef MAX_GLOBAL_CACHE_MULTIPLIER
-#endif
 
 /// Platform and arch specifics
 #ifdef _MSC_VER
@@ -516,16 +518,17 @@ static void
 _memory_counter_increase(span_counter_t* counter, uint32_t* global_counter, size_t span_count) {
 	if (++counter->current_allocations > counter->max_allocations) {
 		counter->max_allocations = counter->current_allocations;
+#if ENABLE_UNLIMITED_THREAD_CACHE
+		MEMORY_UNUSED(span_count);
+		counter->cache_limit = 0x7FFFFFFF;
+#else
 		const uint32_t cache_limit_max = (uint32_t)_memory_span_size - 2;
-#if !ENABLE_UNLIMITED_CACHE
 		counter->cache_limit = counter->max_allocations / ((span_count == 1) ? MAX_SPAN_CACHE_DIVISOR : MAX_LARGE_SPAN_CACHE_DIVISOR);
 		const uint32_t cache_limit_min = (span_count == 1) ? (MIN_SPAN_CACHE_RELEASE + MIN_SPAN_CACHE_SIZE) : (MIN_LARGE_SPAN_CACHE_RELEASE + MIN_LARGE_SPAN_CACHE_SIZE);
 		if (counter->cache_limit < cache_limit_min)
 			counter->cache_limit = cache_limit_min;
 		if (counter->cache_limit > cache_limit_max)
 			counter->cache_limit = cache_limit_max;
-#else
-		counter->cache_limit = cache_limit_max;
 #endif
 		if (counter->max_allocations > *global_counter)
 			*global_counter = counter->max_allocations;
@@ -568,13 +571,13 @@ _memory_unmap(void* address, size_t size, size_t offset, int release) {
 //! Check if span has any of the given flags
 #define SPAN_HAS_FLAG(flags, flag) ((flags) & (flag))
 //! Get the distance from flags field
-#define SPAN_DISTANCE(flags) (1 + (((flags) >> 2) & 0x7f))
+#define SPAN_DISTANCE(flags) (1U + (((flags) >> 2U) & 0x7fU))
 //! Get the remainder from flags field
-#define SPAN_REMAINS(flags) (1 + (((flags) >> 2) & 0x7f))
+#define SPAN_REMAINS(flags) (1U + (((flags) >> 2U) & 0x7fU))
 //! Get the count from flags field
-#define SPAN_COUNT(flags) (1 + (((flags) >> 9) & 0x7f))
+#define SPAN_COUNT(flags) (1U + (((flags) >> 9U) & 0x7fU))
 //! Set the remainder in the flags field (MUST be done from the owner heap thread)
-#define SPAN_SET_REMAINS(flags, remains) flags = ((uint16_t)(((flags) & 0xfe03) | ((uint16_t)((remains) - 1) << 2))); assert((remains) < 128)
+#define SPAN_SET_REMAINS(flags, remains) flags = ((uint16_t)(((flags) & 0xfe03U) | (uint16_t)((uint16_t)((remains) - 1) << 2U))); assert((remains) < 128U)
 
 //! Resize the given super span to the given count of spans, store the remainder in the heap reserved spans fields
 static void
@@ -723,7 +726,7 @@ _memory_unmap_deferred(heap_t* heap, size_t wanted_count) {
 	do {
 		//Verify that we own the master span, otherwise re-defer to owner
 		void* next = span->next_span;
-		if (!found_span && SPAN_COUNT(span->flags) == wanted_count) {
+		if (!found_span && (SPAN_COUNT(span->flags) == wanted_count)) {
 			assert(!SPAN_HAS_FLAG(span->flags, SPAN_FLAG_MASTER) || !SPAN_HAS_FLAG(span->flags, SPAN_FLAG_SUBSPAN));
 			found_span = span;
 		}
@@ -877,9 +880,13 @@ _memory_cache_insert(heap_t* heap, global_cache_t* cache, span_t* span, size_t c
 	int32_t list_size = (int32_t)span->data.list.size;
 	//Unmap if cache has reached the limit
 	if (atomic_add32(&cache->size, list_size) > (int32_t)cache_limit) {
+#if !ENABLE_UNLIMITED_GLOBAL_CACHE
 		_memory_unmap_span_list(heap, span);
 		atomic_add32(&cache->size, -list_size);
 		return;
+#else
+		MEMORY_UNUSED(heap);
+#endif
 	}
 	void* current_cache, *new_cache;
 	do {
@@ -929,12 +936,16 @@ _memory_cache_finalize(global_cache_t* cache) {
 //! Insert the given list of memory page spans in the global cache
 static void
 _memory_global_cache_insert(heap_t* heap, span_t* span) {
-	//Calculate adaptive limits
 	size_t span_count = SPAN_COUNT(span->flags);
+#if ENABLE_UNLIMITED_GLOBAL_CACHE
+	_memory_cache_insert(heap, &_memory_span_cache[span_count - 1], span, 0);
+#else
+	//Calculate adaptive limits
 	const size_t cache_divisor = (span_count == 1) ? MAX_SPAN_CACHE_DIVISOR : (MAX_LARGE_SPAN_CACHE_DIVISOR * span_count * 2);
 	const size_t cache_limit = (MAX_GLOBAL_CACHE_MULTIPLIER * _memory_max_allocation[span_count - 1]) / cache_divisor;
 	const size_t cache_limit_min = MAX_GLOBAL_CACHE_MULTIPLIER * (span_count == 1 ? MIN_SPAN_CACHE_SIZE : MIN_LARGE_SPAN_CACHE_SIZE);
 	_memory_cache_insert(heap, &_memory_span_cache[span_count - 1], span, cache_limit > cache_limit_min ? cache_limit : cache_limit_min);
+#endif
 }
 
 //! Extract a number of memory page spans from the global cache for large blocks
@@ -1521,9 +1532,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	if (config)
 		memcpy(&_memory_config, config, sizeof(rpmalloc_config_t));
 
-	int default_mapper = 0;
 	if (!_memory_config.memory_map || !_memory_config.memory_unmap) {
-		default_mapper = 1;
 		_memory_config.memory_map = _memory_map_os;
 		_memory_config.memory_unmap = _memory_unmap_os;
 	}
@@ -1544,8 +1553,8 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 
 	if (_memory_page_size < 512)
 		_memory_page_size = 512;
-	if (_memory_page_size > (16 * 1024))
-		_memory_page_size = (16 * 1024);
+	if (_memory_page_size > (64 * 1024))
+		_memory_page_size = (64 * 1024);
 
 	_memory_page_size_shift = 0;
 	size_t page_size_bit = _memory_page_size;
@@ -1782,18 +1791,44 @@ _memory_map_os(size_t size, size_t* offset) {
 
 	if (padding) {
 		size_t final_padding = padding - ((uintptr_t)ptr & ~_memory_span_mask);
-#if PLATFORM_POSIX
-		//Unmap the last unused pages, for Windows this is done with the final VirtualFree with MEM_RELEASE call
+		//Unmap the last unused pages
 		size_t remains = padding - final_padding;
-		if (remains)
-			munmap(pointer_offset(ptr, final_padding + size), remains);
+		if (final_padding) {
+#if PLATFORM_WINDOWS
+			//Avoid extra system calls, just keep pages mapped until MEM_RELEASE since they will not allocate actual physical pages
+			//if (!VirtualFree(ptr, final_padding, MEM_DECOMMIT)) {
+			//	DWORD err = GetLastError();
+			//	assert("Failed to decommit pre-padding of virtual memory block" == 0);
+			//}
+#else
+			if (munmap(ptr, final_padding)) {
+				assert("Failed to unmap pre-padding of virtual memory block" == 0);
+			}
 #endif
+		}
+		if (remains) {
+#if PLATFORM_WINDOWS
+			//if (!VirtualFree(pointer_offset(ptr, final_padding + size), remains, MEM_DECOMMIT)) {
+			//	DWORD err = GetLastError();
+			//	assert("Failed to decommit post-padding of virtual memory block" == 0);
+			//}
+#else
+			if (munmap(pointer_offset(ptr, final_padding + size), remains)) {
+				assert("Failed to unmap post-padding of virtual memory block" == 0);
+			}
+#endif
+		}
 		ptr = pointer_offset(ptr, final_padding);
 		assert(final_padding <= _memory_span_size);
 		assert(!(final_padding & 5));
 		assert(!((uintptr_t)ptr & ~_memory_span_mask));
+#if PLATFORM_WINDOWS
 		*offset = final_padding >> 3;
 		assert(*offset < 65536);
+#else
+		//No need to keep track of offset since pre-padding pages are unmapped
+		*offset = 0;
+#endif
 	}
 
 	return ptr;
@@ -1810,6 +1845,7 @@ _memory_unmap_os(void* address, size_t size, size_t offset, int release) {
 #endif
 		address = pointer_offset(address, -(int32_t)offset);
 	}
+#if !DISABLE_UNMAP
 #if PLATFORM_WINDOWS
 	if (!VirtualFree(address, release ? 0 : size, release ? MEM_RELEASE : MEM_DECOMMIT)) {
 		DWORD err = GetLastError();
@@ -1820,6 +1856,7 @@ _memory_unmap_os(void* address, size_t size, size_t offset, int release) {
 	if (munmap(address, size)) {
 		assert("Failed to unmap virtual memory block" == 0);
 	}
+#endif
 #endif
 }
 
