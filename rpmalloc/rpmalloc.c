@@ -75,20 +75,8 @@
 //! Multiplier for global span cache limit (max cache size will be calculated like thread cache and multiplied with this)
 #define MAX_GLOBAL_CACHE_MULTIPLIER 8
 
-#if !ENABLE_THREAD_CACHE
-#  undef ENABLE_GLOBAL_CACHE
-#  define ENABLE_GLOBAL_CACHE 0
-#  undef MIN_SPAN_CACHE_SIZE
-#  undef MIN_SPAN_CACHE_RELEASE
-#  undef MAX_SPAN_CACHE_DIVISOR
-#  undef MIN_LARGE_SPAN_CACHE_SIZE
-#  undef MIN_LARGE_SPAN_CACHE_RELEASE
-#  undef MAX_LARGE_SPAN_CACHE_DIVISOR
-#  undef ENABLE_UNLIMITED_THREAD_CACHE
-#endif
-#if !ENABLE_GLOBAL_CACHE
-#  undef MAX_GLOBAL_CACHE_MULTIPLIER
-#  undef ENABLE_UNLIMITED_GLOBAL_CACHE
+#if defined(__clang__)
+#  pragma clang diagnostic ignored "-Wunused-macros"
 #endif
 
 /// Platform and arch specifics
@@ -527,6 +515,7 @@ _memory_counter_increase(span_counter_t* counter, uint32_t* global_counter, size
 	if (++counter->current_allocations > counter->max_allocations) {
 		counter->max_allocations = counter->current_allocations;
 #if ENABLE_UNLIMITED_THREAD_CACHE
+		MEMORY_UNUSED(span_count);
 		counter->cache_limit = 0x7FFFFFFF;
 #else
 		const uint32_t cache_limit_max = (uint32_t)_memory_span_size - 2;
@@ -891,6 +880,8 @@ _memory_cache_insert(heap_t* heap, global_cache_t* cache, span_t* span, size_t c
 		_memory_unmap_span_list(heap, span);
 		atomic_add32(&cache->size, -list_size);
 		return;
+#else
+		MEMORY_UNUSED(heap);
 #endif
 	}
 	void* current_cache, *new_cache;
