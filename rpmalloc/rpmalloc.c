@@ -11,6 +11,10 @@
 
 #include "rpmalloc.h"
 
+#if defined(__clang__)
+#  pragma clang diagnostic ignored "-Wunused-macros"
+#endif
+
 /// Build time configurable limits
 #ifndef HEAP_ARRAY_SIZE
 //! Size of heap hashmap
@@ -74,10 +78,6 @@
 #define MAX_LARGE_SPAN_CACHE_DIVISOR 16
 //! Multiplier for global span cache limit (max cache size will be calculated like thread cache and multiplied with this)
 #define MAX_GLOBAL_CACHE_MULTIPLIER 8
-
-#if defined(__clang__)
-#  pragma clang diagnostic ignored "-Wunused-macros"
-#endif
 
 /// Platform and arch specifics
 #ifdef _MSC_VER
