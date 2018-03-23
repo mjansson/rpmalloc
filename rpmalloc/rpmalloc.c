@@ -45,8 +45,16 @@
 #define ENABLE_GUARDS             0
 #endif
 #ifndef ENABLE_UNLIMITED_CACHE
-//! Unlimited cache disables any cache limitations
+//! Unlimited thread and global cache unified control
 #define ENABLE_UNLIMITED_CACHE    0
+#endif
+#ifndef ENABLE_UNLIMITED_THREAD_CACHE
+//! Unlimited cache disables any thread cache limitations
+#define ENABLE_UNLIMITED_THREAD_CACHE    ENABLE_UNLIMITED_CACHE
+#endif
+#ifndef ENABLE_UNLIMITED_GLOBAL_CACHE
+//! Unlimited cache disables any global cache limitations
+#define ENABLE_UNLIMITED_GLOBAL_CACHE    ENABLE_UNLIMITED_CACHE
 #endif
 #ifndef DEFAULT_SPAN_MAP_COUNT
 //! Default number of spans to map in call to map more virtual memory
@@ -76,9 +84,11 @@
 #  undef MIN_LARGE_SPAN_CACHE_SIZE
 #  undef MIN_LARGE_SPAN_CACHE_RELEASE
 #  undef MAX_LARGE_SPAN_CACHE_DIVISOR
+#  undef ENABLE_UNLIMITED_THREAD_CACHE
 #endif
 #if !ENABLE_GLOBAL_CACHE
 #  undef MAX_GLOBAL_CACHE_MULTIPLIER
+#  undef ENABLE_UNLIMITED_GLOBAL_CACHE
 #endif
 
 /// Platform and arch specifics
@@ -516,16 +526,16 @@ static void
 _memory_counter_increase(span_counter_t* counter, uint32_t* global_counter, size_t span_count) {
 	if (++counter->current_allocations > counter->max_allocations) {
 		counter->max_allocations = counter->current_allocations;
+#if ENABLE_UNLIMITED_THREAD_CACHE
+		counter->cache_limit = 0x7FFFFFFF;
+#else
 		const uint32_t cache_limit_max = (uint32_t)_memory_span_size - 2;
-#if !ENABLE_UNLIMITED_CACHE
 		counter->cache_limit = counter->max_allocations / ((span_count == 1) ? MAX_SPAN_CACHE_DIVISOR : MAX_LARGE_SPAN_CACHE_DIVISOR);
 		const uint32_t cache_limit_min = (span_count == 1) ? (MIN_SPAN_CACHE_RELEASE + MIN_SPAN_CACHE_SIZE) : (MIN_LARGE_SPAN_CACHE_RELEASE + MIN_LARGE_SPAN_CACHE_SIZE);
 		if (counter->cache_limit < cache_limit_min)
 			counter->cache_limit = cache_limit_min;
 		if (counter->cache_limit > cache_limit_max)
 			counter->cache_limit = cache_limit_max;
-#else
-		counter->cache_limit = cache_limit_max;
 #endif
 		if (counter->max_allocations > *global_counter)
 			*global_counter = counter->max_allocations;
@@ -877,9 +887,11 @@ _memory_cache_insert(heap_t* heap, global_cache_t* cache, span_t* span, size_t c
 	int32_t list_size = (int32_t)span->data.list.size;
 	//Unmap if cache has reached the limit
 	if (atomic_add32(&cache->size, list_size) > (int32_t)cache_limit) {
+#if !ENABLE_UNLIMITED_GLOBAL_CACHE
 		_memory_unmap_span_list(heap, span);
 		atomic_add32(&cache->size, -list_size);
 		return;
+#endif
 	}
 	void* current_cache, *new_cache;
 	do {
@@ -929,12 +941,16 @@ _memory_cache_finalize(global_cache_t* cache) {
 //! Insert the given list of memory page spans in the global cache
 static void
 _memory_global_cache_insert(heap_t* heap, span_t* span) {
-	//Calculate adaptive limits
 	size_t span_count = SPAN_COUNT(span->flags);
+#if ENABLE_UNLIMITED_GLOBAL_CACHE
+	_memory_cache_insert(heap, &_memory_span_cache[span_count - 1], span, 0);
+#else
+	//Calculate adaptive limits
 	const size_t cache_divisor = (span_count == 1) ? MAX_SPAN_CACHE_DIVISOR : (MAX_LARGE_SPAN_CACHE_DIVISOR * span_count * 2);
 	const size_t cache_limit = (MAX_GLOBAL_CACHE_MULTIPLIER * _memory_max_allocation[span_count - 1]) / cache_divisor;
 	const size_t cache_limit_min = MAX_GLOBAL_CACHE_MULTIPLIER * (span_count == 1 ? MIN_SPAN_CACHE_SIZE : MIN_LARGE_SPAN_CACHE_SIZE);
 	_memory_cache_insert(heap, &_memory_span_cache[span_count - 1], span, cache_limit > cache_limit_min ? cache_limit : cache_limit_min);
+#endif
 }
 
 //! Extract a number of memory page spans from the global cache for large blocks
@@ -1544,8 +1560,8 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 
 	if (_memory_page_size < 512)
 		_memory_page_size = 512;
-	if (_memory_page_size > (16 * 1024))
-		_memory_page_size = (16 * 1024);
+	if (_memory_page_size > (64 * 1024))
+		_memory_page_size = (64 * 1024);
 
 	_memory_page_size_shift = 0;
 	size_t page_size_bit = _memory_page_size;
