@@ -34,11 +34,11 @@
 #endif
 #ifndef ENABLE_STATISTICS
 //! Enable statistics collection
-#define ENABLE_STATISTICS         0
+#define ENABLE_STATISTICS         1
 #endif
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            0
+#define ENABLE_ASSERTS            1
 #endif
 #ifndef ENABLE_PRELOAD
 //! Support preloading
@@ -46,7 +46,7 @@
 #endif
 #ifndef ENABLE_GUARDS
 //! Enable overwrite/underwrite guards
-#define ENABLE_GUARDS             0
+#define ENABLE_GUARDS             1
 #endif
 #ifndef DISABLE_UNMAP
 //! Disable unmapping memory pages
@@ -1662,7 +1662,8 @@ _memory_map_os(size_t size, size_t* offset) {
 
 		//Unmap the unused pages before/after aligned spans
 		assert(final_padding <= _memory_span_size);
-		assert(!(final_padding & 5));
+		assert(final_padding >= _memory_page_size);
+		assert(!(final_padding % _memory_page_size));
 		size_t remains = padding - final_padding;
 		if (final_padding >= _memory_page_size) {
 #if PLATFORM_WINDOWS
@@ -1722,7 +1723,6 @@ _memory_unmap_os(void* address, size_t size, size_t offset, size_t release) {
 		assert("Failed to unmap virtual memory block" == 0);
 	}
 #else
-	MEMORY_UNUSED(release);
 	if (munmap(address, size)) {
 		assert("Failed to unmap virtual memory block" == 0);
 	}
