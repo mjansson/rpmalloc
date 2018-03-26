@@ -34,11 +34,11 @@
 #endif
 #ifndef ENABLE_STATISTICS
 //! Enable statistics collection
-#define ENABLE_STATISTICS         1
+#define ENABLE_STATISTICS         0
 #endif
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            1
+#define ENABLE_ASSERTS            0
 #endif
 #ifndef ENABLE_PRELOAD
 //! Support preloading
@@ -46,7 +46,7 @@
 #endif
 #ifndef ENABLE_GUARDS
 //! Enable overwrite/underwrite guards
-#define ENABLE_GUARDS             1
+#define ENABLE_GUARDS             0
 #endif
 #ifndef DISABLE_UNMAP
 //! Disable unmapping memory pages
@@ -1664,20 +1664,6 @@ _memory_map_os(size_t size, size_t* offset) {
 		assert(final_padding <= _memory_span_size);
 		assert(!(final_padding % 8));
 		size_t remains = padding - final_padding;
-		if (final_padding >= _memory_page_size) {
-#if PLATFORM_WINDOWS
-			//Avoid extra system calls, just keep pages mapped until MEM_RELEASE since they will not allocate actual physical pages
-			//if (!VirtualFree(ptr, final_padding, MEM_DECOMMIT)) {
-			//	DWORD err = GetLastError();
-			//	assert("Failed to decommit pre-padding of virtual memory block" == 0);
-			//}
-#else
-			if (munmap(ptr, final_padding)) {
-				assert("Failed to unmap pre-padding of virtual memory block" == 0);
-			}
-			final_padding = 0;
-#endif
-		}
 		if (remains >= _memory_page_size) {
 #if PLATFORM_WINDOWS
 			//if (!VirtualFree(pointer_offset(ptr, final_padding + size), remains, MEM_DECOMMIT)) {
