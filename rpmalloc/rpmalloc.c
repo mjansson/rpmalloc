@@ -1504,7 +1504,8 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		_memory_adjust_size_class(SMALL_CLASS_COUNT + iclass);
 	}
 
-	memset(_memory_heaps, 0, sizeof(_memory_heaps));
+	for (size_t list_idx = 0; list_idx < HEAP_ARRAY_SIZE; ++list_idx)
+		atomic_store_ptr(&_memory_heaps[list_idx], 0);
 
 	//Initialize this thread
 	rpmalloc_thread_initialize();
