@@ -80,17 +80,17 @@ typedef struct rpmalloc_config_t {
 	//  If you set a memory_unmap function, you must also set a memory_map function or
 	//  else the default implementation will be used for both.
 	void (*memory_unmap)(void* address, size_t size, size_t offset, size_t release);
-	//! Size of memory pages. The page size MUST be a power of two in [512,65536] range
-	//  (2^9 to 2^16) unless 0 - set to 0 to use system page size. All memory mapping
+	//! Size of memory pages. The page size MUST be a power of two. All memory mapping
 	//  requests to memory_map will be made with size set to a multiple of the page size.
 	size_t page_size;
-	//! Size of a span of memory pages. MUST be a multiple of page size, and in [4096,262144]
+	//! Size of a span of memory blocks. MUST be a power of two, and in [4096,262144]
 	//  range (unless 0 - set to 0 to use the default span size).
 	size_t span_size;
 	//! Number of spans to map at each request to map new virtual memory blocks. This can
 	//  be used to minimize the system call overhead at the cost of virtual memory address
 	//  space. The extra mapped pages will not be written until actually used, so physical
-	//  committed memory should not be affected in the default implementation.
+	//  committed memory should not be affected in the default implementation. Will be
+	//  aligned to a multiple of spans that match memory page size in case of huge pages.
 	size_t span_map_count;
 	//! Debug callback if memory guards are enabled. Called if a memory overwrite is detected
 	void (*memory_overwrite)(void* address);
