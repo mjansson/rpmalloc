@@ -567,6 +567,8 @@ _memory_map_spans(heap_t* heap, size_t span_count) {
 	//If we already have some, but not enough, reserved spans, release those to heap cache and map a new
 	//full set of spans. Otherwise we would waste memory if page size > span size (huge pages)
 	size_t request_spans = (span_count > _memory_span_map_count) ? span_count : _memory_span_map_count;
+	if ((_memory_page_size >= _memory_span_size) && ((request_spans * _memory_span_size) % _memory_page_size))
+		request_spans += _memory_span_map_count - (request_spans % _memory_span_map_count);
 	size_t align_offset = 0;
 	span_t* span = _memory_map(request_spans * _memory_span_size, &align_offset);
 	span->align_offset = (uint32_t)align_offset;
@@ -1256,8 +1258,8 @@ _memory_allocate(size_t size) {
 	size_t align_offset = 0;
 	span_t* span = _memory_map(num_pages * _memory_page_size, &align_offset);
 	atomic_store32(&span->heap_id, 0);
-	//Store page count in next_span
-	span->next_span = (span_t*)((uintptr_t)num_pages);
+	//Store page count in span_count
+	span->span_count = (uint32_t)num_pages;
 	span->align_offset = (uint32_t)align_offset;
 
 	return pointer_offset(span, SPAN_HEADER_SIZE);
@@ -1284,8 +1286,8 @@ _memory_deallocate(void* p) {
 		_memory_deallocate_defer(heap_id, p);
 	}
 	else {
-		//Oversized allocation, page count is stored in next_span
-		size_t num_pages = (size_t)span->next_span;
+		//Oversized allocation, page count is stored in span_count
+		size_t num_pages = span->span_count;
 		_memory_unmap(span, num_pages * _memory_page_size, span->align_offset, num_pages * _memory_page_size);
 	}
 }
@@ -1300,6 +1302,7 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 		if (heap_id) {
 			if (span->size_class < SIZE_CLASS_COUNT) {
 				//Small/medium sized block
+				assert(span->span_count == 1);
 				size_class_t* size_class = _memory_size_class + span->size_class;
 				if ((size_t)size_class->size >= size)
 					return p; //Still fits in block, never mind trying to save memory
@@ -1313,6 +1316,7 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 				if (total_size & (_memory_span_mask - 1))
 					++num_spans;
 				size_t current_spans = (span->size_class - SIZE_CLASS_COUNT) + 1;
+				assert(current_spans == span->span_count);
 				if ((current_spans >= num_spans) && (num_spans >= (current_spans / 2)))
 					return p; //Still fits and less than half of memory would be freed
 				if (!oldsize)
@@ -1325,8 +1329,8 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 			size_t num_pages = total_size >> _memory_page_size_shift;
 			if (total_size & (_memory_page_size - 1))
 				++num_pages;
-			//Page count is stored in next_span
-			size_t current_pages = (size_t)span->next_span;
+			//Page count is stored in span_count
+			size_t current_pages = span->span_count;
 			if ((current_pages >= num_pages) && (num_pages >= (current_pages / 2)))
 				return p; //Still fits and less than half of memory would be freed
 			if (!oldsize)
@@ -1363,8 +1367,8 @@ _memory_usable_size(void* p) {
 		return (current_spans * _memory_span_size) - SPAN_HEADER_SIZE;
 	}
 
-	//Oversized block, page count is stored in next_span
-	size_t current_pages = (size_t)span->next_span;
+	//Oversized block, page count is stored in span_count
+	size_t current_pages = span->span_count;
 	return (current_pages * _memory_page_size) - SPAN_HEADER_SIZE;
 }
 
@@ -1465,12 +1469,8 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	_memory_span_map_count = ( _memory_config.span_map_count ? _memory_config.span_map_count : DEFAULT_SPAN_MAP_COUNT);
 	if ((_memory_span_size * _memory_span_map_count) < _memory_page_size)
 		_memory_span_map_count = (_memory_page_size / _memory_span_size);
-	//We only have 7 bits to store number of spans in master span, thus limit to 128
-	if (_memory_span_map_count > 128) {
-		_memory_span_map_count = 128;
-		if (_memory_span_size * _memory_span_map_count < _memory_page_size)
-			_memory_span_size = (_memory_page_size / _memory_span_map_count);
-	}
+	if ((_memory_page_size >= _memory_span_size) && ((_memory_span_map_count * _memory_span_size) % _memory_page_size))
+		_memory_span_map_count = (_memory_page_size / _memory_span_size);
 
 	_memory_config.page_size = _memory_page_size;
 	_memory_config.span_size = _memory_span_size;
@@ -1639,7 +1639,7 @@ rpmalloc_config(void) {
 static void*
 _memory_map_os(size_t size, size_t* offset) {
 	//Either size is a heap (a single page) or a (multiple) span - we only need to align spans, and only if larger than map granularity
-	size_t padding = ((size >= _memory_span_size) && (size > _memory_page_size) && (_memory_span_size > _memory_map_granularity)) ? _memory_span_size : 0;
+	size_t padding = ((size >= _memory_span_size) && (_memory_span_size > _memory_map_granularity)) ? _memory_span_size : 0;
 	assert(size >= _memory_page_size);
 #if PLATFORM_WINDOWS
 	//Ok to MEM_COMMIT - according to MSDN, "actual physical pages are not allocated unless/until the virtual addresses are actually accessed"
@@ -1662,8 +1662,7 @@ _memory_map_os(size_t size, size_t* offset) {
 
 		//Unmap the unused pages before/after aligned spans
 		assert(final_padding <= _memory_span_size);
-		assert(final_padding >= _memory_page_size);
-		assert(!(final_padding % _memory_page_size));
+		assert(!(final_padding % 8));
 		size_t remains = padding - final_padding;
 		if (final_padding >= _memory_page_size) {
 #if PLATFORM_WINDOWS
