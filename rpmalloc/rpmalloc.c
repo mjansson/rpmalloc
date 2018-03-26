@@ -567,7 +567,7 @@ _memory_map_spans(heap_t* heap, size_t span_count) {
 	//If we already have some, but not enough, reserved spans, release those to heap cache and map a new
 	//full set of spans. Otherwise we would waste memory if page size > span size (huge pages)
 	size_t request_spans = (span_count > _memory_span_map_count) ? span_count : _memory_span_map_count;
-	if ((_memory_page_size >= _memory_span_size) && ((request_spans * _memory_span_size) % _memory_page_size))
+	if ((_memory_page_size > _memory_span_size) && ((request_spans * _memory_span_size) % _memory_page_size))
 		request_spans += _memory_span_map_count - (request_spans % _memory_span_map_count);
 	size_t align_offset = 0;
 	span_t* span = _memory_map(request_spans * _memory_span_size, &align_offset);
@@ -590,6 +590,7 @@ _memory_map_spans(heap_t* heap, size_t span_count) {
 				prev_span->align_offset = 0;
 			}
 			prev_span->span_count = (uint32_t)heap->spans_reserved;
+			atomic_store32(&prev_span->heap_id, heap->id);
 			_memory_heap_cache_insert(heap, prev_span);
 		}
 		heap->span_reserve_master = span;
