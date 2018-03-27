@@ -66,16 +66,16 @@
 #endif
 #ifndef DEFAULT_SPAN_MAP_COUNT
 //! Default number of spans to map in call to map more virtual memory
-#define DEFAULT_SPAN_MAP_COUNT    16
+#define DEFAULT_SPAN_MAP_COUNT    32
 #endif
 //! Minimum cache size to remain after a release to global cache
 #define MIN_SPAN_CACHE_SIZE 64
 //! Maximum cache size divisor (max cache size will be max allocation count divided by this divisor)
-#define MAX_SPAN_CACHE_DIVISOR 4
+#define MAX_SPAN_CACHE_DIVISOR 2
 //! Minimum cache size to remain after a release to global cache, large spans
-#define MIN_LARGE_SPAN_CACHE_SIZE 8
+#define MIN_LARGE_SPAN_CACHE_SIZE 16
 //! Maximum cache size divisor, large spans (max cache size will be max allocation count divided by this divisor)
-#define MAX_LARGE_SPAN_CACHE_DIVISOR 16
+#define MAX_LARGE_SPAN_CACHE_DIVISOR 4
 //! Multiplier for global span cache limit (max cache size will be calculated like thread cache and multiplied with this)
 #define MAX_GLOBAL_CACHE_MULTIPLIER 8
 
@@ -964,7 +964,6 @@ use_active:
 			}
 			else {
 				++active_block->free_list;
-				++active_block->first_autolink;
 			}
 			assert(active_block->free_list < size_class->block_count);
 		}
@@ -1159,7 +1158,7 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 	if (block_data->free_count == 0) {
 		//add to free list and disable autolink
 		_memory_span_list_doublelink_add(&heap->size_cache[class_idx], span);
-		block_data->first_autolink = (uint16_t)size_class->block_count;
+		block_data->first_autolink = 0xFFFF;
 	}
 	++block_data->free_count;
 	//Span is not yet completely free, so add block to the linked list of free blocks
@@ -1168,6 +1167,8 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 	count_t block_idx = block_offset / (count_t)size_class->size;
 	uint32_t* block = pointer_offset(blocks_start, block_idx * size_class->size);
 	*block = block_data->free_list;
+	if (block_data->free_list > block_data->first_autolink)
+		block_data->first_autolink = block_data->free_list;
 	block_data->free_list = (uint16_t)block_idx;
 }
 
