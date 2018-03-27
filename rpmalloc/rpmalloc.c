@@ -949,8 +949,7 @@ use_active:
 		uint32_t* block = pointer_offset(span, SPAN_HEADER_SIZE + offset);
 		assert(span && (atomic_load32(&span->heap_id) == heap->id));
 
-		--active_block->free_count;
-		if (!active_block->free_count) {
+		if (active_block->free_count == 1) {
 			//Span is now completely allocated, set the bookkeeping data in the
 			//span itself and reset the active span pointer in the heap
 			span->data.block.free_count = 0;
@@ -959,13 +958,11 @@ use_active:
 		}
 		else {
 			//Get the next free block, either from linked list or from auto link
-			if (active_block->free_list < active_block->first_autolink) {
+			++active_block->free_list;
+			if (active_block->free_list <= active_block->first_autolink)
 				active_block->free_list = (uint16_t)(*block);
-			}
-			else {
-				++active_block->free_list;
-			}
 			assert(active_block->free_list < size_class->block_count);
+			--active_block->free_count;
 		}
 		return block;
 	}
