@@ -952,7 +952,7 @@ use_active:
 		if (active_block->free_count == 1) {
 			//Span is now completely allocated, set the bookkeeping data in the
 			//span itself and reset the active span pointer in the heap
-			span->data.block.free_count = 0;
+			span->data.block.free_count = active_block->free_count = 0;
 			span->data.block.first_autolink = 0xFFFF;
 			heap->active_span[class_idx] = 0;
 		}
