@@ -80,6 +80,9 @@ Asserts are enabled if __ENABLE_ASSERTS__ is defined to 1 (default is 0, or disa
 
 Overwrite and underwrite guards are enabled if __ENABLE_GUARDS__ is defined to 1 (default is 0, or disabled), either on compile command line or by settings the value in `rpmalloc.c`. This will introduce up to 64 byte overhead on each allocation to store magic numbers, which will be verified when freeing the memory block. The actual overhead is dependent on the requested size compared to size class limits.
 
+# Huge pages
+The allocator has support for huge/large pages on Windows, Linux and MacOS. To enable it, pass a non-zero value in the config value `enable_huge_pages` when initializing the allocator with `rpmalloc_initialize_config`. If the system does not support huge pages it will be automatically disabled. You can query the status by looking at `enable_huge_pages` in the config returned from a call to `rpmalloc_config` after initialization is done.
+
 # Quick overview
 The allocator is similar in spirit to tcmalloc from the [Google Performance Toolkit](https://github.com/gperftools/gperftools). It uses separate heaps for each thread and partitions memory blocks according to a preconfigured set of size classes, up to 2MiB. Larger blocks are mapped and unmapped directly. Allocations for different size classes will be served from different set of memory pages, each "span" of pages is dedicated to one size class. Spans of pages can flow between threads when the thread cache overflows and are released to a global cache, or when the thread ends. Unlike tcmalloc, single blocks do not flow between threads, only entire spans of pages.
 
