@@ -1441,7 +1441,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		GetSystemInfo(&system_info);
 		_memory_page_size = system_info.dwPageSize;
 		_memory_map_granularity = system_info.dwAllocationGranularity;
-		if (config->enable_huge_pages) {
+		if (config && config->enable_huge_pages) {
 			HANDLE token = 0;
 			size_t large_page_minimum = GetLargePageMinimum();
 			if (large_page_minimum)
@@ -1469,7 +1469,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 #else
 		_memory_page_size = (size_t)sysconf(_SC_PAGESIZE);
 		_memory_map_granularity = _memory_page_size;
-		if (config->enable_huge_pages) {
+		if (config && config->enable_huge_pages) {
 #if defined(__linux__)
 			size_t huge_page_size = 0;
 			FILE* meminfo = fopen("/proc/meminfo", "r");
