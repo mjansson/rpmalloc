@@ -393,6 +393,8 @@ static size_class_t _memory_size_class[SIZE_CLASS_COUNT];
 static size_t _memory_medium_size_limit;
 //! Heap ID counter
 static atomic32_t _memory_heap_id;
+//! Huge page support
+static int _memory_huge_pages;
 #if ENABLE_THREAD_CACHE
 //! Adaptive cache max allocation count
 static uint32_t _memory_max_allocation[LARGE_CLASS_COUNT];
@@ -1428,6 +1430,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		_memory_config.memory_unmap = _memory_unmap_os;
 	}
 
+	_memory_huge_pages = 0;
 	_memory_page_size = _memory_config.page_size;
 	_memory_map_granularity = _memory_page_size;
 	if (!_memory_page_size) {
@@ -1437,6 +1440,30 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		GetSystemInfo(&system_info);
 		_memory_page_size = system_info.dwPageSize;
 		_memory_map_granularity = system_info.dwAllocationGranularity;
+		if (config->enable_huge_pages) {
+			HANDLE token = 0;
+			size_t large_page_minimum = GetLargePageMinimum();
+			if (large_page_minimum)
+				OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token);
+			if (token) {
+				LUID luid;
+				if (LookupPrivilegeValue(0, SE_LOCK_MEMORY_NAME, &luid)) {
+					TOKEN_PRIVILEGES token_privileges;
+					memset(&token_privileges, 0, sizeof(token_privileges));
+					token_privileges.PrivilegeCount = 1;
+					token_privileges.Privileges[0].Luid = luid;
+					token_privileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+					if (AdjustTokenPrivileges(token, FALSE, &token_privileges, 0, 0, 0)) {
+						DWORD err = GetLastError();
+						if (err == ERROR_SUCCESS) {
+							_memory_huge_pages = 1;
+							_memory_page_size = large_page_minimum;
+						}
+					}
+				}
+				CloseHandle(token);
+			}
+		}
 #else
 		_memory_page_size = (size_t)sysconf(_SC_PAGESIZE);
 		_memory_map_granularity = _memory_page_size;
@@ -1478,6 +1505,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	_memory_config.page_size = _memory_page_size;
 	_memory_config.span_size = _memory_span_size;
 	_memory_config.span_map_count = _memory_span_map_count;
+	_memory_config.enable_huge_pages = _memory_huge_pages;
 
 	_memory_span_release_count = (_memory_span_map_count > 4 ? ((_memory_span_map_count < 64) ? _memory_span_map_count : 64) : 4);
 	_memory_span_release_count_large = (_memory_span_release_count > 4 ? (_memory_span_release_count / 2) : 2);
@@ -1656,7 +1684,7 @@ _memory_map_os(size_t size, size_t* offset) {
 	assert(size >= _memory_page_size);
 #if PLATFORM_WINDOWS
 	//Ok to MEM_COMMIT - according to MSDN, "actual physical pages are not allocated unless/until the virtual addresses are actually accessed"
-	void* ptr = VirtualAlloc(0, size + padding, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	void* ptr = VirtualAlloc(0, size + padding, (_memory_huge_pages ? MEM_LARGE_PAGES : 0) | MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 	if (!ptr) {
 		assert("Failed to map virtual memory block" == 0);
 		return 0;

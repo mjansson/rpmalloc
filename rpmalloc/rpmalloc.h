@@ -92,6 +92,8 @@ typedef struct rpmalloc_config_t {
 	//  committed memory should not be affected in the default implementation. Will be
 	//  aligned to a multiple of spans that match memory page size in case of huge pages.
 	size_t span_map_count;
+	//! Enable use of large/huge pages
+	int enable_huge_pages;
 	//! Debug callback if memory guards are enabled. Called if a memory overwrite is detected
 	void (*memory_overwrite)(void* address);
 } rpmalloc_config_t;
