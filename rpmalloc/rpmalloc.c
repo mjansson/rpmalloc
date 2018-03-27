@@ -70,14 +70,10 @@
 #endif
 //! Minimum cache size to remain after a release to global cache
 #define MIN_SPAN_CACHE_SIZE 64
-//! Minimum number of spans to transfer between thread and global cache
-#define MIN_SPAN_CACHE_RELEASE 16
 //! Maximum cache size divisor (max cache size will be max allocation count divided by this divisor)
 #define MAX_SPAN_CACHE_DIVISOR 4
 //! Minimum cache size to remain after a release to global cache, large spans
 #define MIN_LARGE_SPAN_CACHE_SIZE 8
-//! Minimum number of spans to transfer between thread and global cache, large spans
-#define MIN_LARGE_SPAN_CACHE_RELEASE 4
 //! Maximum cache size divisor, large spans (max cache size will be max allocation count divided by this divisor)
 #define MAX_LARGE_SPAN_CACHE_DIVISOR 16
 //! Multiplier for global span cache limit (max cache size will be calculated like thread cache and multiplied with this)
@@ -377,8 +373,6 @@ static rpmalloc_config_t _memory_config;
 static size_t _memory_page_size;
 //! Shift to divide by page size
 static size_t _memory_page_size_shift;
-//! Mask to get to start of a memory page
-static size_t _memory_page_mask;
 //! Granularity at which memory pages are mapped by OS
 static size_t _memory_map_granularity;
 //! Size of a span of memory pages
@@ -389,6 +383,10 @@ static size_t _memory_span_size_shift;
 static uintptr_t _memory_span_mask;
 //! Number of spans to map in each map call
 static size_t _memory_span_map_count;
+//! Number of spans to release from thread cache to global cache (single spans)
+static size_t _memory_span_release_count;
+//! Number of spans to release from thread cache to global cache (large multiple spans)
+static size_t _memory_span_release_count_large;
 //! Global size classes
 static size_class_t _memory_size_class[SIZE_CLASS_COUNT];
 //! Run-time size limit of medium blocks
@@ -493,9 +491,11 @@ _memory_counter_increase(span_counter_t* counter, uint32_t* global_counter, size
 		MEMORY_UNUSED(span_count);
 		counter->cache_limit = 0x7FFFFFFF;
 #else
-		const uint32_t cache_limit_max = (uint32_t)_memory_span_size - 2;
 		counter->cache_limit = counter->max_allocations / ((span_count == 1) ? MAX_SPAN_CACHE_DIVISOR : MAX_LARGE_SPAN_CACHE_DIVISOR);
-		const uint32_t cache_limit_min = (span_count == 1) ? (MIN_SPAN_CACHE_RELEASE + MIN_SPAN_CACHE_SIZE) : (MIN_LARGE_SPAN_CACHE_RELEASE + MIN_LARGE_SPAN_CACHE_SIZE);
+		const uint32_t cache_limit_min = (span_count == 1) ?
+		                                 (uint32_t)(_memory_span_release_count + MIN_SPAN_CACHE_SIZE) :
+		                                 (uint32_t)(_memory_span_release_count_large + MIN_LARGE_SPAN_CACHE_SIZE);
+		const uint32_t cache_limit_max = 0x7FFFFFFF;
 		if (counter->cache_limit < cache_limit_min)
 			counter->cache_limit = cache_limit_min;
 		if (counter->cache_limit > cache_limit_max)
@@ -537,6 +537,7 @@ _memory_unmap(void* address, size_t size, size_t offset, size_t release) {
 	assert(!release || (release >= size));
 	assert(!release || (release >= _memory_page_size));
 	if (release) {
+		assert(!(release % _memory_page_size));
 		_memory_statistics_sub(&_mapped_pages, (release >> _memory_page_size_shift));
 		_memory_statistics_add(&_unmapped_total, (release >> _memory_page_size_shift));
 	}
@@ -767,8 +768,6 @@ _memory_cache_insert(global_cache_t* cache, span_t* span, size_t cache_limit) {
 		_memory_unmap_span_list(span);
 		atomic_add32(&cache->size, -list_size);
 		return;
-#else
-		MEMORY_UNUSED(heap);
 #endif
 	}
 	void* current_cache, *new_cache;
@@ -849,8 +848,9 @@ _memory_heap_cache_insert(heap_t* heap, span_t* span) {
 	size_t idx = span_count - 1;
 	if (_memory_span_list_push(&heap->span_cache[idx], span) <= heap->span_counter[idx].cache_limit)
 		return;
-	heap->span_cache[idx] = _memory_span_list_split(span, heap->span_counter[idx].cache_limit);
-	assert(span->data.list.size == heap->span_counter[idx].cache_limit);
+	size_t release_count = (!idx ? _memory_span_release_count : _memory_span_release_count_large);
+	heap->span_cache[idx] = _memory_span_list_split(span, release_count);
+	assert(span->data.list.size == release_count);
 #if ENABLE_STATISTICS
 	heap->thread_to_global += (size_t)span->data.list.size * span_count * _memory_span_size;
 #endif
@@ -964,7 +964,6 @@ use_active:
 			}
 			assert(active_block->free_list < size_class->block_count);
 		}
-
 		return block;
 	}
 
@@ -1075,12 +1074,12 @@ _memory_allocate_heap(void) {
 	atomic_thread_fence_acquire();
 	do {
 		raw_heap = atomic_load_ptr(&_memory_orphan_heaps);
-		heap = (void*)((uintptr_t)raw_heap & _memory_page_mask);
+		heap = (void*)((uintptr_t)raw_heap & ~(uintptr_t)0xFF);
 		if (!heap)
 			break;
 		next_heap = heap->next_orphan;
 		orphan_counter = (uintptr_t)atomic_incr32(&_memory_orphan_counter);
-		next_raw_heap = (void*)((uintptr_t)next_heap | (orphan_counter & ~_memory_page_mask));
+		next_raw_heap = (void*)((uintptr_t)next_heap | (orphan_counter & (uintptr_t)0xFF));
 	}
 	while (!atomic_cas_ptr(&_memory_orphan_heaps, next_raw_heap, raw_heap));
 
@@ -1107,9 +1106,9 @@ _memory_allocate_heap(void) {
 	}
 
 #if ENABLE_THREAD_CACHE
-	heap->span_counter[0].cache_limit = MIN_SPAN_CACHE_RELEASE + MIN_SPAN_CACHE_SIZE;
+	heap->span_counter[0].cache_limit = (uint32_t)(_memory_span_release_count + MIN_SPAN_CACHE_SIZE);
 	for (size_t idx = 1; idx < LARGE_CLASS_COUNT; ++idx)
-		heap->span_counter[idx].cache_limit = MIN_LARGE_SPAN_CACHE_RELEASE + MIN_LARGE_SPAN_CACHE_SIZE;
+		heap->span_counter[idx].cache_limit = (uint32_t)(_memory_span_release_count_large + MIN_LARGE_SPAN_CACHE_SIZE);
 #endif
 
 	//Clean up any deferred operations
@@ -1446,10 +1445,8 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 
 	if (_memory_page_size < 512)
 		_memory_page_size = 512;
-	if (_memory_page_size > (64 * 1024))
-		_memory_page_size = (64 * 1024);
-	//_memory_page_size = 2 * 1024 * 1024;
-
+	if (_memory_page_size > (64 * 1024 * 1024))
+		_memory_page_size = (64 * 1024 * 1024);
 	_memory_page_size_shift = 0;
 	size_t page_size_bit = _memory_page_size;
 	while (page_size_bit != 1) {
@@ -1457,13 +1454,13 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		page_size_bit >>= 1;
 	}
 	_memory_page_size = ((size_t)1 << _memory_page_size_shift);
-	_memory_page_mask = ~(uintptr_t)(_memory_page_size - 1);
 
 	size_t span_size = _memory_config.span_size;
 	if (!span_size)
 		span_size = (64 * 1024);
 	if (span_size > (256 * 1024))
 		span_size = (256 * 1024);
+	_memory_span_size = 4096;
 	_memory_span_size = 4096;
 	_memory_span_size_shift = 12;
 	while (_memory_span_size < span_size) {
@@ -1482,6 +1479,9 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	_memory_config.span_size = _memory_span_size;
 	_memory_config.span_map_count = _memory_span_map_count;
 
+	_memory_span_release_count = (_memory_span_map_count > 4 ? ((_memory_span_map_count < 64) ? _memory_span_map_count : 64) : 4);
+	_memory_span_release_count_large = (_memory_span_release_count > 4 ? (_memory_span_release_count / 2) : 2);
+
 #if defined(__APPLE__) && ENABLE_PRELOAD
 	if (pthread_key_create(&_memory_thread_heap, 0))
 		return -1;
@@ -1490,6 +1490,12 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	atomic_store32(&_memory_heap_id, 0);
 	atomic_store32(&_memory_orphan_counter, 0);
 	atomic_store32(&_memory_active_heaps, 0);
+#if ENABLE_STATISTICS
+	atomic_store32(&_reserved_spans, 0);
+	atomic_store32(&_mapped_pages, 0);
+	atomic_store32(&_mapped_total, 0);
+	atomic_store32(&_unmapped_total, 0);
+#endif
 
 	//Setup all small and medium size classes
 	size_t iclass;
@@ -1603,7 +1609,8 @@ rpmalloc_thread_finalize(void) {
 		const size_t span_count = iclass + 1;
 		while (span) {
 			assert(span->span_count == span_count);
-			span_t* next = _memory_span_list_split(span, !iclass ? MIN_SPAN_CACHE_RELEASE : (MIN_LARGE_SPAN_CACHE_RELEASE / span_count));
+			size_t release_count = (!iclass ? _memory_span_release_count : _memory_span_release_count_large);
+			span_t* next = _memory_span_list_split(span, (uint32_t)release_count);
 			_memory_global_cache_insert(span);
 			span = next;
 		}
@@ -1621,9 +1628,9 @@ rpmalloc_thread_finalize(void) {
 	heap_t* last_heap;
 	do {
 		last_heap = atomic_load_ptr(&_memory_orphan_heaps);
-		heap->next_orphan = (void*)((uintptr_t)last_heap & _memory_page_mask);
+		heap->next_orphan = (void*)((uintptr_t)last_heap & ~(uintptr_t)0xFF);
 		orphan_counter = (uintptr_t)atomic_incr32(&_memory_orphan_counter);
-		raw_heap = (void*)((uintptr_t)heap | (orphan_counter & ~_memory_page_mask));
+		raw_heap = (void*)((uintptr_t)heap | (orphan_counter & (uintptr_t)0xFF));
 	}
 	while (!atomic_cas_ptr(&_memory_orphan_heaps, raw_heap, last_heap));
 
