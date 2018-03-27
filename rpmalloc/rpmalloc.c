@@ -94,6 +94,8 @@
 #  endif
 #else
 #  include <unistd.h>
+#  include <stdio.h>
+#  include <stdlib.h>
 #  if defined(__APPLE__) && ENABLE_PRELOAD
 #    include <pthread.h>
 #  endif
@@ -1174,8 +1176,7 @@ static void
 _memory_deallocate_large_to_heap(heap_t* heap, span_t* span) {
 	//Decrease counter
 	size_t idx = (size_t)span->size_class - SIZE_CLASS_COUNT;
-	size_t span_count = idx + 1;
-	assert(span->span_count == span_count);
+	assert(span->span_count == (idx + 1));
 	assert(span->size_class >= SIZE_CLASS_COUNT);
 	assert(idx < LARGE_CLASS_COUNT);
 	assert(!(span->flags & SPAN_FLAG_MASTER) || !(span->flags & SPAN_FLAG_SUBSPAN));
@@ -1458,6 +1459,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 						if (err == ERROR_SUCCESS) {
 							_memory_huge_pages = 1;
 							_memory_page_size = large_page_minimum;
+							_memory_map_granularity = large_page_minimum;
 						}
 					}
 				}
@@ -1467,6 +1469,24 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 #else
 		_memory_page_size = (size_t)sysconf(_SC_PAGESIZE);
 		_memory_map_granularity = _memory_page_size;
+		if (1) { //config->enable_huge_pages {
+			size_t huge_page_size = 0;
+			FILE* meminfo = fopen("/proc/meminfo", "r");
+			if (meminfo) {
+				char line[128];
+				while (!huge_page_size && fgets(line, sizeof(line) - 1, meminfo)) {
+					line[sizeof(line) - 1] = 0;
+					if (strstr(line, "Hugepagesize:"))
+						huge_page_size = (size_t)strtol(line + 13, 0, 10) * 1024;
+				}
+				fclose(meminfo);
+			}
+			if (huge_page_size) {
+				_memory_huge_pages = 1;
+				_memory_page_size = huge_page_size;
+				_memory_map_granularity = huge_page_size;
+			}
+		}
 #endif
 	}
 
@@ -1634,9 +1654,8 @@ rpmalloc_thread_finalize(void) {
 	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
 		span_t* span = heap->span_cache[iclass];
 #if ENABLE_GLOBAL_CACHE
-		const size_t span_count = iclass + 1;
 		while (span) {
-			assert(span->span_count == span_count);
+			assert(span->span_count == (iclass + 1));
 			size_t release_count = (!iclass ? _memory_span_release_count : _memory_span_release_count_large);
 			span_t* next = _memory_span_list_split(span, (uint32_t)release_count);
 			_memory_global_cache_insert(span);
@@ -1690,7 +1709,7 @@ _memory_map_os(size_t size, size_t* offset) {
 		return 0;
 	}
 #else
-	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED, -1, 0);
+	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, (_memory_huge_pages ? MAP_HUGETLB : 0) | MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED, -1, 0);
 	if ((ptr == MAP_FAILED) || !ptr) {
 		assert("Failed to map virtual memory block" == 0);
 		return 0;
@@ -1720,7 +1739,6 @@ _memory_map_os(size_t size, size_t* offset) {
 		*offset = final_padding >> 3;
 		ptr = final_ptr;
 	}
-
 	assert((size < _memory_span_size) || !((uintptr_t)ptr & ~_memory_span_mask));
 	return ptr;
 }
