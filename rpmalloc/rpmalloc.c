@@ -80,7 +80,6 @@
 
 /// Platform and arch specifics
 #ifdef _MSC_VER
-#  define ALIGNED_STRUCT(name, alignment) __declspec(align(alignment)) struct name
 #  define FORCEINLINE __forceinline
 #  define _Static_assert static_assert
 #  if ENABLE_VALIDATE_ARGS
@@ -93,7 +92,6 @@
 #  if defined(__APPLE__) && ENABLE_PRELOAD
 #    include <pthread.h>
 #  endif
-#  define ALIGNED_STRUCT(name, alignment) struct __attribute__((__aligned__(alignment))) name
 #  define FORCEINLINE inline __attribute__((__always_inline__))
 #endif
 
@@ -397,8 +395,6 @@ static atomic32_t _mapped_total;
 //! Running counter of total number of unmapped memory pages since start
 static atomic32_t _unmapped_total;
 #endif
-
-#define MEMORY_UNUSED(x) (void)sizeof((x))
 
 //! Current thread heap
 #if defined(__APPLE__) && ENABLE_PRELOAD
@@ -791,6 +787,9 @@ _memory_heap_cache_insert(heap_t* heap, span_t* span) {
 #if ENABLE_THREAD_CACHE
 	size_t span_count = span->span_count;
 	size_t idx = span_count - 1;
+#if ENABLE_UNLIMITED_THREAD_CACHE
+	_memory_span_list_push(&heap->span_cache[idx], span);
+#else
 	const size_t release_count = (!idx ? _memory_span_release_count : _memory_span_release_count_large);
 	if (_memory_span_list_push(&heap->span_cache[idx], span) <= (release_count * THREAD_CACHE_MULTIPLIER))
 		return;
@@ -803,6 +802,7 @@ _memory_heap_cache_insert(heap_t* heap, span_t* span) {
 	_memory_global_cache_insert(span);
 #else
 	_memory_unmap_span_list(span);
+#endif
 #endif
 #else
 	_memory_unmap_span(span);
