@@ -14,7 +14,7 @@
 /// Build time configurable limits
 #ifndef HEAP_ARRAY_SIZE
 //! Size of heap hashmap
-#define HEAP_ARRAY_SIZE           79
+#define HEAP_ARRAY_SIZE           47
 #endif
 #ifndef ENABLE_THREAD_CACHE
 //! Enable per-thread cache
@@ -89,7 +89,8 @@
 #  include <unistd.h>
 #  include <stdio.h>
 #  include <stdlib.h>
-#  if defined(__APPLE__) && ENABLE_PRELOAD
+#  if defined(__APPLE__)
+#    include <mach/mach_vm.h>
 #    include <pthread.h>
 #  endif
 #  define FORCEINLINE inline __attribute__((__always_inline__))
@@ -1086,10 +1087,9 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 static void
 _memory_deallocate_large_to_heap(heap_t* heap, span_t* span) {
 	//Decrease counter
-	size_t idx = (size_t)span->size_class - SIZE_CLASS_COUNT;
-	assert(span->span_count == (idx + 1));
+	assert(span->span_count == ((size_t)span->size_class - SIZE_CLASS_COUNT + 1));
 	assert(span->size_class >= SIZE_CLASS_COUNT);
-	assert(idx < LARGE_CLASS_COUNT);
+	assert(span->size_class - SIZE_CLASS_COUNT < LARGE_CLASS_COUNT);
 	assert(!(span->flags & SPAN_FLAG_MASTER) || !(span->flags & SPAN_FLAG_SUBSPAN));
 	assert((span->flags & SPAN_FLAG_MASTER) || (span->flags & SPAN_FLAG_SUBSPAN));
 	if ((span->span_count > 1) && !heap->spans_reserved) {
