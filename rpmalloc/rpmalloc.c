@@ -179,13 +179,13 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 //! Number of small block size classes
 #define SMALL_CLASS_COUNT         63
 //! Maximum size of a small block
-#define SMALL_SIZE_LIMIT          2016
+#define SMALL_SIZE_LIMIT          (SMALL_GRANULARITY * SMALL_CLASS_COUNT)
 //! Granularity of a medium allocation block
 #define MEDIUM_GRANULARITY        512
 //! Medium granularity shift count
 #define MEDIUM_GRANULARITY_SHIFT  9
 //! Number of medium block size classes
-#define MEDIUM_CLASS_COUNT        60
+#define MEDIUM_CLASS_COUNT        63
 //! Total number of small + medium size classes
 #define SIZE_CLASS_COUNT          (SMALL_CLASS_COUNT + MEDIUM_CLASS_COUNT)
 //! Number of large block size classes
@@ -261,7 +261,7 @@ union span_data_t {
 
 //A span can either represent a single span of memory pages with size declared by span_map_count configuration variable,
 //or a set of spans in a continuous region, a super span. Any reference to the term "span" usually refers to both a single
-//span or a super span. A super span can further be diviced into multiple spans (or this, super spans), where the first
+//span or a super span. A super span can further be divided into multiple spans (or this, super spans), where the first
 //(super)span is the master and subsequent (super)spans are subspans. The master span keeps track of how many subspans
 //that are still alive and mapped in virtual memory, and once all subspans and master have been unmapped the entire
 //superspan region is released and unmapped (on Windows for example, the entire superspan range has to be released
@@ -276,7 +276,7 @@ struct span_t {
 	uint16_t    flags;
 	//! Span data depending on use
 	span_data_t data;
-	//! Total span counter  for master spans, distance for subspans
+	//! Total span counter for master spans, distance for subspans
 	uint32_t    total_spans_or_distance;
 	//! Number of spans
 	uint32_t    span_count;
