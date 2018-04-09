@@ -44,6 +44,10 @@
 //! Enable overwrite/underwrite guards
 #define ENABLE_GUARDS             0
 #endif
+#ifndef ENABLE_GREEDY_UNMAP
+//! Allow unmapping memory from freeing thread when the owner thread of the heap is inactive. (small performance hit).
+#define ENABLE_GREEDY_UNMAP       0
+#endif
 #ifndef ENABLE_UNLIMITED_CACHE
 //! Unlimited cache disables any cache limitations
 #define ENABLE_UNLIMITED_CACHE    0
@@ -66,6 +70,10 @@
 #define MAX_LARGE_SPAN_CACHE_DIVISOR 16
 //! Multiplier for global span cache limit (max cache size will be calculated like thread cache and multiplied with this)
 #define MAX_GLOBAL_CACHE_MULTIPLIER 8
+//! The limit of deferred dealloc size before forcing dealloc directly from the freeing thread
+#define MAX_DEFERRED_DEALLOC_SIZE (1024*1024)
+//! The limit of deferred unmap size before forcing unmap directly from the freeing thread
+#define MAX_DEFERRED_UNMAP_SIZE   (1024*1024)
 
 #if !ENABLE_THREAD_CACHE
 #  undef ENABLE_GLOBAL_CACHE
@@ -185,6 +193,16 @@ atomic_add32(atomic32_t* val, int32_t add) {
 #endif
 }
 
+static FORCEINLINE int64_t
+atomic_add64(atomic64_t* val, int64_t add) {
+#ifdef _MSC_VER
+	int64_t old = (int64_t)_InterlockedExchangeAdd64((volatile int64_t*)&val->nonatomic, add);
+	return (old + add);
+#else
+	return __sync_add_and_fetch(&val->nonatomic, add);
+#endif
+}
+
 static FORCEINLINE void*
 atomic_load_ptr(atomicptr_t* src) {
 	return (void*)((uintptr_t)src->nonatomic);
@@ -208,6 +226,34 @@ atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref) {
 #else
 	return __sync_bool_compare_and_swap(&dst->nonatomic, ref, val);
 #endif
+}
+
+static FORCEINLINE int
+atomic_cas_value(atomic32_t* dst, uint32_t val, uint32_t ref) {
+#ifdef _MSC_VER
+	return (_InterlockedCompareExchange((volatile uint32_t*)&dst->nonatomic,
+	                                    (long)val, (long)ref) == (long)ref) ? 1 : 0;
+#else
+	ERROR IMPLEMENT ME!
+#endif
+}
+
+static FORCEINLINE int
+_try_acquire_lock(atomic32_t * lock)
+{
+	return atomic_cas_value(lock, 1, 0);
+}
+
+static FORCEINLINE void
+_acquire_lock(atomic32_t * lock)
+{
+	while (!_try_acquire_lock(lock));
+}
+
+static FORCEINLINE void
+_release_lock(atomic32_t * lock)
+{
+	while (!atomic_cas_value(lock, 0, 1));
 }
 
 /// Preconfigured limits and sizes
@@ -378,6 +424,14 @@ struct heap_t {
 	//! Number of bytes transitioned global -> thread
 	size_t       global_to_thread;
 #endif
+#if ENABLE_GREEDY_UNMAP
+	//! Size of deferred deallocation
+	atomic64_t   defer_deallocate_size;
+	//! Size of deferred unmap
+	atomic64_t   defer_unmap_size;
+	//! Heap spinlock
+	atomic32_t   lock;
+#endif
 };
 
 struct size_class_t {
@@ -484,6 +538,34 @@ set_thread_heap(heap_t* heap) {
 	pthread_setspecific(_memory_thread_heap, heap);
 #else
 	_memory_thread_heap = heap;
+#endif
+}
+
+static FORCEINLINE void
+_acquire_heap_lock(heap_t * heap)
+{
+#if ENABLE_GREEDY_UNMAP
+	_acquire_lock(&heap->lock);
+#endif
+}
+
+static FORCEINLINE int
+_try_acquire_heap_lock(heap_t * heap)
+{
+#if ENABLE_GREEDY_UNMAP
+	return _try_acquire_lock(&heap->lock);
+#else
+	return 0;
+#endif
+}
+
+static FORCEINLINE void
+_release_heap_lock(heap_t * heap)
+{
+#if ENABLE_GREEDY_UNMAP
+	assert(heap->lock.nonatomic);
+	//no need to compare exchange as we know we have the lock
+	heap->lock.nonatomic = 0;
 #endif
 }
 
@@ -644,6 +726,9 @@ _memory_map_spans(heap_t* heap, size_t span_count) {
 	return span;
 }
 
+static span_t*
+_memory_unmap_deferred(heap_t* heap, size_t wanted_count);
+
 //! Defer unmapping of the given span to the owner heap
 static int
 _memory_unmap_defer(int32_t heap_id, span_t* span) {
@@ -652,11 +737,29 @@ _memory_unmap_defer(int32_t heap_id, span_t* span) {
 	if (!heap)
 		return 0;
 	atomic_store32(&span->heap_id, heap_id);
+#if ENABLE_GREEDY_UNMAP
+	uint64_t size = span->size_class;
+#endif
 	void* last_ptr;
 	do {
 		last_ptr = atomic_load_ptr(&heap->defer_unmap);
 		span->next_span = last_ptr;
 	} while (!atomic_cas_ptr(&heap->defer_unmap, span, last_ptr));
+    
+#if ENABLE_GREEDY_UNMAP
+	if (atomic_add64(&heap->defer_unmap_size, size) > MAX_DEFERRED_UNMAP_SIZE)
+	{
+		//don't care if lock fails since a race with the heap owner thread
+		//would indicate that the owner thread is active and most-likely already 
+		//taking care of deferred unmap
+		if (_try_acquire_heap_lock(heap))
+		{
+			_memory_unmap_deferred(heap, 0);
+			_release_heap_lock(heap);
+		}
+	}
+#endif
+
 	return 1;
 }
 
@@ -720,7 +823,14 @@ _memory_unmap_deferred(heap_t* heap, size_t wanted_count) {
 	if (!span || !atomic_cas_ptr(&heap->defer_unmap, 0, span))
 		return 0;
 	span_t* found_span = 0;
+
+#if ENABLE_GREEDY_UNMAP
+	int64_t unmapped_size = 0;
+#endif
 	do {
+#if ENABLE_GREEDY_UNMAP
+		unmapped_size += span->size_class;
+#endif
 		//Verify that we own the master span, otherwise re-defer to owner
 		void* next = span->next_span;
 		if (!found_span && SPAN_COUNT(span->flags) == wanted_count) {
@@ -739,6 +849,11 @@ _memory_unmap_deferred(heap_t* heap, size_t wanted_count) {
 		}
 		span = next;
 	} while (span);
+
+#if ENABLE_GREEDY_UNMAP
+	atomic_add64(&heap->defer_unmap_size, -unmapped_size);
+#endif
+
 	return found_span;
 }
 
@@ -1032,7 +1147,7 @@ _memory_heap_cache_extract(heap_t* heap, size_t span_count) {
 
 //! Allocate a small/medium sized memory block from the given heap
 static void*
-_memory_allocate_from_heap(heap_t* heap, size_t size) {
+_memory_allocate_from_heap_core(heap_t* heap, size_t size) {
 	//Calculate the size class index and do a dependent lookup of the final class index (in case of merged classes)
 	const size_t base_idx = (size <= SMALL_SIZE_LIMIT) ?
 	                        ((size + (SMALL_GRANULARITY - 1)) >> SMALL_GRANULARITY_SHIFT) :
@@ -1135,9 +1250,17 @@ use_active:
 	return pointer_offset(span, SPAN_HEADER_SIZE);
 }
 
+static void*
+_memory_allocate_from_heap(heap_t* heap, size_t size) {
+	_acquire_heap_lock(heap);
+	void * ptr = _memory_allocate_from_heap_core(heap, size);
+	_release_heap_lock(heap);
+	return ptr;
+}
+
 //! Allocate a large sized memory block from the given heap
 static void*
-_memory_allocate_large_from_heap(heap_t* heap, size_t size) {
+_memory_allocate_large_from_heap_core(heap_t* heap, size_t size) {
 	//Calculate number of needed max sized spans (including header)
 	//Since this function is never called if size > LARGE_SIZE_LIMIT
 	//the span_count is guaranteed to be <= LARGE_CLASS_COUNT
@@ -1170,6 +1293,14 @@ _memory_allocate_large_from_heap(heap_t* heap, size_t size) {
 	_memory_counter_increase(&heap->span_counter[idx], &_memory_max_allocation[idx], span_count);
 
 	return pointer_offset(span, SPAN_HEADER_SIZE);
+}
+
+static void*
+_memory_allocate_large_from_heap(heap_t* heap, size_t size) {
+    _acquire_heap_lock(heap);
+    void * ptr = _memory_allocate_large_from_heap_core(heap, size);
+    _release_heap_lock(heap);
+    return ptr;
 }
 
 //! Allocate a new heap
@@ -1214,7 +1345,7 @@ _memory_allocate_heap(void) {
 			heap->next_heap = next_heap;
 		} while (!atomic_cas_ptr(&_memory_heaps[list_idx], heap, next_heap));
 	}
-
+    
 #if ENABLE_THREAD_CACHE
 	heap->span_counter[0].cache_limit = MIN_SPAN_CACHE_RELEASE + MIN_SPAN_CACHE_SIZE;
 	for (size_t idx = 1; idx < LARGE_CLASS_COUNT; ++idx)
@@ -1222,15 +1353,17 @@ _memory_allocate_heap(void) {
 #endif
 
 	//Clean up any deferred operations
+	_acquire_heap_lock(heap);
 	_memory_unmap_deferred(heap, 0);
 	_memory_deallocate_deferred(heap, 0);
+	_release_heap_lock(heap);
 
 	return heap;
 }
 
 //! Deallocate the given small/medium memory block from the given heap
 static void
-_memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
+_memory_deallocate_to_heap_core(heap_t* heap, span_t* span, void* p) {
 	//Check if span is the currently active span in order to operate
 	//on the correct bookkeeping data
 	assert(SPAN_COUNT(span->flags) == 1);
@@ -1273,14 +1406,21 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 	void* blocks_start = pointer_offset(span, SPAN_HEADER_SIZE);
 	count_t block_offset = (count_t)pointer_diff(p, blocks_start);
 	count_t block_idx = block_offset / (count_t)size_class->size;
-	uint32_t* block = pointer_offset(blocks_start, block_idx * size_class->size);
+	uint32_t* block = (uint32_t*)pointer_offset(blocks_start, block_idx * size_class->size);
 	*block = block_data->free_list;
 	block_data->free_list = (uint16_t)block_idx;
 }
 
+static void
+_memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
+	_acquire_heap_lock(heap);
+	_memory_deallocate_to_heap_core(heap, span, p);
+	_release_heap_lock(heap);
+}
+
 //! Deallocate the given large memory block from the given heap
 static void
-_memory_deallocate_large_to_heap(heap_t* heap, span_t* span) {
+_memory_deallocate_large_to_heap_core(heap_t* heap, span_t* span) {
 	//Decrease counter
 	size_t idx = (size_t)span->size_class - SIZE_CLASS_COUNT;
 	size_t span_count = idx + 1;
@@ -1303,6 +1443,13 @@ _memory_deallocate_large_to_heap(heap_t* heap, span_t* span) {
 	_memory_heap_cache_insert(heap, span);
 }
 
+static void
+_memory_deallocate_large_to_heap(heap_t* heap, span_t* span) {
+	_acquire_heap_lock(heap);
+	_memory_deallocate_large_to_heap_core(heap, span);
+	_release_heap_lock(heap);
+}
+
 //! Process pending deferred cross-thread deallocations
 static int
 _memory_deallocate_deferred(heap_t* heap, size_t size_class) {
@@ -1313,23 +1460,34 @@ _memory_deallocate_deferred(heap_t* heap, size_t size_class) {
 		return 0;
 	//Keep track if we deallocate in the given size class
 	int got_class = 0;
+#if ENABLE_GREEDY_UNMAP
+	int64_t deallocated_size = 0;
+#endif
 	do {
 		void* next = *(void**)p;
 		//Get span and check which type of block
 		span_t* span = (void*)((uintptr_t)p & _memory_span_mask);
+#if ENABLE_GREEDY_UNMAP
+		deallocated_size += span->size_class;
+#endif
 		if (span->size_class < SIZE_CLASS_COUNT) {
 			//Small/medium block
 			got_class |= (span->size_class == size_class);
-			_memory_deallocate_to_heap(heap, span, p);
+			_memory_deallocate_to_heap_core(heap, span, p);
 		}
 		else {
 			//Large block
 			got_class |= ((span->size_class >= size_class) && (span->size_class <= (size_class + 2)));
-			_memory_deallocate_large_to_heap(heap, span);
+			_memory_deallocate_large_to_heap_core(heap, span);
 		}
 		//Loop until all pending operations in list are processed
 		p = next;
 	} while (p);
+
+#if ENABLE_GREEDY_UNMAP
+	atomic_add64(&heap->defer_deallocate_size, -deallocated_size);
+#endif
+
 	return got_class;
 }
 
@@ -1341,10 +1499,30 @@ _memory_deallocate_defer(int32_t heap_id, void* p) {
 	if (!heap)
 		return;
 	void* last_ptr;
+
+#if ENABLE_GREEDY_UNMAP
+	span_t* span = (span_t*)(void*)((uintptr_t)p & _memory_span_mask);
+	int64_t deallocated_size = span->size_class;
+#endif
+
 	do {
 		last_ptr = atomic_load_ptr(&heap->defer_deallocate);
 		*(void**)p = last_ptr; //Safe to use block, it's being deallocated
 	} while (!atomic_cas_ptr(&heap->defer_deallocate, p, last_ptr));
+
+#if ENABLE_GREEDY_UNMAP
+	if (atomic_add64(&heap->defer_deallocate_size, deallocated_size) > MAX_DEFERRED_DEALLOC_SIZE)
+	{
+		//don't care if lock fails since a race with the heap owner thread
+		//would indicate that the owner thread is active and most-likely already 
+		//taking care of deferred dealloc
+		if (_try_acquire_heap_lock(heap))
+		{
+			_memory_deallocate_deferred(heap, 0);
+			_release_heap_lock(heap);
+		}
+	}
+#endif
 }
 
 //! Allocate a block of the given size
@@ -1710,6 +1888,7 @@ rpmalloc_thread_finalize(void) {
 	if (!heap)
 		return;
 
+	_acquire_heap_lock(heap);
 	_memory_deallocate_deferred(heap, 0);
 	_memory_unmap_deferred(heap, 0);
 
@@ -1732,6 +1911,7 @@ rpmalloc_thread_finalize(void) {
 		heap->span_cache[iclass] = 0;
 	}
 #endif
+	_release_heap_lock(heap);
 
 	//Orphan the heap
 	void* raw_heap;
@@ -2034,14 +2214,17 @@ rpmalloc_usable_size(void* ptr) {
 void
 rpmalloc_thread_collect(void) {
 	heap_t* heap = get_thread_heap();
+	_acquire_heap_lock(heap);
 	_memory_unmap_deferred(heap, 0);
 	_memory_deallocate_deferred(0, 0);
+	_release_heap_lock(heap);
 }
 
 void
 rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats) {
 	memset(stats, 0, sizeof(rpmalloc_thread_statistics_t));
 	heap_t* heap = get_thread_heap();
+	_acquire_heap_lock(heap);
 	void* p = atomic_load_ptr(&heap->defer_deallocate);
 	while (p) {
 		void* next = *(void**)p;
@@ -2067,6 +2250,7 @@ rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats) {
 			stats->spancache = (size_t)heap->span_cache[iclass]->data.list.size * (iclass + 1) * _memory_span_size;
 	}
 #endif
+	_release_heap_lock(heap);
 }
 
 void
