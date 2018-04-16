@@ -1195,6 +1195,33 @@ _memory_deallocate(void* p) {
 	}
 }
 
+//! Get the usable size of the given block
+static size_t
+_memory_usable_size(void* p) {
+    //Grab the span using guaranteed span alignment
+    span_t* span = (void*)((uintptr_t)p & _memory_span_mask);
+    int32_t heap_id = atomic_load32(&span->heap_id);
+    if (heap_id) {
+        //Small/medium block
+        if (span->size_class < SIZE_CLASS_COUNT)
+        {
+            //take potential alignment into account
+            ptrdiff_t diff = pointer_diff(p, span) - SPAN_HEADER_SIZE;
+            uint32_t  size = _memory_size_class[span->size_class].size;
+            return size - diff%size;
+        }
+
+        //Large block
+        size_t current_spans = (span->size_class - SIZE_CLASS_COUNT) + 1;
+        return (current_spans * _memory_span_size) - pointer_diff(p, span);
+    }
+
+    //Oversized block, page count is stored in span_count
+    size_t current_pages = span->span_count;
+
+    return (current_pages * _memory_page_size) - pointer_diff(p, span);
+}
+
 //! Reallocate the given block to the given size
 static void*
 _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
@@ -1209,8 +1236,6 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 				size_class_t* size_class = _memory_size_class + span->size_class;
 				if ((size_t)size_class->size >= size)
 					return p; //Still fits in block, never mind trying to save memory
-				if (!oldsize)
-					oldsize = size_class->size;
 			}
 			else {
 				//Large block
@@ -1222,8 +1247,6 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 				assert(current_spans == span->span_count);
 				if ((current_spans >= num_spans) && (num_spans >= (current_spans / 2)))
 					return p; //Still fits and less than half of memory would be freed
-				if (!oldsize)
-					oldsize = (current_spans * _memory_span_size) - SPAN_HEADER_SIZE;
 			}
 		}
 		else {
@@ -1236,10 +1259,11 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 			size_t current_pages = span->span_count;
 			if ((current_pages >= num_pages) && (num_pages >= (current_pages / 2)))
 				return p; //Still fits and less than half of memory would be freed
-			if (!oldsize)
-				oldsize = (current_pages * _memory_page_size) - SPAN_HEADER_SIZE;
 		}
 	}
+
+	if (!oldsize)
+		oldsize = rpmalloc_usable_size(p);
 
 	//Size is greater than block size, need to allocate a new block and deallocate the old
 	//Avoid hysteresis by overallocating if increase is small (below 37%)
@@ -1252,27 +1276,6 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 	}
 
 	return block;
-}
-
-//! Get the usable size of the given block
-static size_t
-_memory_usable_size(void* p) {
-	//Grab the span using guaranteed span alignment
-	span_t* span = (void*)((uintptr_t)p & _memory_span_mask);
-	int32_t heap_id = atomic_load32(&span->heap_id);
-	if (heap_id) {
-		//Small/medium block
-		if (span->size_class < SIZE_CLASS_COUNT)
-			return _memory_size_class[span->size_class].size;
-
-		//Large block
-		size_t current_spans = (span->size_class - SIZE_CLASS_COUNT) + 1;
-		return (current_spans * _memory_span_size) - SPAN_HEADER_SIZE;
-	}
-
-	//Oversized block, page count is stored in span_count
-	size_t current_pages = span->span_count;
-	return (current_pages * _memory_page_size) - SPAN_HEADER_SIZE;
 }
 
 //! Adjust and optimize the size class properties for the given class
@@ -1681,7 +1684,6 @@ _memory_guard_validate(void* p) {
 	if (!p)
 		return;
 	void* block_start;
-	size_t block_size = _memory_usable_size(p);
 	span_t* span = (void*)((uintptr_t)p & _memory_span_mask);
 	int32_t heap_id = atomic_load32(&span->heap_id);
 	if (heap_id) {
@@ -1699,6 +1701,9 @@ _memory_guard_validate(void* p) {
 	else {
 		block_start = pointer_offset(span, SPAN_HEADER_SIZE);
 	}
+
+	size_t block_size = _memory_usable_size(block_start);
+
 	uint32_t* deadzone = block_start;
 	//If these asserts fire, you have written to memory before the block start
 	for (int i = 0; i < 8; ++i) {
@@ -1730,16 +1735,36 @@ _memory_guard_validate(void* p) {
 
 #if ENABLE_GUARDS
 static void
-_memory_guard_block(void* block) {
-	if (block) {
-		size_t block_size = _memory_usable_size(block);
-		uint32_t* deadzone = block;
-		deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] =
-		deadzone[4] = deadzone[5] = deadzone[6] = deadzone[7] = MAGIC_GUARD;
-		deadzone = (uint32_t*)pointer_offset(block, block_size - 32);
-		deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] =
-		deadzone[4] = deadzone[5] = deadzone[6] = deadzone[7] = MAGIC_GUARD;
+_memory_guard_block(void* p) {
+	if (!p)
+		return;
+
+	void* block_start;
+	size_t block_size = _memory_usable_size(p);
+	span_t* span = (void*)((uintptr_t)p & _memory_span_mask);
+	int32_t heap_id = atomic_load32(&span->heap_id);
+	if (heap_id) {
+		if (span->size_class < SIZE_CLASS_COUNT) {
+			void* span_blocks_start = pointer_offset(span, SPAN_HEADER_SIZE);
+			size_class_t* size_class = _memory_size_class + span->size_class;
+			count_t block_offset = (count_t)pointer_diff(p, span_blocks_start);
+			count_t block_idx = block_offset / (count_t)size_class->size;
+			block_start = pointer_offset(span_blocks_start, block_idx * size_class->size);
+		}
+		else {
+			block_start = pointer_offset(span, SPAN_HEADER_SIZE);
+		}
 	}
+	else {
+		block_start = pointer_offset(span, SPAN_HEADER_SIZE);
+	}
+
+	uint32_t* deadzone = block_start;
+	deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] =
+		deadzone[4] = deadzone[5] = deadzone[6] = deadzone[7] = MAGIC_GUARD;
+	deadzone = (uint32_t*)pointer_offset(block_start, block_size - 32);
+	deadzone[0] = deadzone[1] = deadzone[2] = deadzone[3] =
+		deadzone[4] = deadzone[5] = deadzone[6] = deadzone[7] = MAGIC_GUARD;
 }
 #define _memory_guard_pre_alloc(size) size += 64
 #define _memory_guard_pre_realloc(block, size) block = pointer_offset(block, -32); size += 64
@@ -1829,7 +1854,7 @@ rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize,
 		if (ptr) {
 			if (!(flags & RPMALLOC_NO_PRESERVE)) {
 				if (!oldsize)
-					oldsize = _memory_usable_size(ptr);
+					oldsize = rpmalloc_usable_size(ptr);
 				memcpy(block, ptr, oldsize < size ? oldsize : size);
 			}
 			rpfree(ptr);
