@@ -715,26 +715,6 @@ _memory_cache_insert(global_cache_t* cache, span_t* span, size_t cache_limit) {
 	} while (!atomic_cas_ptr(&cache->cache, new_cache, current_cache));
 }
 
-//! Extract a number of memory page spans from the global cache
-static span_t*
-_memory_cache_extract(global_cache_t* cache) {
-	uintptr_t span_ptr;
-	do {
-		void* global_span = atomic_load_ptr(&cache->cache);
-		span_ptr = (uintptr_t)global_span & _memory_span_mask;
-		if (span_ptr) {
-			span_t* span = (void*)span_ptr;
-			//By accessing the span ptr before it is swapped out of list we assume that a contending thread
-			//does not manage to traverse the span to being unmapped before we access it
-			void* new_cache = (void*)((uintptr_t)span->prev_span | ((uintptr_t)atomic_incr32(&cache->counter) & ~_memory_span_mask));
-			if (atomic_cas_ptr(&cache->cache, new_cache, global_span)) {
-				atomic_add32(&cache->size, -(int32_t)span->data.list.size);
-				return span;
-			}
-		}
-	} while (span_ptr);
-	return 0;
-}
 
 //! Finalize a global cache, only valid from allocator finalization (not thread safe)
 static void
@@ -763,6 +743,9 @@ _memory_global_cache_insert(span_t* span) {
 	_memory_cache_insert(&_memory_span_cache[span_count - 1], span, cache_limit);
 #endif
 }
+
+static span_t*
+_memory_cache_extract(global_cache_t* cache);
 
 //! Extract a number of memory page spans from the global cache for large blocks
 static span_t*
@@ -1309,6 +1292,37 @@ _memory_adjust_size_class(size_t iclass) {
 #  endif
 #endif
 #include <errno.h>
+
+//! Extract a number of memory page spans from the global cache
+static span_t*
+_memory_cache_extract(global_cache_t* cache) {
+	uintptr_t span_ptr;
+	do {
+		void* global_span = atomic_load_ptr(&cache->cache);
+		span_ptr = (uintptr_t)global_span & _memory_span_mask;
+		if (span_ptr) {
+			span_t* span = (void*)span_ptr;
+			//By accessing the span ptr before it is swapped out of list we assume that a contending thread
+			//does not manage to traverse the span to being unmapped before we access it
+#if PLATFORM_WINDOWS
+			__try
+			{
+#endif
+				void* new_cache = (void*)((uintptr_t)span->prev_span | ((uintptr_t)atomic_incr32(&cache->counter) & ~_memory_span_mask));
+				if (atomic_cas_ptr(&cache->cache, new_cache, global_span)) {
+					atomic_add32(&cache->size, -(int32_t)span->data.list.size);
+					return span;
+				}
+#if PLATFORM_WINDOWS
+			}
+			__except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) 
+			{
+			}
+#endif
+		}
+	} while (span_ptr);
+	return 0;
+}
 
 //! Initialize the allocator and setup global data
 int
