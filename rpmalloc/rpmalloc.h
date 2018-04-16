@@ -94,64 +94,81 @@ typedef struct rpmalloc_config_t {
 	size_t span_map_count;
 	//! Enable use of large/huge pages
 	int enable_huge_pages;
-	//! Debug callback if memory guards are enabled. Called if a memory overwrite is detected
-	void (*memory_overwrite)(void* address);
 } rpmalloc_config_t;
 
+//! Initialize allocator with default configuration
 extern int
 rpmalloc_initialize(void);
 
+//! Initialize allocator with given configuration
 extern int
 rpmalloc_initialize_config(const rpmalloc_config_t* config);
 
+//! Get allocator configuration
 extern const rpmalloc_config_t*
 rpmalloc_config(void);
 
+//! Finalize allocator
 extern void
 rpmalloc_finalize(void);
 
+//! Initialize allocator for calling thread
 extern void
 rpmalloc_thread_initialize(void);
 
+//! Finalize allocator for calling thread
 extern void
 rpmalloc_thread_finalize(void);
 
+//! Perform deferred deallocations pending for the calling thread heap
 extern void
 rpmalloc_thread_collect(void);
 
+//! Query if allocator is initialized for calling thread
 extern int
 rpmalloc_is_thread_initialized(void);
 
+//! Get per-thread statistics
 extern void
 rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats);
 
+//! Get global statistics
 extern void
 rpmalloc_global_statistics(rpmalloc_global_statistics_t* stats);
 
+//! Allocate a memory block of at least the given size
 extern RPMALLOC_RESTRICT void*
 rpmalloc(size_t size) RPMALLOC_ATTRIBUTE;
 
+//! Free the given memory block
 extern void
 rpfree(void* ptr);
 
+//! Allocate a memory block of at least the given size and zero initialize it
 extern RPMALLOC_RESTRICT void*
 rpcalloc(size_t num, size_t size) RPMALLOC_ATTRIBUTE;
 
+//! Reallocate the given block to at least the given size
 extern void*
 rprealloc(void* ptr, size_t size);
 
+//! Reallocate the given block to at least the given size and alignment, with optional control flags (see RPMALLOC_NO_PRESERVE)
 extern void*
 rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize, unsigned int flags);
 
+//! Allocate a memory block of at least the given size and alignment
 extern RPMALLOC_RESTRICT void*
 rpaligned_alloc(size_t alignment, size_t size) RPMALLOC_ATTRIBUTE;
 
+//! Allocate a memory block of at least the given size and alignment
 extern RPMALLOC_RESTRICT void*
 rpmemalign(size_t alignment, size_t size) RPMALLOC_ATTRIBUTE;
 
+//! Allocate a memory block of at least the given size and alignment
 extern int
 rpposix_memalign(void **memptr, size_t alignment, size_t size);
 
+//! Query the usable size of the given memory block (from given pointer to the end of block)
 extern size_t
 rpmalloc_usable_size(void* ptr);
 
