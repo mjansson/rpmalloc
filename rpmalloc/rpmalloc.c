@@ -1263,16 +1263,22 @@ _memory_usable_size(void* p) {
 	if (heap_id) {
 		//Small/medium block
 		if (span->size_class < SIZE_CLASS_COUNT)
-			return _memory_size_class[span->size_class].size;
+		{
+			//take potential alignment into account
+			ptrdiff_t diff = pointer_diff(p, span) - SPAN_HEADER_SIZE;
+			uint32_t  size = _memory_size_class[span->size_class].size;
+			return size - (diff&(size-1));
+		}
 
 		//Large block
 		size_t current_spans = (span->size_class - SIZE_CLASS_COUNT) + 1;
-		return (current_spans * _memory_span_size) - SPAN_HEADER_SIZE;
+		return (current_spans * _memory_span_size) - pointer_diff(p, span);
 	}
 
 	//Oversized block, page count is stored in span_count
 	size_t current_pages = span->span_count;
-	return (current_pages * _memory_page_size) - SPAN_HEADER_SIZE;
+    
+	return (current_pages * _memory_page_size) - pointer_diff(p, span);
 }
 
 //! Adjust and optimize the size class properties for the given class
