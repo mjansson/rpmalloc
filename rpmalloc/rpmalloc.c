@@ -1209,8 +1209,6 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 				size_class_t* size_class = _memory_size_class + span->size_class;
 				if ((size_t)size_class->size >= size)
 					return p; //Still fits in block, never mind trying to save memory
-				if (!oldsize)
-					oldsize = size_class->size;
 			}
 			else {
 				//Large block
@@ -1222,8 +1220,6 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 				assert(current_spans == span->span_count);
 				if ((current_spans >= num_spans) && (num_spans >= (current_spans / 2)))
 					return p; //Still fits and less than half of memory would be freed
-				if (!oldsize)
-					oldsize = (current_spans * _memory_span_size) - SPAN_HEADER_SIZE;
 			}
 		}
 		else {
@@ -1236,10 +1232,11 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 			size_t current_pages = span->span_count;
 			if ((current_pages >= num_pages) && (num_pages >= (current_pages / 2)))
 				return p; //Still fits and less than half of memory would be freed
-			if (!oldsize)
-				oldsize = (current_pages * _memory_page_size) - SPAN_HEADER_SIZE;
 		}
 	}
+
+	if (!oldsize)
+		oldsize = _memory_usable_size(p);
 
 	//Size is greater than block size, need to allocate a new block and deallocate the old
 	//Avoid hysteresis by overallocating if increase is small (below 37%)
