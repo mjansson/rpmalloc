@@ -1220,7 +1220,7 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 				if ((current_spans >= num_spans) && (num_spans >= (current_spans / 2)))
 					return block; //Still fits and less than half of memory would be freed
 				if (!oldsize)
-					oldsize = (current_spans * _memory_span_size) - (SPAN_HEADER_SIZE + pointer_diff(p, block));
+					oldsize = (current_spans * _memory_span_size) - pointer_diff(p, span);
 			}
 		}
 		else {
@@ -1235,7 +1235,7 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 			if ((current_pages >= num_pages) && (num_pages >= (current_pages / 2)))
 				return block; //Still fits and less than half of memory would be freed
 			if (!oldsize)
-				oldsize = (current_pages * _memory_page_size) - (SPAN_HEADER_SIZE + pointer_diff(p, block));
+				oldsize = (current_pages * _memory_page_size) - pointer_diff(p, span);
 		}
 	}
 
@@ -1263,10 +1263,7 @@ _memory_usable_size(void* p) {
 		if (span->size_class < SIZE_CLASS_COUNT) {
 			size_class_t* size_class = _memory_size_class + span->size_class;
 			void* blocks_start = pointer_offset(span, SPAN_HEADER_SIZE);
-			count_t block_offset = (count_t)pointer_diff(p, blocks_start);
-			count_t block_idx = block_offset / (count_t)size_class->size;
-			void* block = pointer_offset(blocks_start, block_idx * size_class->size);
-			return size_class->size - pointer_diff(p, block);
+			return size_class->size - (pointer_diff(p, blocks_start) % size_class->size);
 		}
 
 		//Large block
