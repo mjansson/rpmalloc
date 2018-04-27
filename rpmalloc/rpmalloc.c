@@ -391,6 +391,8 @@ static atomic32_t _reserved_spans;
 static atomic32_t _mapped_total;
 //! Running counter of total number of unmapped memory pages since start
 static atomic32_t _unmapped_total;
+//! Total number of currently mapped memory pages in OS calls
+static atomic32_t _mapped_pages_os;
 #endif
 
 //! Current thread heap
@@ -1450,6 +1452,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	atomic_store32(&_mapped_pages, 0);
 	atomic_store32(&_mapped_total, 0);
 	atomic_store32(&_unmapped_total, 0);
+	atomic_store32(&_mapped_pages_os, 0);
 #endif
 
 	//Setup all small and medium size classes
@@ -1526,6 +1529,7 @@ rpmalloc_finalize(void) {
 	//If you hit these asserts you probably have memory leaks or double frees in your code
 	assert(!atomic_load32(&_mapped_pages));
 	assert(!atomic_load32(&_reserved_spans));
+	assert(!atomic_load32(&_mapped_pages_os));
 #endif
 
 #if defined(__APPLE__) && ENABLE_PRELOAD
@@ -1626,7 +1630,9 @@ _memory_map_os(size_t size, size_t* offset) {
 		return 0;
 	}
 #endif
-
+#if ENABLE_STATISTICS
+	atomic_add32(&_mapped_pages_os, (int32_t)((size + padding) >> _memory_page_size_shift));
+#endif
 	if (padding) {
 		size_t final_padding = padding - ((uintptr_t)ptr & ~_memory_span_mask);
 		void* final_ptr = pointer_offset(ptr, final_padding);
@@ -1691,6 +1697,10 @@ _memory_unmap_os(void* address, size_t size, size_t offset, size_t release) {
 		}
 	}
 #endif
+#endif
+#if ENABLE_STATISTICS
+	if (release)
+		atomic_add32(&_mapped_pages_os, -(int32_t)(release >> _memory_page_size_shift));
 #endif
 }
 
