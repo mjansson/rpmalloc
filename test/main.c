@@ -95,15 +95,17 @@ test_alloc(void) {
 				baseptr[ibyte] = (char)(ibyte & 0xFF);
 
 			size_t resize = (iloop * ipass + datasize[(iloop + ipass) % 7]) & 0x2FF;
+			size_t capsize = (size > resize ? resize : size);
 			baseptr = rprealloc(baseptr, resize);
-			for (size_t ibyte = 0; ibyte < (size > resize ? resize : size); ++ibyte) {
+			for (size_t ibyte = 0; ibyte < capsize; ++ibyte) {
 				if (baseptr[ibyte] != (char)(ibyte & 0xFF))
 					return -1;
 			}
 
 			size_t alignsize = (iloop * ipass + datasize[(iloop + ipass * 3) % 7]) & 0x2FF;
+			capsize = (capsize > alignsize ? alignsize : capsize);
 			baseptr = rpaligned_realloc(baseptr, 128, alignsize, resize, 0);
-			for (size_t ibyte = 0; ibyte < (size > alignsize ? alignsize : size); ++ibyte) {
+			for (size_t ibyte = 0; ibyte < capsize; ++ibyte) {
 				if (baseptr[ibyte] != (char)(ibyte & 0xFF))
 					return -1;
 			}
