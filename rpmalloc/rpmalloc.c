@@ -44,34 +44,38 @@
 //! Disable unmapping memory pages
 #define DISABLE_UNMAP             0
 #endif
+#ifndef DEFAULT_SPAN_MAP_COUNT
+//! Default number of spans to map in call to map more virtual memory
+#define DEFAULT_SPAN_MAP_COUNT    32
+#endif
+
+#if ENABLE_THREAD_CACHE
 #ifndef ENABLE_UNLIMITED_CACHE
 //! Unlimited thread and global cache unified control
 #define ENABLE_UNLIMITED_CACHE    0
 #endif
 #ifndef ENABLE_UNLIMITED_THREAD_CACHE
 //! Unlimited cache disables any thread cache limitations
-#define ENABLE_UNLIMITED_THREAD_CACHE    ENABLE_UNLIMITED_CACHE
-#endif
-#ifndef ENABLE_UNLIMITED_GLOBAL_CACHE
-//! Unlimited cache disables any global cache limitations
-#define ENABLE_UNLIMITED_GLOBAL_CACHE    ENABLE_UNLIMITED_CACHE
-#endif
-#ifndef DEFAULT_SPAN_MAP_COUNT
-//! Default number of spans to map in call to map more virtual memory
-#define DEFAULT_SPAN_MAP_COUNT    32
+#define ENABLE_UNLIMITED_THREAD_CACHE ENABLE_UNLIMITED_CACHE
 #endif
 //! Multiplier for thread cache (cache limit will be span release count multiplied by this value)
 #define THREAD_CACHE_MULTIPLIER 16
+#endif
+
+#if ENABLE_GLOBAL_CACHE && ENABLE_THREAD_CACHE
+#ifndef ENABLE_UNLIMITED_GLOBAL_CACHE
+//! Unlimited cache disables any global cache limitations
+#define ENABLE_UNLIMITED_GLOBAL_CACHE ENABLE_UNLIMITED_CACHE
+#endif
 //! Multiplier for global cache (cache limit will be span release count multiplied by this value)
 #define GLOBAL_CACHE_MULTIPLIER 64
-
-#if !ENABLE_THREAD_CACHE
+#else
 #  undef ENABLE_GLOBAL_CACHE
 #  define ENABLE_GLOBAL_CACHE 0
-#  undef THREAD_CACHE_MULTIPLIER
 #endif
-#if !ENABLE_GLOBAL_CACHE
-#  undef GLOBAL_CACHE_MULTIPLIER
+
+#if DISABLE_UNMAP && !ENABLE_GLOBAL_CACHE
+#  error Must use cache if unmap is disabled
 #endif
 
 /// Platform and arch specifics
@@ -576,6 +580,8 @@ _memory_unmap_span(span_t* span) {
 	}
 }
 
+#if ENABLE_THREAD_CACHE
+
 //! Unmap a single linked list of spans
 static void
 _memory_unmap_span_list(span_t* span) {
@@ -587,8 +593,6 @@ _memory_unmap_span_list(span_t* span) {
 	}
 	assert(!span);
 }
-
-#if ENABLE_THREAD_CACHE
 
 //! Split a super span in two
 static span_t*
@@ -798,6 +802,7 @@ _memory_heap_cache_insert(heap_t* heap, span_t* span) {
 #endif
 #endif
 #else
+	(void)sizeof(heap);
 	_memory_unmap_span(span);
 #endif
 }
@@ -1206,7 +1211,7 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 				if ((size_t)size_class->size >= size)
 					return block; //Still fits in block, never mind trying to save memory
 				if (!oldsize)
-					oldsize = size_class->size - pointer_diff(p, block);
+					oldsize = size_class->size - (uint32_t)pointer_diff(p, block);
 			}
 			else {
 				//Large block
@@ -1220,7 +1225,7 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 				if ((current_spans >= num_spans) && (num_spans >= (current_spans / 2)))
 					return block; //Still fits and less than half of memory would be freed
 				if (!oldsize)
-					oldsize = (current_spans * _memory_span_size) - pointer_diff(p, span);
+					oldsize = (current_spans * _memory_span_size) - (size_t)pointer_diff(p, span);
 			}
 		}
 		else {
@@ -1235,7 +1240,7 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 			if ((current_pages >= num_pages) && (num_pages >= (current_pages / 2)))
 				return block; //Still fits and less than half of memory would be freed
 			if (!oldsize)
-				oldsize = (current_pages * _memory_page_size) - pointer_diff(p, span);
+				oldsize = (current_pages * _memory_page_size) - (size_t)pointer_diff(p, span);
 		}
 	}
 
@@ -1268,12 +1273,12 @@ _memory_usable_size(void* p) {
 
 		//Large block
 		size_t current_spans = (span->size_class - SIZE_CLASS_COUNT) + 1;
-		return (current_spans * _memory_span_size) - pointer_diff(p, span);
+		return (current_spans * _memory_span_size) - (size_t)pointer_diff(p, span);
 	}
 
 	//Oversized block, page count is stored in span_count
 	size_t current_pages = span->span_count;
-	return (current_pages * _memory_page_size) - pointer_diff(p, span);
+	return (current_pages * _memory_page_size) - (size_t)pointer_diff(p, span);
 }
 
 //! Adjust and optimize the size class properties for the given class
@@ -1626,8 +1631,9 @@ _memory_map_os(size_t size, size_t* offset) {
 		size_t final_padding = padding - ((uintptr_t)ptr & ~_memory_span_mask);
 		void* final_ptr = pointer_offset(ptr, final_padding);
 
-		//Unmap the unused pages before/after aligned spans
+		//Unmap the unused pages after aligned spans
 		assert(final_padding <= _memory_span_size);
+		assert(final_padding <= padding);
 		assert(!(final_padding % 8));
 		size_t remains = padding - final_padding;
 		if (remains >= _memory_page_size) {
@@ -1637,9 +1643,11 @@ _memory_map_os(size_t size, size_t* offset) {
 			//	assert("Failed to decommit post-padding of virtual memory block" == 0);
 			//}
 #else
-			if (munmap(pointer_offset(ptr, final_padding + size), remains)) {
-				assert("Failed to unmap post-padding of virtual memory block" == 0);
-			}
+			//if (munmap(pointer_offset(ptr, final_padding + size), remains)) {
+			//	int err = errno;
+			//	printf("Unmap failed of post-padding, size %zd padding %zd final_padding %zd remains %zd: %s (%d)\n", size, padding, final_padding, remains, strerror(err), err);
+			//	assert("Failed to unmap post-padding of virtual memory block" == 0);
+			//}
 #endif
 		}
 		*offset = final_padding >> 3;
@@ -1659,7 +1667,8 @@ _memory_unmap_os(void* address, size_t size, size_t offset, size_t release) {
 		offset <<= 3;
 		address = pointer_offset(address, -(int32_t)offset);
 #if PLATFORM_POSIX
-		size += offset;
+		//Padding is always one span size
+		release += _memory_span_size;
 #endif
 	}
 #if !DISABLE_UNMAP
@@ -1668,8 +1677,18 @@ _memory_unmap_os(void* address, size_t size, size_t offset, size_t release) {
 		assert("Failed to unmap virtual memory block" == 0);
 	}
 #else
-	if (munmap(address, size)) {
-		assert("Failed to unmap virtual memory block" == 0);
+	if (release) {
+		if (munmap(address, release)) {
+			assert("Failed to unmap virtual memory block" == 0);
+		}
+	}
+	else {
+#if defined(MADV_FREE)
+		if (madvise(address, size, MADV_FREE))
+#endif
+		if (madvise(address, size, MADV_DONTNEED)) {
+			assert("Failed to madvise virtual memory block as free" == 0);
+		}
 	}
 #endif
 #endif
