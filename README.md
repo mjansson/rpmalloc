@@ -18,7 +18,7 @@ Please consider our Patreon to support our work - https://www.patreon.com/rampan
 Created by Mattias Jansson ([@maniccoder](https://twitter.com/maniccoder)) / Rampant Pixels - http://www.rampantpixels.com
 
 # Performance
-We believe rpmalloc is faster than most popular memory allocators like tcmalloc, hoard, ptmalloc3 and others without causing extra allocated memory overhead in the thread caches compared to these allocators. We also believe the implementation to be easier to read and modify compared to these allocators, as it is a single source file of ~2100 lines of C code. All allocations have a natural 32-byte alignment.
+We believe rpmalloc is faster than most popular memory allocators like tcmalloc, hoard, ptmalloc3 and others without causing extra allocated memory overhead in the thread caches compared to these allocators. We also believe the implementation to be easier to read and modify compared to these allocators, as it is a single source file of ~2000 lines of C code. All allocations have a natural 32-byte alignment.
 
 Contained in a parallel repository is a benchmark utility that performs interleaved allocations (both aligned to 8 or 16 bytes, and unaligned) and deallocations (both in-thread and cross-thread) in multiple threads. It measures number of memory operations performed per CPU second, as well as memory overhead by comparing the virtual memory mapped with the number of bytes requested in allocation calls. The setup of number of thread, cross-thread deallocation rate and allocation size limits is configured by command line arguments.
 
@@ -63,6 +63,10 @@ Free memory pages are cached both per thread and in a global cache for all threa
 
 __ENABLE_UNLIMITED_CACHE__: By default defined to 0, set to 1 to make all caches infinite, i.e never release spans to global cache unless thread finishes and never unmap memory pages back to the OS. Highest performance but largest memory overhead.
 
+__ENABLE_UNLIMITED_GLOBAL_CACHE__: By default defined to 0, set to 1 to make global caches infinite, i.e never unmap memory pages back to the OS.
+
+__ENABLE_UNLIMITED_THREAD_CACHE__: By default defined to 0, set to 1 to make thread caches infinite, i.e never release spans to global cache unless thread finishes.
+
 __ENABLE_GLOBAL_CACHE__: By default defined to 1, enables the global cache shared between all threads. Set to 0 to disable the global cache and directly unmap pages evicted from the thread cache.
 
 __ENABLE_THREAD_CACHE__: By default defined to 1, enables the per-thread cache. Set to 0 to disable the thread cache and directly unmap pages no longer in use (also disables the global cache).
@@ -75,6 +79,9 @@ Integer safety checks on all calls are enabled if __ENABLE_VALIDATE_ARGS__ is de
 Asserts are enabled if __ENABLE_ASSERTS__ is defined to 1 (default is 0, or disabled), either on compile command line or by setting the value in `rpmalloc.c`.
 
 Overwrite and underwrite guards are enabled if __ENABLE_GUARDS__ is defined to 1 (default is 0, or disabled), either on compile command line or by settings the value in `rpmalloc.c`. This will introduce up to 64 byte overhead on each allocation to store magic numbers, which will be verified when freeing the memory block. The actual overhead is dependent on the requested size compared to size class limits.
+
+# Huge pages
+The allocator has support for huge/large pages on Windows, Linux and MacOS. To enable it, pass a non-zero value in the config value `enable_huge_pages` when initializing the allocator with `rpmalloc_initialize_config`. If the system does not support huge pages it will be automatically disabled. You can query the status by looking at `enable_huge_pages` in the config returned from a call to `rpmalloc_config` after initialization is done.
 
 # Quick overview
 The allocator is similar in spirit to tcmalloc from the [Google Performance Toolkit](https://github.com/gperftools/gperftools). It uses separate heaps for each thread and partitions memory blocks according to a preconfigured set of size classes, up to 2MiB. Larger blocks are mapped and unmapped directly. Allocations for different size classes will be served from different set of memory pages, each "span" of pages is dedicated to one size class. Spans of pages can flow between threads when the thread cache overflows and are released to a global cache, or when the thread ends. Unlike tcmalloc, single blocks do not flow between threads, only entire spans of pages.
@@ -93,20 +100,20 @@ Each span for a small and medium size class keeps track of how many blocks are a
 Large blocks, or super spans, are cached in two levels. The first level is a per thread list of free super spans. The second level is a global list of free super spans.
 
 # Memory mapping
-By default the allocator uses OS APIs to map virtual memory pages as needed, either `VirtualAlloc` on Windows or `mmap` on POSIX systems. If you want to use your own custom memory mapping provider you can use __rpmalloc_initialize_config__ and pass function pointers to map and unmap virtual memory. These function should reserve and free the requested number of bytes.
+By default the allocator uses OS APIs to map virtual memory pages as needed, either `VirtualAlloc` on Windows or `mmap` on POSIX systems. If you want to use your own custom memory mapping provider you can use __rpmalloc_initialize_config__ and pass function pointers to map and unmap virtual memory. These function should reserve and free the requested number of bytes. 
 
-The functions must guarantee alignment to the configured span size. Either provide the span size during initialization using __rpmalloc_initialize_config__, or use __rpmalloc_config__ to find the required alignment which is equal to the span size. The span size MUST be a power of two in [4096, 262144] range, and be a multiple (or divisor) of the memory page size.
+The returned memory address from the memory map function MUST be aligned to the memory page size and the memory span size (which ever is larger), both of which is configurable. Either provide the page and span sizes during initialization using __rpmalloc_initialize_config__, or use __rpmalloc_config__ to find the required alignment which is equal to the maximum of page and span size. The span size MUST be a power of two in [4096, 262144] range, and be a multiple or divisor of the memory page size.
 
-Memory mapping requests are always done in multiples of the memory page size, whichever is larger. You can specify a custom page size when initializing rpmalloc with __rpmalloc_initialize_config__, or pass 0 to let rpmalloc determine the system memory page size using OS APIs. The page size MUST be a power of two in [512, 16384] range.
+Memory mapping requests are always done in multiples of the memory page size. You can specify a custom page size when initializing rpmalloc with __rpmalloc_initialize_config__, or pass 0 to let rpmalloc determine the system memory page size using OS APIs. The page size MUST be a power of two.
 
-To reduce system call overhead, memory spans are mapped in batches controlled by the `span_map_count` configuration variable (which defaults to the `DEFAULT_SPAN_MAP_COUNT` value if 0, which in turn is sized according to the cache configuration define, defaulting to 8). If the platform can handle partial unmaps (unmapping one or more spans of memory pages mapped in a larger batch) the `unmap_partial` configuration variable should be set to non-zero. If not, spans will be kept until the entire batch can be unmapped.
+To reduce system call overhead, memory spans are mapped in batches controlled by the `span_map_count` configuration variable (which defaults to the `DEFAULT_SPAN_MAP_COUNT` value if 0, which in turn is sized according to the cache configuration define, defaulting to 32). If the memory page size is larger than the span size, the number of spans to map in a single call will be adjusted to guarantee a multiple of the page size, and the spans will be kept mapped until the entire span range can be unmapped in one call (to avoid trying to unmap partial pages).
 
 # Span breaking
 Super spans (spans a multiple > 1 of the span size) can be subdivided into smaller spans to fulfull a need to map a new span of memory. By default the allocator will greedily grab and break any larger span from the available caches before mapping new virtual memory. However, spans can currently not be glued together to form larger super spans again. Subspans can traverse the cache and be used by different threads individually.
 
-A span that is a subspan of a larger super span can be individually decommitted to reduce physical memory pressure when the span is evicted from caches and scheduled to be unmapped. The entire original super span will keep track of the subspans it is broken up into, and when the entire range is decommitted tha super span will be unmapped. This allows platforms like Windows that require the entire virtual memory range that was mapped in a call to VirtualAlloc to be unmapped in one call to VirtualFree, while still decommitting individual pages in subspans.
+A span that is a subspan of a larger super span can be individually decommitted to reduce physical memory pressure when the span is evicted from caches and scheduled to be unmapped. The entire original super span will keep track of the subspans it is broken up into, and when the entire range is decommitted tha super span will be unmapped. This allows platforms like Windows that require the entire virtual memory range that was mapped in a call to VirtualAlloc to be unmapped in one call to VirtualFree, while still decommitting individual pages in subspans (if the page size is smaller than the span size).
 
-If you use a custom memory map/unmap function you need to take this into account by looking at the `release` parameter given to the `memory_unmap` function. It is set to 0 for decommitting invididual pages and 1 for releasing the entire super span memory range.
+If you use a custom memory map/unmap function you need to take this into account by looking at the `release` parameter given to the `memory_unmap` function. It is set to 0 for decommitting invididual pages and the total super span byte size for finally releasing the entire super span memory range.
 
 # Memory guards
 If you define the __ENABLE_GUARDS__ to 1, all memory allocations will be padded with extra guard areas before and after the memory block (while still honoring the requested alignment). These dead zones will be filled with a pattern and checked when the block is freed. If the patterns are not intact the callback set in initialization config is called, or if not set an assert is fired.

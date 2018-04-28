@@ -13,20 +13,8 @@
 #include <string.h>
 #include <math.h>
 
-#ifndef ENABLE_GUARDS
-#  define ENABLE_GUARDS 0
-#endif
-
-#if ENABLE_GUARDS
-#ifdef _MSC_VER
-#  define PRIsize "Iu"
-#else
-#  define PRIsize "zu"
-#endif
-#endif
-
 #define pointer_offset(ptr, ofs) (void*)((char*)(ptr) + (ptrdiff_t)(ofs))
-//#define pointer_diff(first, second) (ptrdiff_t)((const char*)(first) - (const char*)(second))
+#define pointer_diff(first, second) (ptrdiff_t)((const char*)(first) - (const char*)(second))
 
 static size_t _hardware_threads;
 
@@ -50,7 +38,81 @@ test_alloc(void) {
 
 	void* testptr = rpmalloc(253000);
 	testptr = rprealloc(testptr, 154);
+	//Verify that blocks are 32 byte size aligned
+	if (rpmalloc_usable_size(testptr) != 160)
+		return -1;
+	if (rpmalloc_usable_size(pointer_offset(testptr, 16)) != 144)
+		return -1;
 	rpfree(testptr);
+
+	//Reallocation tests
+	for (iloop = 1; iloop < 32; ++iloop) {
+		size_t size = 37 * iloop;
+		testptr = rpmalloc(size);
+		*((uintptr_t*)testptr) = 0x12345678;
+		if (rpmalloc_usable_size(testptr) < size)
+			return -1;
+		if (rpmalloc_usable_size(testptr) >= (size + 32))
+			return -1;
+		testptr = rprealloc(testptr, size + 32);
+		if (rpmalloc_usable_size(testptr) < (size + 32))
+			return -1;
+		if (rpmalloc_usable_size(testptr) >= ((size + 32) * 2))
+			return -1;
+		if (*((uintptr_t*)testptr) != 0x12345678)
+			return -1;
+		rpfree(testptr);
+
+		testptr = rpaligned_alloc(128, size);
+		*((uintptr_t*)testptr) = 0x12345678;
+		if (rpmalloc_usable_size(testptr) < size)
+			return -1;
+		if (rpmalloc_usable_size(testptr) >= (size + 128 + 32))
+			return -1;
+		testptr = rpaligned_realloc(testptr, 128, size + 32, 0, 0);
+		if (rpmalloc_usable_size(testptr) < (size + 32))
+			return -1;
+		if (rpmalloc_usable_size(testptr) >= (((size + 32) * 2) + 128))
+			return -1;
+		if (*((uintptr_t*)testptr) != 0x12345678)
+			return -1;
+		void* unaligned = rprealloc(testptr, size);
+		if (unaligned != testptr) {
+			ptrdiff_t diff = pointer_diff(testptr, unaligned);
+			if (diff < 0)
+				return -1;
+			if (diff >= 128)
+				return -1;
+		}
+		rpfree(testptr);
+	}
+
+	for (iloop = 0; iloop < 64; ++iloop) {
+		for (ipass = 0; ipass < 8142; ++ipass) {
+			size_t size = iloop + ipass + datasize[(iloop + ipass) % 7];
+			char* baseptr = rpmalloc(size);
+			for (size_t ibyte = 0; ibyte < size; ++ibyte)
+				baseptr[ibyte] = (char)(ibyte & 0xFF);
+
+			size_t resize = (iloop * ipass + datasize[(iloop + ipass) % 7]) & 0x2FF;
+			size_t capsize = (size > resize ? resize : size);
+			baseptr = rprealloc(baseptr, resize);
+			for (size_t ibyte = 0; ibyte < capsize; ++ibyte) {
+				if (baseptr[ibyte] != (char)(ibyte & 0xFF))
+					return -1;
+			}
+
+			size_t alignsize = (iloop * ipass + datasize[(iloop + ipass * 3) % 7]) & 0x2FF;
+			capsize = (capsize > alignsize ? alignsize : capsize);
+			baseptr = rpaligned_realloc(baseptr, 128, alignsize, resize, 0);
+			for (size_t ibyte = 0; ibyte < capsize; ++ibyte) {
+				if (baseptr[ibyte] != (char)(ibyte & 0xFF))
+					return -1;
+			}
+
+			rpfree(baseptr);
+		}
+	}
 
 	for (iloop = 0; iloop < 64; ++iloop) {
 		for (ipass = 0; ipass < 8142; ++ipass) {
@@ -573,68 +635,6 @@ test_threadspam(void) {
 	return 0;
 }
 
-#if ENABLE_GUARDS
-
-static int test_overwrite_detected;
-
-static void
-test_overwrite_cb(void* addr) {
-	(void)sizeof(addr);
-	++test_overwrite_detected;
-}
-
-static int
-test_overwrite(void) {
-	int ret = 0;
-	char* addr;
-	size_t istep, size;
-
-	rpmalloc_config_t config;
-	memset(&config, 0, sizeof(config));
-	config.memory_overwrite = test_overwrite_cb;
-
-	rpmalloc_initialize_config(&config);
-
-	for (istep = 0, size = 16; size < 16 * 1024 * 1024; size <<= 1, ++istep) {
-		test_overwrite_detected = 0;
-		addr = rpmalloc(size);
-		*(addr - 2) = 1;
-		rpfree(addr);
-
-		if (!test_overwrite_detected) {
-			printf("Failed to detect memory overwrite before start of block in step %" PRIsize " size %" PRIsize "\n", istep, size);
-			ret = -1;
-			goto cleanup;
-		}
-
-		test_overwrite_detected = 0;
-		addr = rpmalloc(size);
-		*(addr + rpmalloc_usable_size(addr) + 1) = 1;
-		rpfree(addr);
-
-		if (!test_overwrite_detected) {
-			printf("Failed to detect memory overwrite after end of block in step %" PRIsize " size %" PRIsize "\n", istep, size);
-			ret = -1;
-			goto cleanup;
-		}
-	}
-
-	printf("Memory overwrite tests passed\n");
-
-cleanup:
-	rpmalloc_finalize();
-	return ret;	
-}
-
-#else
-
-static int
-test_overwrite(void) {
-	return 0;
-}
-
-#endif
-
 int
 test_run(int argc, char** argv) {
 	(void)sizeof(argc);
@@ -645,8 +645,6 @@ test_run(int argc, char** argv) {
 	if (test_crossthread())
 		return -1;
 	if (test_threadspam())
-		return -1;
-	if (test_overwrite())
 		return -1;
 	if (test_threaded())
 		return -1;
