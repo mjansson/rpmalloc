@@ -1635,29 +1635,11 @@ _memory_map_os(size_t size, size_t* offset) {
 #endif
 	if (padding) {
 		size_t final_padding = padding - ((uintptr_t)ptr & ~_memory_span_mask);
-		void* final_ptr = pointer_offset(ptr, final_padding);
-
-		//Unmap the unused pages after aligned spans
 		assert(final_padding <= _memory_span_size);
 		assert(final_padding <= padding);
 		assert(!(final_padding % 8));
-		size_t remains = padding - final_padding;
-		if (remains >= _memory_page_size) {
-#if PLATFORM_WINDOWS
-			//if (!VirtualFree(pointer_offset(ptr, final_padding + size), remains, MEM_DECOMMIT)) {
-			//	DWORD err = GetLastError();
-			//	assert("Failed to decommit post-padding of virtual memory block" == 0);
-			//}
-#else
-			//if (munmap(pointer_offset(ptr, final_padding + size), remains)) {
-			//	int err = errno;
-			//	printf("Unmap failed of post-padding, size %zd padding %zd final_padding %zd remains %zd: %s (%d)\n", size, padding, final_padding, remains, strerror(err), err);
-			//	assert("Failed to unmap post-padding of virtual memory block" == 0);
-			//}
-#endif
-		}
+		ptr = pointer_offset(ptr, final_padding);
 		*offset = final_padding >> 3;
-		ptr = final_ptr;
 	}
 	assert((size < _memory_span_size) || !((uintptr_t)ptr & ~_memory_span_mask));
 	return ptr;
