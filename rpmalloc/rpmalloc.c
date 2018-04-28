@@ -58,8 +58,10 @@
 //! Unlimited cache disables any thread cache limitations
 #define ENABLE_UNLIMITED_THREAD_CACHE ENABLE_UNLIMITED_CACHE
 #endif
+#if !ENABLE_UNLIMITED_THREAD_CACHE
 //! Multiplier for thread cache (cache limit will be span release count multiplied by this value)
 #define THREAD_CACHE_MULTIPLIER 16
+#endif
 #endif
 
 #if ENABLE_GLOBAL_CACHE && ENABLE_THREAD_CACHE
@@ -67,15 +69,17 @@
 //! Unlimited cache disables any global cache limitations
 #define ENABLE_UNLIMITED_GLOBAL_CACHE ENABLE_UNLIMITED_CACHE
 #endif
+#if !ENABLE_UNLIMITED_GLOBAL_CACHE
 //! Multiplier for global cache (cache limit will be span release count multiplied by this value)
 #define GLOBAL_CACHE_MULTIPLIER 64
+#endif
 #else
 #  undef ENABLE_GLOBAL_CACHE
 #  define ENABLE_GLOBAL_CACHE 0
 #endif
 
 #if DISABLE_UNMAP && !ENABLE_GLOBAL_CACHE
-#  error Must use cache if unmap is disabled
+#  error Must use global cache if unmap is disabled
 #endif
 
 /// Platform and arch specifics
@@ -230,8 +234,6 @@ typedef struct global_cache_t global_cache_t;
 //! Flag indicating span is a secondary (sub) span of a split superspan
 #define SPAN_FLAG_SUBSPAN 2
 
-//Alignment offset must match in both structures to keep the data when
-//transitioning between being used for blocks and being part of a list
 struct span_block_t {
 	//! Free list
 	uint16_t    free_list;
@@ -643,6 +645,9 @@ _memory_span_list_pop(span_t** head) {
 	*head = next_span;
 	return span;
 }
+
+#endif
+#if ENABLE_GLOBAL_CACHE
 
 //! Split a single linked span list
 static span_t*
