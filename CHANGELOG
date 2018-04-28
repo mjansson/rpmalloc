@@ -1,3 +1,16 @@
+1.3.1
+
+Support for huge pages
+
+Bugfix to old size in aligned realloc and usable size for aligned allocs when alignment > 32
+
+Use C11 atomics for non-Microsoft compilers
+
+Remove remaining spin-lock like control for caches, all operations are now lock free
+
+Allow large deallocations to cross thread heaps
+
+
 1.3.0
 
 Make span size configurable and all spans equal in size, removing span size classes and streamlining the thread cache.
