@@ -82,10 +82,22 @@
 #  error Must use global cache if unmap is disabled
 #endif
 
+#if defined( _WIN32 ) || defined( __WIN32__ ) || defined( _WIN64 )
+#  define PLATFORM_WINDOWS 1
+#  define PLATFORM_POSIX 0
+#else
+#  define PLATFORM_WINDOWS 0
+#  define PLATFORM_POSIX 1
+#endif
+
 /// Platform and arch specifics
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && !defined(__clang__)
 #  define FORCEINLINE __forceinline
 #  define _Static_assert static_assert
+#else
+#  define FORCEINLINE inline __attribute__((__always_inline__))
+#endif
+#if PLATFORM_WINDOWS
 #  if ENABLE_VALIDATE_ARGS
 #    include <Intsafe.h>
 #  endif
@@ -97,21 +109,12 @@
 #    include <mach/mach_vm.h>
 #    include <pthread.h>
 #  endif
-#  define FORCEINLINE inline __attribute__((__always_inline__))
 #endif
 
 #if defined( __x86_64__ ) || defined( _M_AMD64 ) || defined( _M_X64 ) || defined( _AMD64_ ) || defined( __arm64__ ) || defined( __aarch64__ )
 #  define ARCH_64BIT 1
 #else
 #  define ARCH_64BIT 0
-#endif
-
-#if defined( _WIN32 ) || defined( __WIN32__ ) || defined( _WIN64 )
-#  define PLATFORM_WINDOWS 1
-#  define PLATFORM_POSIX 0
-#else
-#  define PLATFORM_WINDOWS 0
-#  define PLATFORM_POSIX 1
 #endif
 
 #include <stdint.h>
@@ -129,7 +132,7 @@
 #endif
 
 /// Atomic access abstraction
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && !defined(__clang__)
 
 typedef volatile long      atomic32_t;
 typedef volatile long long atomic64_t;
@@ -1311,8 +1314,8 @@ _memory_adjust_size_class(size_t iclass) {
 	}
 }
 
-#if defined( _WIN32 ) || defined( __WIN32__ ) || defined( _WIN64 )
-#  include <windows.h>
+#if defined(_WIN32) || defined(__WIN32__) || defined(_WIN64)
+#  include <Windows.h>
 #else
 #  include <sys/mman.h>
 #  include <sched.h>
