@@ -80,7 +80,7 @@ malloc_size(void* ptr);
 
 #ifdef _WIN32
 
-#include <windows.h>
+#include <Windows.h>
 
 static size_t page_size;
 static int is_initialized;

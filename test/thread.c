@@ -8,7 +8,7 @@
 #endif
 
 #ifdef _WIN32
-#  include <windows.h>
+#  include <Windows.h>
 #  include <process.h>
 
 static unsigned __stdcall
@@ -76,7 +76,7 @@ thread_join(uintptr_t handle) {
 void
 thread_sleep(int milliseconds) {
 #ifdef _WIN32
-	SleepEx(milliseconds, 1);
+	SleepEx((DWORD)milliseconds, 1);
 #else
 	struct timespec ts;
 	ts.tv_sec  = milliseconds / 1000;

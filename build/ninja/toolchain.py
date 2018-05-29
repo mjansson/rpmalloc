@@ -117,6 +117,18 @@ class Toolchain(object):
     #Paths created
     self.paths_created = {}
 
+  def is_clang(self):
+    return self.toolchain == 'clang'
+
+  def is_msvc(self):
+    return self.toolchain == 'msvc'
+
+  def is_gcc(self):
+    return self.toolchain == 'gcc'
+
+  def is_intel(self):
+    return self.toolchain == 'intel'
+
   def initialize_subninja(self, path):
     self.subninja = path
 
