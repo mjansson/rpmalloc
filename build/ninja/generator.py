@@ -74,7 +74,7 @@ class Generator(object):
     configure_env = dict((key, os.environ[key]) for key in os.environ if key in env_keys)
     if configure_env:
       config_str = ' '.join([key + '=' + pipes.quote(configure_env[key]) for key in configure_env])
-      writer.variable('configure_env', config_str + '$ ')
+      self.writer.variable('configure_env', config_str + '$ ')
 
     if variables is None:
       variables = {}
