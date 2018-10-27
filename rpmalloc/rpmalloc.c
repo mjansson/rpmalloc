@@ -109,6 +109,10 @@
 #    include <mach/mach_vm.h>
 #    include <pthread.h>
 #  endif
+#  if defined(__HAIKU__)
+#    include <OS.h>
+#    include <pthread.h>
+#  endif
 #endif
 
 #if defined( __x86_64__ ) || defined( _M_AMD64 ) || defined( _M_X64 ) || defined( _AMD64_ ) || defined( __arm64__ ) || defined( __aarch64__ )
@@ -401,7 +405,7 @@ static atomic32_t _mapped_pages_os;
 #endif
 
 //! Current thread heap
-#if defined(__APPLE__) && ENABLE_PRELOAD
+#if (defined(__APPLE__) || defined(__HAIKU__)) && ENABLE_PRELOAD
 static pthread_key_t _memory_thread_heap;
 #else
 #  ifdef _MSC_VER
@@ -419,7 +423,7 @@ static _Thread_local heap_t* _memory_thread_heap TLS_MODEL;
 //! Get the current thread heap
 static FORCEINLINE heap_t*
 get_thread_heap(void) {
-#if defined(__APPLE__) && ENABLE_PRELOAD
+#if (defined(__APPLE__) || defined(__HAIKU__)) && ENABLE_PRELOAD
 	return pthread_getspecific(_memory_thread_heap);
 #else
 	return _memory_thread_heap;
@@ -429,7 +433,7 @@ get_thread_heap(void) {
 //! Set the current thread heap
 static void
 set_thread_heap(heap_t* heap) {
-#if defined(__APPLE__) && ENABLE_PRELOAD
+#if (defined(__APPLE__) || defined(__HAIKU__)) && ENABLE_PRELOAD
 	pthread_setspecific(_memory_thread_heap, heap);
 #else
 	_memory_thread_heap = heap;
@@ -1447,7 +1451,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	_memory_span_release_count = (_memory_span_map_count > 4 ? ((_memory_span_map_count < 64) ? _memory_span_map_count : 64) : 4);
 	_memory_span_release_count_large = (_memory_span_release_count > 4 ? (_memory_span_release_count / 2) : 2);
 
-#if defined(__APPLE__) && ENABLE_PRELOAD
+#if (defined(__APPLE__) || defined(__HAIKU__)) && ENABLE_PRELOAD
 	if (pthread_key_create(&_memory_thread_heap, 0))
 		return -1;
 #endif
@@ -1540,7 +1544,7 @@ rpmalloc_finalize(void) {
 	assert(!atomic_load32(&_mapped_pages_os));
 #endif
 
-#if defined(__APPLE__) && ENABLE_PRELOAD
+#if (defined(__APPLE__) || defined(__HAIKU__)) && ENABLE_PRELOAD
 	pthread_key_delete(_memory_thread_heap);
 #endif
 }
@@ -1630,8 +1634,10 @@ _memory_map_os(size_t size, size_t* offset) {
 #else
 #  if defined(__APPLE__)
 	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED, (_memory_huge_pages ? VM_FLAGS_SUPERPAGE_SIZE_2MB : -1), 0);
-#  else
+#  elif defined(MAP_HUGETLB)
 	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, (_memory_huge_pages ? MAP_HUGETLB : 0) | MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED, -1, 0);
+#  else
+	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED, -1, 0);
 #  endif
 	if ((ptr == MAP_FAILED) || !ptr) {
 		assert("Failed to map virtual memory block" == 0);
@@ -1679,10 +1685,10 @@ _memory_unmap_os(void* address, size_t size, size_t offset, size_t release) {
 		}
 	}
 	else {
-#if defined(MADV_FREE)
-		if (madvise(address, size, MADV_FREE))
+#if defined(POSIX_MADV_FREE)
+		if (posix_madvise(address, size, POSIX_MADV_FREE))
 #endif
-		if (madvise(address, size, MADV_DONTNEED)) {
+		if (posix_madvise(address, size, POSIX_MADV_DONTNEED)) {
 			assert("Failed to madvise virtual memory block as free" == 0);
 		}
 	}
