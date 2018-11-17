@@ -524,6 +524,8 @@ _memory_map_spans(heap_t* heap, size_t span_count) {
 		request_spans += _memory_span_map_count - (request_spans % _memory_span_map_count);
 	size_t align_offset = 0;
 	span_t* span = _memory_map(request_spans * _memory_span_size, &align_offset);
+	if (!span)
+		return span;
 	span->align_offset = (uint32_t)align_offset;
 	span->total_spans_or_distance = (uint32_t)request_spans;
 	span->span_count = (uint32_t)span_count;
@@ -946,6 +948,8 @@ use_active:
 	if (!span) {
 		//Step 5: Map in more virtual memory
 		span = _memory_map_spans(heap, 1);
+		if (!span)
+			return span;
 	}
 
 	//Mark span as owned by this heap and set base data
@@ -989,6 +993,8 @@ _memory_allocate_large_from_heap(heap_t* heap, size_t size) {
 	if (!span) {
 		//Step 2: Map in more virtual memory
 		span = _memory_map_spans(heap, span_count);
+		if (!span)
+			return span;
 	}
 
 	//Mark span as owned by this heap and set base data
@@ -1025,6 +1031,8 @@ _memory_allocate_heap(void) {
 		//Map in pages for a new heap
 		size_t align_offset = 0;
 		heap = _memory_map((1 + (sizeof(heap_t) >> _memory_page_size_shift)) * _memory_page_size, &align_offset);
+		if (!heap)
+			return heap;
 		memset(heap, 0, sizeof(heap_t));
 		heap->align_offset = align_offset;
 
@@ -1168,6 +1176,8 @@ _memory_allocate(size_t size) {
 		++num_pages;
 	size_t align_offset = 0;
 	span_t* span = _memory_map(num_pages * _memory_page_size, &align_offset);
+	if (!span)
+		return span;
 	atomic_store32(&span->heap_id, 0);
 	//Store page count in span_count
 	span->span_count = (uint32_t)num_pages;
