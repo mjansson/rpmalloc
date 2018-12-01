@@ -1420,6 +1420,10 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		}
 #endif
 	}
+	else {
+		if (config && config->enable_huge_pages)
+			_memory_huge_pages = 1;
+	}
 
 	if (_memory_page_size < 512)
 		_memory_page_size = 512;
