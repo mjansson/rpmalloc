@@ -145,13 +145,13 @@ class Toolchain(object):
     if self.target.is_windows():
       self.archs = ['x86-64']
     elif self.target.is_linux() or self.target.is_bsd():
-      localarch = subprocess.check_output(['uname', '-m']).strip()
+      localarch = str(subprocess.check_output(['uname', '-m']).strip(), encoding='ascii', errors='ignore')
       if localarch == 'x86_64' or localarch == 'amd64':
         self.archs = ['x86-64']
       elif localarch == 'i686':
         self.archs = ['x86']
       else:
-        self.archs = [str(localarch)]
+        self.archs = [localarch]
     elif self.target.is_macos():
       self.archs = ['x86-64']
     elif self.target.is_ios():
