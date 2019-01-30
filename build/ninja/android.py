@@ -81,7 +81,7 @@ class Android(object):
       else:
         self.hostarchname = 'windows-x86'
     elif self.host.is_linux():
-        localarch = str(subprocess.check_output(['uname', '-m']).strip(), encoding='ascii', errors='ignore')
+        localarch = subprocess.check_output(['uname', '-m']).decode('ascii', 'ignore').strip()
         if localarch == 'x86_64':
           self.hostarchname = 'linux-x86_64'
         else:

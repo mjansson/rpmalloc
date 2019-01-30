@@ -145,7 +145,7 @@ class Toolchain(object):
     if self.target.is_windows():
       self.archs = ['x86-64']
     elif self.target.is_linux() or self.target.is_bsd():
-      localarch = str(subprocess.check_output(['uname', '-m']).strip(), encoding='ascii', errors='ignore')
+      localarch = subprocess.check_output(['uname', '-m']).decode('ascii', 'ignore').strip()
       if localarch == 'x86_64' or localarch == 'amd64':
         self.archs = ['x86-64']
       elif localarch == 'i686':
