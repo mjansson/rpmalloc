@@ -1420,7 +1420,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 			int rc;
 			size_t sz = sizeof(rc);
 
-			if (sysctlbyname("vm.pmap.pg_ps_enabled", &rc, &sz, NULL, 0) == 0) {
+			if (sysctlbyname("vm.pmap.pg_ps_enabled", &rc, &sz, NULL, 0) == 0 && rc == 1) {
 				_memory_huge_pages = 1;
 				_memory_page_size = 2 * 1024 * 1024;
 				_memory_map_granularity = _memory_page_size;
