@@ -70,6 +70,8 @@ class ClangToolchain(toolchain.Toolchain):
       self.oslibs += ['dl']
     if self.target.is_bsd():
       self.oslibs += ['execinfo']
+      self.cflags += ['-I/usr/local/include']
+      self.linkflags += ['-L/usr/local/lib']
 
     self.includepaths = self.prefix_includepaths((includepaths or []) + ['.'])
 
