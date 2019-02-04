@@ -1333,6 +1333,10 @@ _memory_adjust_size_class(size_t iclass) {
 #else
 #  include <sys/mman.h>
 #  include <sched.h>
+#  ifdef __FreeBSD__
+#    include <sys/sysctl.h>
+#    define MAP_HUGETLB MAP_ALIGNED_SUPER
+#  endif
 #  ifndef MAP_UNINITIALIZED
 #    define MAP_UNINITIALIZED 0
 #  endif
@@ -1411,6 +1415,15 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 				_memory_huge_pages = 1;
 				_memory_page_size = huge_page_size;
 				_memory_map_granularity = huge_page_size;
+			}
+#elif defined(__FreeBSD__)
+			int rc;
+			size_t sz = sizeof(rc);
+
+			if (sysctlbyname("vm.pmap.pg_ps_enabled", &rc, &sz, NULL, 0) == 0) {
+				_memory_huge_pages = 1;
+				_memory_page_size = 2 * 1024 * 1024;
+				_memory_map_granularity = _memory_page_size;
 			}
 #elif defined(__APPLE__)
 			_memory_huge_pages = 1;
