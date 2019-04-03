@@ -7,6 +7,11 @@
 #  define ATTRIBUTE_NORETURN __attribute__((noreturn))
 #endif
 
+#if !defined(__x86_64__) && !defined(_AMD64_) && !defined(_M_AMD64) && !defined(__i386__)
+#  define MEMORY_BARRIER __sync_synchronize()
+#else
+#  define MEMORY_BARRIER __asm__ __volatile__("":::"memory")
+#endif
 #ifdef _WIN32
 #  include <Windows.h>
 #  include <process.h>
@@ -92,7 +97,7 @@ thread_yield(void) {
 	_ReadWriteBarrier();
 #else
 	sched_yield();
-	__sync_synchronize();
+	MEMORY_BARRIER;
 #endif
 }
 
@@ -101,6 +106,6 @@ thread_fence(void) {
 #ifdef _WIN32
 	_ReadWriteBarrier();
 #else
-	__sync_synchronize();
+	MEMORY_BARRIER;
 #endif
 }
