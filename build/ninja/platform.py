@@ -5,7 +5,7 @@
 import sys
 
 def supported_platforms():
-  return [ 'windows', 'linux', 'macos', 'bsd', 'ios', 'android', 'raspberrypi', 'pnacl', 'tizen' ]
+  return [ 'windows', 'linux', 'macos', 'bsd', 'ios', 'android', 'raspberrypi', 'tizen' ]
 
 class Platform(object):
   def __init__(self, platform):
@@ -28,8 +28,6 @@ class Platform(object):
       self.platform = 'android'
     elif self.platform.startswith('raspberry'):
       self.platform = 'raspberrypi'
-    elif self.platform.startswith('pnacl'):
-      self.platform = 'pnacl'
     elif self.platform.startswith('tizen'):
       self.platform = 'tizen'
 
@@ -56,9 +54,6 @@ class Platform(object):
 
   def is_raspberrypi(self):
     return self.platform == 'raspberrypi'
-
-  def is_pnacl(self):
-    return self.platform == 'pnacl'
 
   def is_tizen(self):
     return self.platform == 'tizen'

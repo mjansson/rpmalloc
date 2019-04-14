@@ -16,7 +16,7 @@ def generate_version_string(libname):
     gitcmd = 'git.exe'
   try:
     git_version = subprocess.check_output( [ gitcmd, 'describe', '--long' ], stderr = subprocess.STDOUT ).strip()
-    tokens = git_version.split( '-' )
+    tokens = git_version.decode().split( '-' )
     version_numbers = tokens[0].split( '.' )
   except Exception:
     pass

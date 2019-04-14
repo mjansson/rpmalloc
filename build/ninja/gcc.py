@@ -57,8 +57,6 @@ class GCCToolchain(toolchain.Toolchain):
       self.oslibs += ['dl']
     if self.target.is_bsd():
       self.oslibs += ['execinfo']
-      self.cflags += ['-I/usr/local/include']
-      self.linkflags += ['-L/usr/local/lib']
 
     self.includepaths = self.prefix_includepaths((includepaths or []) + ['.'])
 
@@ -185,7 +183,7 @@ class GCCToolchain(toolchain.Toolchain):
     flags = []
     if targettype == 'sharedlib':
       flags += ['-DBUILD_DYNAMIC_LINK=1']
-      if self.target.is_linux() or self.target.is_bsd():
+      if self.target.is_linux():
         flags += ['-fPIC']
     flags += self.make_targetarchflags(arch, targettype)
     return flags
