@@ -2,6 +2,12 @@
 
 Fix 32-bit MSVC Windows builds using incorrect 64-bit pointer CAS
 
+Updated compatibility with clang toolchain and Python 3
+
+Support preconfigured huge pages
+
+Moved active heap counter to statistics
+
 
 1.3.1
 
