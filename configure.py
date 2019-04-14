@@ -19,7 +19,7 @@ rpmalloc_lib = generator.lib(module = 'rpmalloc', libname = 'rpmalloc', sources 
 if not target.is_android() and not target.is_ios():
 	rpmalloc_so = generator.sharedlib(module = 'rpmalloc', libname = 'rpmalloc', sources = ['rpmalloc.c'])
 
-if not target.is_windows() or toolchain.is_msvc():
+if not target.is_windows():
 	if not target.is_android() and not target.is_ios():
 		rpmallocwrap_lib = generator.lib(module = 'rpmalloc', libname = 'rpmallocwrap', sources = ['rpmalloc.c', 'malloc.c', 'new.cc'], variables = {'defines': ['ENABLE_PRELOAD=1']})
 
