@@ -389,9 +389,9 @@ static atomicptr_t _memory_heaps[HEAP_ARRAY_SIZE];
 static atomicptr_t _memory_orphan_heaps;
 //! Running orphan counter to avoid ABA issues in linked list
 static atomic32_t _memory_orphan_counter;
+#if ENABLE_STATISTICS
 //! Active heap count
 static atomic32_t _memory_active_heaps;
-#if ENABLE_STATISTICS
 //! Total number of currently mapped memory pages
 static atomic32_t _mapped_pages;
 //! Total number of currently lost spans
@@ -1485,8 +1485,8 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 
 	atomic_store32(&_memory_heap_id, 0);
 	atomic_store32(&_memory_orphan_counter, 0);
-	atomic_store32(&_memory_active_heaps, 0);
 #if ENABLE_STATISTICS
+	atomic_store32(&_memory_active_heaps, 0);
 	atomic_store32(&_reserved_spans, 0);
 	atomic_store32(&_mapped_pages, 0);
 	atomic_store32(&_mapped_total, 0);
@@ -1527,8 +1527,11 @@ rpmalloc_finalize(void) {
 	atomic_thread_fence_acquire();
 
 	rpmalloc_thread_finalize();
+
+#if ENABLE_STATISTICS
 	//If you hit this assert, you still have active threads or forgot to finalize some thread(s)
 	assert(atomic_load32(&_memory_active_heaps) == 0);
+#endif
 
 	//Free all thread caches
 	for (size_t list_idx = 0; list_idx < HEAP_ARRAY_SIZE; ++list_idx) {
@@ -1580,13 +1583,15 @@ rpmalloc_finalize(void) {
 void
 rpmalloc_thread_initialize(void) {
 	if (!get_thread_heap()) {
-		atomic_incr32(&_memory_active_heaps);
 		heap_t* heap = _memory_allocate_heap();
+		if (heap) {
 #if ENABLE_STATISTICS
-		heap->thread_to_global = 0;
-		heap->global_to_thread = 0;
+			atomic_incr32(&_memory_active_heaps);
+			heap->thread_to_global = 0;
+			heap->global_to_thread = 0;
 #endif
-		set_thread_heap(heap);
+			set_thread_heap(heap);
+		}
 	}
 }
 
@@ -1632,7 +1637,10 @@ rpmalloc_thread_finalize(void) {
 	while (!atomic_cas_ptr(&_memory_orphan_heaps, raw_heap, last_heap));
 
 	set_thread_heap(0);
+
+#if ENABLE_STATISTICS
 	atomic_add32(&_memory_active_heaps, -1);
+#endif
 }
 
 int
