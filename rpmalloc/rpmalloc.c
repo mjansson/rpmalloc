@@ -1292,7 +1292,7 @@ _memory_usable_size(void* p) {
 		if (span->size_class < SIZE_CLASS_COUNT) {
 			size_class_t* size_class = _memory_size_class + span->size_class;
 			void* blocks_start = pointer_offset(span, SPAN_HEADER_SIZE);
-			return size_class->size - (pointer_diff(p, blocks_start) % size_class->size);
+			return size_class->size - ((size_t)pointer_diff(p, blocks_start) % size_class->size);
 		}
 
 		//Large block
