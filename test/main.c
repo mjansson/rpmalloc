@@ -253,6 +253,32 @@ test_alloc(void) {
 	return 0;
 }
 
+static int
+test_superalign(void) {
+
+	rpmalloc_initialize();
+
+	size_t alignment[] = { 4096, 8192, 16384, 32768 };
+	size_t sizes[] = { 187, 1057, 2436, 5234, 9235, 17984, 35783, 72436 };
+
+	for (size_t ialign = 0, asize = sizeof(alignment) / sizeof(alignment[0]); ialign < asize; ++ialign) {
+		for (size_t isize = 0, ssize = sizeof(sizes) / sizeof(sizes[0]); isize < ssize; ++isize) {
+			uint8_t* ptr = rpaligned_alloc(alignment[ialign], sizes[isize]);
+			if (!ptr || ((uintptr_t)ptr & 4095))
+				return -1;
+			ptr[0] = 1;
+			ptr[sizes[isize] - 1] = 1;
+			rpfree(ptr);
+		}
+	}
+
+	rpmalloc_finalize();
+
+	printf("Memory super aligned tests passed\n");
+
+	return 0;
+}
+
 typedef struct _allocator_thread_arg {
 	unsigned int        loops;
 	unsigned int        passes; //max 4096
@@ -486,7 +512,9 @@ test_threaded(void) {
 	arg.loops = 100;
 	arg.passes = 4000;
 
-	thread_arg targ = { allocator_thread, &arg };
+	thread_arg targ;
+	targ.fn = allocator_thread;
+	targ.arg = &arg;
 	for (i = 0; i < num_alloc_threads; ++i)
 		thread[i] = thread_run(&targ);
 
@@ -602,7 +630,9 @@ test_threadspam(void) {
 	arg.datasize[6] = 389;
 	arg.num_datasize = 7;
 
-	thread_arg targ = { initfini_thread, &arg };
+	thread_arg targ;
+	targ.fn = initfini_thread;
+	targ.arg = &arg;
 	for (i = 0; i < num_alloc_threads; ++i)
 		thread[i] = thread_run(&targ);
 
@@ -641,6 +671,8 @@ test_run(int argc, char** argv) {
 	(void)sizeof(argv);
 	test_initialize();
 	if (test_alloc())
+		return -1;
+	if (test_superalign())
 		return -1;
 	if (test_crossthread())
 		return -1;

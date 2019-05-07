@@ -1663,7 +1663,7 @@ _memory_map_os(size_t size, size_t* offset) {
 	//Ok to MEM_COMMIT - according to MSDN, "actual physical pages are not allocated unless/until the virtual addresses are actually accessed"
 	void* ptr = VirtualAlloc(0, size + padding, (_memory_huge_pages ? MEM_LARGE_PAGES : 0) | MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 	if (!ptr) {
-		assert("Failed to map virtual memory block" == 0);
+		assert(!"Failed to map virtual memory block");
 		return 0;
 	}
 #else
@@ -1711,7 +1711,7 @@ _memory_unmap_os(void* address, size_t size, size_t offset, size_t release) {
 #if !DISABLE_UNMAP
 #if PLATFORM_WINDOWS
 	if (!VirtualFree(address, release ? 0 : size, release ? MEM_RELEASE : MEM_DECOMMIT)) {
-		assert("Failed to unmap virtual memory block" == 0);
+		assert(!"Failed to unmap virtual memory block");
 	}
 #else
 	if (release) {
@@ -1825,15 +1825,76 @@ rpaligned_alloc(size_t alignment, size_t size) {
 		return rpmalloc(size);
 
 #if ENABLE_VALIDATE_ARGS
-	if ((size + alignment < size) || (alignment > _memory_page_size)) {
+	if ((size + alignment) < size) {
+		errno = EINVAL;
+		return 0;
+	}
+	if (alignment & (alignment - 1)) {
 		errno = EINVAL;
 		return 0;
 	}
 #endif
 
-	void* ptr = rpmalloc(size + alignment);
-	if ((uintptr_t)ptr & (alignment - 1))
-		ptr = (void*)(((uintptr_t)ptr & ~((uintptr_t)alignment - 1)) + alignment);
+	void* ptr = 0;
+	size_t align_mask = alignment - 1;
+	if (alignment < _memory_page_size) {
+		ptr = rpmalloc(size + alignment);
+		if ((uintptr_t)ptr & align_mask)
+			ptr = (void*)(((uintptr_t)ptr & ~(uintptr_t)align_mask) + alignment);
+		return ptr;
+	}
+
+	// Fallback to mapping new pages for this request. Since pointers passed
+	// to rpfree must be able to reach the start of the span by bitmasking of
+	// the address with the span size, the returned aligned pointer from this
+	// function must be with a span size of the start of the mapped area.
+	// In worst case this requires us to loop and map pages until we get a
+	// suitable memory address
+	if (alignment & align_mask) {
+		errno = EINVAL;
+		return 0;
+	}
+
+	size_t extra_pages = alignment / _memory_page_size;
+
+	// Since each span has a header, we will at least need one extra memory page
+	size_t num_pages = 1 + (size / _memory_page_size);
+	if (size & (_memory_page_size - 1))
+		++num_pages;
+
+	if (extra_pages > num_pages)
+		num_pages = 1 + extra_pages;
+
+	size_t original_pages = num_pages;
+	size_t mapped_size, align_offset;
+	span_t* span;
+
+retry:
+	align_offset = 0;
+	mapped_size = num_pages * _memory_page_size;
+
+	span = _memory_map(mapped_size, &align_offset);
+	ptr = pointer_offset(span, SPAN_HEADER_SIZE);
+
+	if ((uintptr_t)ptr & align_mask)
+		ptr = (void*)(((uintptr_t)ptr & ~(uintptr_t)align_mask) + alignment);
+
+	if (((size_t)pointer_diff(ptr, span) >= _memory_span_size) ||
+	    (pointer_offset(ptr, size) > pointer_offset(span, mapped_size))) {
+		_memory_unmap(span, mapped_size, align_offset, mapped_size);
+		++num_pages;
+		if (num_pages > (original_pages * 2)) {
+			errno = EINVAL;
+			return 0;
+		}
+		goto retry;
+	}
+
+	atomic_store32(&span->heap_id, 0);
+	//Store page count in span_count
+	span->span_count = (uint32_t)num_pages;
+	span->align_offset = (uint32_t)align_offset;
+
 	return ptr;
 }
 
