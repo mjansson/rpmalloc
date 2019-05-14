@@ -1849,8 +1849,15 @@ rpaligned_alloc(size_t alignment, size_t size) {
 	// the address with the span size, the returned aligned pointer from this
 	// function must be with a span size of the start of the mapped area.
 	// In worst case this requires us to loop and map pages until we get a
-	// suitable memory address
+	// suitable memory address. It also means we can never align to span size
+	// or greater, since the span header will push alignment more than one
+	// span size away from span start (thus causing pointer mask to give us
+	// an invalid span start on free)
 	if (alignment & align_mask) {
+		errno = EINVAL;
+		return 0;
+	}
+	if (alignment >= _memory_span_size) {
 		errno = EINVAL;
 		return 0;
 	}
@@ -1880,7 +1887,8 @@ retry:
 		ptr = (void*)(((uintptr_t)ptr & ~(uintptr_t)align_mask) + alignment);
 
 	if (((size_t)pointer_diff(ptr, span) >= _memory_span_size) ||
-	    (pointer_offset(ptr, size) > pointer_offset(span, mapped_size))) {
+	    (pointer_offset(ptr, size) > pointer_offset(span, mapped_size)) ||
+	    (((uintptr_t)ptr & _memory_span_mask) != (uintptr_t)span)) {
 		_memory_unmap(span, mapped_size, align_offset, mapped_size);
 		++num_pages;
 		if (num_pages > (original_pages * 2)) {
