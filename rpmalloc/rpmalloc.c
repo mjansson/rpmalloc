@@ -1874,8 +1874,8 @@ rpaligned_alloc(size_t alignment, size_t size) {
 
 	size_t original_pages = num_pages;
 	size_t limit_pages = (_memory_span_size / _memory_page_size) * 2;
-	if (limit_pages < original_pages)
-		limit_pages = original_pages;
+	if (limit_pages < (original_pages * 2))
+		limit_pages = original_pages * 2;
 
 	size_t mapped_size, align_offset;
 	span_t* span;
