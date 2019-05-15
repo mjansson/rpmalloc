@@ -1873,6 +1873,10 @@ rpaligned_alloc(size_t alignment, size_t size) {
 		num_pages = 1 + extra_pages;
 
 	size_t original_pages = num_pages;
+	size_t limit_pages = (_memory_span_size / _memory_page_size) * 2;
+	if (limit_pages < original_pages)
+		limit_pages = original_pages;
+
 	size_t mapped_size, align_offset;
 	span_t* span;
 
@@ -1891,7 +1895,7 @@ retry:
 	    (((uintptr_t)ptr & _memory_span_mask) != (uintptr_t)span)) {
 		_memory_unmap(span, mapped_size, align_offset, mapped_size);
 		++num_pages;
-		if (num_pages > (original_pages * 2)) {
+		if (num_pages > limit_pages) {
 			errno = EINVAL;
 			return 0;
 		}
