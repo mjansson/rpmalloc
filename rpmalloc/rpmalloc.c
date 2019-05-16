@@ -1885,6 +1885,10 @@ retry:
 	mapped_size = num_pages * _memory_page_size;
 
 	span = _memory_map(mapped_size, &align_offset);
+	if (!span) {
+		errno = ENOMEM;
+		return 0;
+	}
 	ptr = pointer_offset(span, SPAN_HEADER_SIZE);
 
 	if ((uintptr_t)ptr & align_mask)
