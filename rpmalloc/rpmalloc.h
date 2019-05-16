@@ -158,19 +158,32 @@ rpcalloc(size_t num, size_t size) RPMALLOC_ATTRIBUTE;
 extern void*
 rprealloc(void* ptr, size_t size);
 
-//! Reallocate the given block to at least the given size and alignment, with optional control flags (see RPMALLOC_NO_PRESERVE)
+//! Reallocate the given block to at least the given size and alignment,
+//  with optional control flags (see RPMALLOC_NO_PRESERVE).
+//  Alignment must be a power of two and a multiple of sizeof(void*),
+//  and should ideally be less than memory page size. A caveat of rpmalloc
+//  internals is that this must also be strictly less than the span size (default 64KiB)
 extern void*
 rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize, unsigned int flags);
 
-//! Allocate a memory block of at least the given size and alignment
+//! Allocate a memory block of at least the given size and alignment.
+//  Alignment must be a power of two and a multiple of sizeof(void*),
+//  and should ideally be less than memory page size. A caveat of rpmalloc
+//  internals is that this must also be strictly less than the span size (default 64KiB)
 extern RPMALLOC_RESTRICT void*
 rpaligned_alloc(size_t alignment, size_t size) RPMALLOC_ATTRIBUTE;
 
-//! Allocate a memory block of at least the given size and alignment
+//! Allocate a memory block of at least the given size and alignment.
+//  Alignment must be a power of two and a multiple of sizeof(void*),
+//  and should ideally be less than memory page size. A caveat of rpmalloc
+//  internals is that this must also be strictly less than the span size (default 64KiB)
 extern RPMALLOC_RESTRICT void*
 rpmemalign(size_t alignment, size_t size) RPMALLOC_ATTRIBUTE;
 
-//! Allocate a memory block of at least the given size and alignment
+//! Allocate a memory block of at least the given size and alignment.
+//  Alignment must be a power of two and a multiple of sizeof(void*),
+//  and should ideally be less than memory page size. A caveat of rpmalloc
+//  internals is that this must also be strictly less than the span size (default 64KiB)
 extern int
 rpposix_memalign(void **memptr, size_t alignment, size_t size);
 

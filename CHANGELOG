@@ -8,6 +8,8 @@ Support preconfigured huge pages
 
 Moved active heap counter to statistics
 
+Support for alignment equal or larger than memory page size, up to span size
+
 
 1.3.1
 
