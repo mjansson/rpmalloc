@@ -1,5 +1,5 @@
 # rpmalloc - Rampant Pixels Memory Allocator
-This library provides a public domain cross platform lock free thread caching 32-byte aligned memory allocator implemented in C. The latest source code is always available at https://github.com/rampantpixels/rpmalloc
+This library provides a public domain cross platform lock free thread caching 32-byte aligned memory allocator implemented in C. The latest source code is always available at https://github.com/mjansson/rpmalloc
 
 Platforms currently supported:
 
@@ -13,16 +13,14 @@ The code should be easily portable to any platform with atomic operations and an
 
 This library is put in the public domain; you can redistribute it and/or modify it without any restrictions. Or, if you choose, you can use it under the MIT license.
 
-Please consider our Patreon to support our work - https://www.patreon.com/rampantpixels
-
-Created by Mattias Jansson ([@maniccoder](https://twitter.com/maniccoder)) / Rampant Pixels - http://www.rampantpixels.com
+Created by Mattias Jansson ([@maniccoder](https://twitter.com/maniccoder))
 
 # Performance
 We believe rpmalloc is faster than most popular memory allocators like tcmalloc, hoard, ptmalloc3 and others without causing extra allocated memory overhead in the thread caches compared to these allocators. We also believe the implementation to be easier to read and modify compared to these allocators, as it is a single source file of ~2000 lines of C code. All allocations have a natural 32-byte alignment.
 
 Contained in a parallel repository is a benchmark utility that performs interleaved allocations (both aligned to 8 or 16 bytes, and unaligned) and deallocations (both in-thread and cross-thread) in multiple threads. It measures number of memory operations performed per CPU second, as well as memory overhead by comparing the virtual memory mapped with the number of bytes requested in allocation calls. The setup of number of thread, cross-thread deallocation rate and allocation size limits is configured by command line arguments.
 
-https://github.com/rampantpixels/rpmalloc-benchmark
+https://github.com/mjansson/rpmalloc-benchmark
 
 Below is an example performance comparison chart of rpmalloc and other popular allocator implementations, with default configurations used.
 

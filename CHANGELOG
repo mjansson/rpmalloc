@@ -10,6 +10,8 @@ Moved active heap counter to statistics
 
 Support for alignment equal or larger than memory page size, up to span size
 
+Moved repository to https://github.com/mjansson/rpmalloc
+
 
 1.3.1
 
