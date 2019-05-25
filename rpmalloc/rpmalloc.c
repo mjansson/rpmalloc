@@ -1076,13 +1076,17 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 	if (block_data->free_count == ((count_t)size_class->block_count - 1)) {
 		//If it was active, reset counter. Otherwise, if not active, remove from
 		//partial free list if we had a previous free block (guard for classes with only 1 block)
-		if (is_active)
-			block_data->free_count = 0;
-		else if (block_data->free_count > 0)
-			_memory_span_list_doublelink_remove(&heap->size_cache[class_idx], span);
+		if (is_active) {
+			++block_data->free_count;
+			block_data->first_autolink = 0;
+			block_data->free_list = 0;
+		} else {
+			if (block_data->free_count > 0)
+				_memory_span_list_doublelink_remove(&heap->size_cache[class_idx], span);
 
-		//Add to heap span cache
-		_memory_heap_cache_insert(heap, span);
+			//Add to heap span cache
+			_memory_heap_cache_insert(heap, span);
+		}
 		return;
 	}
 
