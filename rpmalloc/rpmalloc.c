@@ -310,6 +310,8 @@ struct heap_t {
 #if ENABLE_THREAD_CACHE
 	//! List of free spans (single linked list)
 	span_t*      span_cache[LARGE_CLASS_COUNT];
+	//! Adaptive cache limit
+	size_t       cache_limit[LARGE_CLASS_COUNT];
 #endif
 	//! Mapped but unused spans
 	span_t*      span_reserve;
@@ -806,7 +808,13 @@ _memory_heap_cache_insert(heap_t* heap, span_t* span) {
 	_memory_span_list_push(&heap->span_cache[idx], span);
 #else
 	const size_t release_count = (!idx ? _memory_span_release_count : _memory_span_release_count_large);
-	if (_memory_span_list_push(&heap->span_cache[idx], span) <= (release_count * THREAD_CACHE_MULTIPLIER))
+	const size_t hard_limit = release_count * THREAD_CACHE_MULTIPLIER;
+	const size_t soft_limit = 1 + heap->cache_limit[idx];
+	size_t current_cache_size = _memory_span_list_push(&heap->span_cache[idx], span);
+	//Adapt the cache limit
+	if (heap->cache_limit[idx])
+		--heap->cache_limit[idx];
+	if ((current_cache_size <= soft_limit) && (current_cache_size <= hard_limit))
 		return;
 	heap->span_cache[idx] = _memory_span_list_split(span, release_count);
 	assert(span->data.list.size == release_count);
@@ -867,9 +875,11 @@ _memory_heap_cache_extract(heap_t* heap, size_t span_count) {
 		}
 		return span;
 	}
+	// Increase size of adaptive thread cache
+	idx = span_count - 1;
+	++heap->cache_limit[idx];
 #if ENABLE_GLOBAL_CACHE
 	//Step 4: Extract from global cache
-	idx = span_count - 1;
 	heap->span_cache[idx] = _memory_global_cache_extract(span_count);
 	if (heap->span_cache[idx]) {
 #if ENABLE_STATISTICS
