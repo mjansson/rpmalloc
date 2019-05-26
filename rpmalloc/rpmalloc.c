@@ -809,12 +809,14 @@ _memory_heap_cache_insert(heap_t* heap, span_t* span) {
 #else
 	const size_t release_count = (!idx ? _memory_span_release_count : _memory_span_release_count_large);
 	const size_t hard_limit = release_count * THREAD_CACHE_MULTIPLIER;
-	const size_t soft_limit = 1 + heap->cache_limit[idx];
+	size_t soft_limit = 1 + heap->cache_limit[idx];
 	size_t current_cache_size = _memory_span_list_push(&heap->span_cache[idx], span);
 	//Adapt the cache limit
 	if (heap->cache_limit[idx])
 		--heap->cache_limit[idx];
-	if ((current_cache_size <= soft_limit) && (current_cache_size <= hard_limit) && (current_cache_size > release_count))
+	if (soft_limit < (release_count * 2))
+		soft_limit = (release_count * 2) - 1;
+	if ((current_cache_size <= soft_limit) && (current_cache_size <= hard_limit))
 		return;
 	heap->span_cache[idx] = _memory_span_list_split(span, release_count);
 	assert(span->data.list.size == release_count);
