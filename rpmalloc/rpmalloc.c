@@ -814,7 +814,7 @@ _memory_heap_cache_insert(heap_t* heap, span_t* span) {
 	//Adapt the cache limit
 	if (heap->cache_limit[idx])
 		--heap->cache_limit[idx];
-	if ((current_cache_size <= soft_limit) && (current_cache_size <= hard_limit))
+	if ((current_cache_size <= soft_limit) && (current_cache_size <= hard_limit) && (current_cache_size > release_count))
 		return;
 	heap->span_cache[idx] = _memory_span_list_split(span, release_count);
 	assert(span->data.list.size == release_count);
