@@ -152,7 +152,7 @@ class Toolchain(object):
       self.initialize_default_configs()
 
   def initialize_default_configs(self):
-    self.configs = ['debug', 'release', 'profile', 'deploy']
+    self.configs = ['debug', 'release']#, 'profile', 'deploy']
 
   def initialize_toolchain(self):
     if self.android != None:

@@ -1074,15 +1074,18 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 
 	//Check if the span will become completely free
 	if (block_data->free_count == ((count_t)size_class->block_count - 1)) {
-		//If it was active, reset counter. Otherwise, if not active, remove from
-		//partial free list if we had a previous free block (guard for classes with only 1 block)
-		if (is_active)
-			block_data->free_count = 0;
-		else if (block_data->free_count > 0)
-			_memory_span_list_doublelink_remove(&heap->size_cache[class_idx], span);
-
-		//Add to heap span cache
-		_memory_heap_cache_insert(heap, span);
+		if (is_active) {
+			//If it was active, reset free block list
+			++block_data->free_count;
+			block_data->first_autolink = 0;
+			block_data->free_list = 0;
+		} else {
+			//If not active, remove from partial free list if we had a previous free
+			//block (guard for classes with only 1 block) and add to heap cache
+			if (block_data->free_count > 0)
+				_memory_span_list_doublelink_remove(&heap->size_cache[class_idx], span);
+			_memory_heap_cache_insert(heap, span);
+		}
 		return;
 	}
 
@@ -1546,6 +1549,15 @@ rpmalloc_finalize(void) {
 				_memory_unmap_span(span);
 			}
 
+			for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
+				span_t* span = heap->active_span[iclass];
+				if (span && (heap->active_block[iclass].free_count == _memory_size_class[iclass].block_count)) {
+					heap->active_span[iclass] = 0;
+					heap->active_block[iclass].free_count = 0;
+					_memory_heap_cache_insert(heap, span);
+				}
+			}
+
 			//Free span caches (other thread might have deferred after the thread using this heap finalized)
 #if ENABLE_THREAD_CACHE
 			for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
@@ -1605,6 +1617,15 @@ rpmalloc_thread_finalize(void) {
 		return;
 
 	_memory_deallocate_deferred(heap);
+
+	for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
+		span_t* span = heap->active_span[iclass];
+		if (span && (heap->active_block[iclass].free_count == _memory_size_class[iclass].block_count)) {
+			heap->active_span[iclass] = 0;
+			heap->active_block[iclass].free_count = 0;
+			_memory_heap_cache_insert(heap, span);
+		}
+	}
 
 	//Release thread cache spans back to global cache
 #if ENABLE_THREAD_CACHE
