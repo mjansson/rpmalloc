@@ -26,15 +26,15 @@
 #endif
 #ifndef ENABLE_VALIDATE_ARGS
 //! Enable validation of args to public entry points
-#define ENABLE_VALIDATE_ARGS      1
+#define ENABLE_VALIDATE_ARGS      0
 #endif
 #ifndef ENABLE_STATISTICS
 //! Enable statistics collection
-#define ENABLE_STATISTICS         1
+#define ENABLE_STATISTICS         0
 #endif
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            1
+#define ENABLE_ASSERTS            0
 #endif
 #ifndef ENABLE_PRELOAD
 //! Support preloading
