@@ -26,15 +26,15 @@
 #endif
 #ifndef ENABLE_VALIDATE_ARGS
 //! Enable validation of args to public entry points
-#define ENABLE_VALIDATE_ARGS      0
+#define ENABLE_VALIDATE_ARGS      1
 #endif
 #ifndef ENABLE_STATISTICS
 //! Enable statistics collection
-#define ENABLE_STATISTICS         0
+#define ENABLE_STATISTICS         1
 #endif
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            0
+#define ENABLE_ASSERTS            1
 #endif
 #ifndef ENABLE_PRELOAD
 //! Support preloading
@@ -1549,6 +1549,15 @@ rpmalloc_finalize(void) {
 				_memory_unmap_span(span);
 			}
 
+			for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
+				span_t* span = heap->active_span[iclass];
+				if (span && (heap->active_block[iclass].free_count == _memory_size_class[iclass].block_count)) {
+					heap->active_span[iclass] = 0;
+					heap->active_block[iclass].free_count = 0;
+					_memory_heap_cache_insert(heap, span);
+				}
+			}
+
 			//Free span caches (other thread might have deferred after the thread using this heap finalized)
 #if ENABLE_THREAD_CACHE
 			for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
@@ -1608,6 +1617,15 @@ rpmalloc_thread_finalize(void) {
 		return;
 
 	_memory_deallocate_deferred(heap);
+
+	for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
+		span_t* span = heap->active_span[iclass];
+		if (span && (heap->active_block[iclass].free_count == _memory_size_class[iclass].block_count)) {
+			heap->active_span[iclass] = 0;
+			heap->active_block[iclass].free_count = 0;
+			_memory_heap_cache_insert(heap, span);
+		}
+	}
 
 	//Release thread cache spans back to global cache
 #if ENABLE_THREAD_CACHE
