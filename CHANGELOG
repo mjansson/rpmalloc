@@ -1,5 +1,9 @@
 1.3.2
 
+Support for alignment equal or larger than memory page size, up to span size
+
+Added adaptive thread cache size based on thread allocation load
+
 Fix 32-bit MSVC Windows builds using incorrect 64-bit pointer CAS
 
 Updated compatibility with clang toolchain and Python 3
@@ -7,8 +11,6 @@ Updated compatibility with clang toolchain and Python 3
 Support preconfigured huge pages
 
 Moved active heap counter to statistics
-
-Support for alignment equal or larger than memory page size, up to span size
 
 Moved repository to https://github.com/mjansson/rpmalloc
 
