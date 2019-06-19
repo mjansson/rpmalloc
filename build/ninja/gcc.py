@@ -183,7 +183,7 @@ class GCCToolchain(toolchain.Toolchain):
     flags = []
     if targettype == 'sharedlib':
       flags += ['-DBUILD_DYNAMIC_LINK=1']
-      if self.target.is_linux():
+      if self.target.is_linux() or self.target.is_bsd():
         flags += ['-fPIC']
     flags += self.make_targetarchflags(arch, targettype)
     return flags
