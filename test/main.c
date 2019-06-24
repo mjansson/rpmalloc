@@ -387,7 +387,7 @@ crossallocator_thread(void* argp) {
 	thread_sleep(10);
 
 	size_t next_crossthread = 0;
-	void* extra_pointers = rpmalloc(sizeof(void*) * arg.loops * arg.passes);
+	void** extra_pointers = rpmalloc(sizeof(void*) * arg.loops * arg.passes);
 
 	for (iloop = 0; iloop < arg.loops; ++iloop) {
 		size_t end_crossthread = (iloop + 1) * arg.passes;
@@ -445,6 +445,8 @@ crossallocator_thread(void* argp) {
 			rpfree(extra_pointers[(iloop * arg.passes) + ipass]);
 		}
 	}
+
+	rpfree(extra_pointers);
 
 end:
 	rpmalloc_thread_finalize();
@@ -720,10 +722,10 @@ test_run(int argc, char** argv) {
 	(void)sizeof(argc);
 	(void)sizeof(argv);
 	test_initialize();
-	//if (test_alloc())
-	//	return -1;
-	//if (test_superalign())
-	//	return -1;
+	if (test_alloc())
+		return -1;
+	if (test_superalign())
+		return -1;
 	if (test_crossthread())
 		return -1;
 	if (test_threadspam())
