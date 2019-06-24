@@ -1116,6 +1116,7 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 
 	//Check if first free block for this span (previously fully allocated or only deferred frees)
 	//and not currently active span
+	assert((active_span->free_list && active_span->free_count) || (!active_span->free_list && !active_span->free_count));
 	if (!span->free_list && !is_active)
 		_memory_span_list_doublelink_add(&heap->size_cache[class_idx], span);
 	span->free_list = block;
@@ -1170,7 +1171,12 @@ _memory_deallocate_defer(span_t* span, void* p) {
 		uint32_t list_size = free_list >> 32ULL;
 		uint32_t free_index = (uint32_t)free_list;
 		*((void**)block) = list_size ? pointer_offset(blocks_start, size_class->size * free_index) : 0;
-		new_free_list = ((uint64_t)(list_size + 1) << 32ULL) | (uint64_t)block_idx;
+		++list_size;
+		if (list_size == size_class->block_count) {
+			need to handle this to not get lost in void
+			what if span is active in the other heap?
+		}
+		new_free_list = ((uint64_t)list_size << 32ULL) | (uint64_t)block_idx;
 	} while (!atomic_cas64(&span->free_list_deferred, (int64_t)new_free_list, (int64_t)free_list));
 }
 
