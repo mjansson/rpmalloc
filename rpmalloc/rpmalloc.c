@@ -916,28 +916,28 @@ use_active:
 		assert(atomic_load32(&active_span->heap_id) == heap->id);
 		//Step 1: Try to get a block from the currently active span free list
 		if (active_span->free_list) {
+			assert(active_span->free_count);
 			void* block = active_span->free_list;
 			active_span->free_list = *((void**)block);
 			--active_span->free_count;
+			assert((active_span->free_list && active_span->free_count) || (!active_span->free_list && !active_span->free_count));
 			return block;
 		}
 
-		//Step 2: Active span has no blocks in free list, swap in deferred free list if
-		//        is not empty, then retry
+		//Step 2: Active span has no blocks in free list, swap in deferred free list if not empty
+		atomic_thread_fence_acquire();
 		if (atomic_load64(&active_span->free_list_deferred)) {
-			void* free_list;
 			uint64_t free_list_token;
 			atomic_thread_fence_acquire();
 			do {
 				// Safe to assume nothing else can reset to a null list here, only owning thread can do this
 				free_list_token = (uint64_t)atomic_load64(&active_span->free_list_deferred);
-				uint32_t list_size = free_list_token >> 32ULL;
-				uint32_t block_index = (uint32_t)free_list_token;
-				assert(list_size);
-				free_list = pointer_offset(active_span, SPAN_HEADER_SIZE + (size_class->size * block_index));
-				active_span->free_list = free_list;
-				active_span->free_count = list_size;
 			} while (!atomic_cas64(&active_span->free_list_deferred, 0, (int64_t)free_list_token));
+
+			active_span->free_list = pointer_offset(active_span, SPAN_HEADER_SIZE + (size_class->size * (uint32_t)free_list_token));
+			active_span->free_count = free_list_token >> 32ULL;
+			assert(active_span->free_list && active_span->free_count);
+
 			goto use_active;
 		}
 	}
