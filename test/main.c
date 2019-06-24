@@ -387,11 +387,11 @@ crossallocator_thread(void* argp) {
 	thread_sleep(10);
 
 	size_t next_crossthread = 0;
+	size_t end_crossthread = arg.loops * arg.passes;
+
 	void** extra_pointers = rpmalloc(sizeof(void*) * arg.loops * arg.passes);
 
 	for (iloop = 0; iloop < arg.loops; ++iloop) {
-		size_t end_crossthread = (iloop + 1) * arg.passes;
-
 		for (ipass = 0; ipass < arg.passes; ++ipass) {
 			size_t iarg = (iloop + ipass + iextra++) % arg.num_datasize;
 			cursize = arg.datasize[iarg] + ((iloop + ipass) % 97);
@@ -428,16 +428,6 @@ crossallocator_thread(void* argp) {
 				++next_crossthread;
 			}
 		}
-
-		while (next_crossthread < end_crossthread) {
-			if (arg.crossthread_pointers[next_crossthread]) {
-				rpfree(arg.crossthread_pointers[next_crossthread]);
-				arg.crossthread_pointers[next_crossthread] = 0;
-				++next_crossthread;
-			} else {
-				thread_yield();
-			}
-		}
 	}
 
 	for (iloop = 0; iloop < arg.loops; ++iloop) {
@@ -447,6 +437,16 @@ crossallocator_thread(void* argp) {
 	}
 
 	rpfree(extra_pointers);
+
+	while (next_crossthread < end_crossthread) {
+		if (arg.crossthread_pointers[next_crossthread]) {
+			rpfree(arg.crossthread_pointers[next_crossthread]);
+			arg.crossthread_pointers[next_crossthread] = 0;
+			++next_crossthread;
+		} else {
+			thread_yield();
+		}
+	}
 
 end:
 	rpmalloc_thread_finalize();
@@ -646,6 +646,9 @@ test_crossthread(void) {
 				return -1;
 		}
 	}
+
+	for (unsigned int ithread = 0; ithread < num_alloc_threads; ++ithread)
+		rpfree(arg[ithread].pointers);
 
 	rpmalloc_finalize();
 

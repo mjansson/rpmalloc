@@ -38,7 +38,7 @@
 #endif
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            1
+#define ENABLE_ASSERTS            0
 #endif
 #ifndef ENABLE_PRELOAD
 //! Support preloading
@@ -249,7 +249,7 @@ typedef struct span_block_t span_block_t;
 //! Span list bookkeeping
 typedef struct span_list_t span_list_t;
 //! Span data union, usage depending on span state
-typedef union span_data_t span_data_t;
+typedef union span_shared_data_t span_shared_data_t;
 //! Global cache
 typedef struct global_cache_t global_cache_t;
 
@@ -955,7 +955,7 @@ use_active:
 		}
 
 		//Step 2: Active span has no blocks in free list, swap in deferred free list
-use_free_list_deferred:
+swap_free_list:
 		assert(active_span->used_count == size_class->block_count);
 		atomic_thread_fence_acquire();
 		//If list has at least one element the compound 64-bit value will not be set to raw flag
@@ -978,7 +978,7 @@ use_free_list_deferred:
 			heap->active_span[class_idx] = 0;
 		} else {
 			//Some other thread freed up additional blocks, grab them
-			goto use_free_list_deferred;
+			goto swap_free_list;
 		}
 	}
 
@@ -1023,6 +1023,8 @@ use_free_list_deferred:
 	void* block = pointer_offset(span, SPAN_HEADER_SIZE);
 	if (size_class->block_count > 1) {
 		//Setup free list
+		//TODO: Only initialize one system page worth of list, then detect underused span
+		//      in active span allocation, and initialize more on demand
 		void* free_block = pointer_offset(block, size_class->size);
 		span->free_list = free_block;
 		for (uint16_t iblock = 0, bcount = size_class->block_count - 2; iblock < bcount; ++iblock) {
@@ -1220,9 +1222,8 @@ _memory_deallocate_defer(span_t* span, void* p) {
 		free_list = (uint64_t)atomic_load64(&span->free_list_deferred);
 		uint32_t list_size = (uint32_t)(free_list >> 32ULL) & 0xFFFF;
 		uint32_t new_list_size = list_size + 1;
-		if (new_list_size < size_class->block_count) {
-			new_free_list = (free_list & FREE_LIST_FLAG_ACTIVE) | ((uint64_t)new_list_size << 32ULL) | (uint64_t)block_idx;
-		} else {
+		new_free_list = (free_list & FREE_LIST_FLAG_ACTIVE) | ((uint64_t)new_list_size << 32ULL) | (uint64_t)block_idx;
+		if (new_list_size == size_class->block_count) {
 			//Span will be completely freed by deferred deallocations
 			if (free_list & FREE_LIST_FLAG_ACTIVE) {
 				//Active span, just leave it
@@ -1234,8 +1235,8 @@ _memory_deallocate_defer(span_t* span, void* p) {
 					last_head = atomic_load_ptr(&heap->span_cache_deferred);
 					span->next_span = last_head;
 				} while (!atomic_cas_ptr(&heap->span_cache_deferred, span, last_head));
+				return;
 			}
-			return;
 		}
 		*((void**)block) = list_size ? pointer_offset(blocks_start, size_class->size * (uint32_t)free_list) : 0;
 	} while (!atomic_cas64(&span->free_list_deferred, (int64_t)new_free_list, (int64_t)free_list));
@@ -1627,13 +1628,13 @@ rpmalloc_finalize(void) {
 			for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
 				span_t* span = heap->active_span[iclass];
 				if (span) {
-					// TODO: Verify that span is completely free
 					_memory_heap_cache_insert(heap, span);
 				}
 			}
 
 			//Free span caches (other thread might have deferred after the thread using this heap finalized)
 #if ENABLE_THREAD_CACHE
+			_memory_heap_cache_adopt_deferred(heap);
 			for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
 				if (heap->span_cache[iclass])
 					_memory_unmap_span_list(heap->span_cache[iclass]);
@@ -1689,18 +1690,6 @@ rpmalloc_thread_finalize(void) {
 	heap_t* heap = get_thread_heap();
 	if (!heap)
 		return;
-
-	// TODO: Release complete free spans to heap cache
-#if 0
-	for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
-		span_t* span = heap->active_span[iclass];
-		if (span && (heap->active_block[iclass].free_count == _memory_size_class[iclass].block_count)) {
-			heap->active_span[iclass] = 0;
-			heap->active_block[iclass].free_count = 0;
-			_memory_heap_cache_insert(heap, span);
-		}
-	}
-#endif
 
 	//Release thread cache spans back to global cache
 #if ENABLE_THREAD_CACHE
@@ -2034,27 +2023,12 @@ rpmalloc_usable_size(void* ptr) {
 
 void
 rpmalloc_thread_collect(void) {
-	/* TODO: Should we remove/deprecate this now?
-	heap_t* heap = get_thread_heap();
-	if (heap)
-		_memory_deallocate_deferred(heap);
-	*/
 }
 
 void
 rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats) {
 	memset(stats, 0, sizeof(rpmalloc_thread_statistics_t));
 	heap_t* heap = get_thread_heap();
-	// TODO: Deferred stats
-#if 0
-	void* p = atomic_load_ptr(&heap->defer_deallocate);
-	while (p) {
-		void* next = *(void**)p;
-		span_t* span = (void*)((uintptr_t)p & _memory_span_mask);
-		stats->deferred += _memory_size_class[span->size_class].size;
-		p = next;
-	}
-#endif
 
 	// TODO: Active and cache stats
 #if 0
