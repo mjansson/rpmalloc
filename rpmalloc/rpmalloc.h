@@ -46,14 +46,10 @@ typedef struct rpmalloc_global_statistics_t {
 } rpmalloc_global_statistics_t;
 
 typedef struct rpmalloc_thread_statistics_t {
-	//! Current number of bytes available for allocation from active spans
-	size_t active;
 	//! Current number of bytes available in thread size class caches
 	size_t sizecache;
 	//! Current number of bytes available in thread span caches
 	size_t spancache;
-	//! Current number of bytes in pending deferred deallocations
-	size_t deferred;
 	//! Total number of bytes transitioned from thread cache to global cache
 	size_t thread_to_global;
 	//! Total number of bytes transitioned from global cache to thread cache
