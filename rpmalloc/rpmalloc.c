@@ -938,13 +938,7 @@ _memory_heap_cache_extract(heap_t* heap, size_t span_count) {
 
 //! Allocate a small/medium sized memory block from the given heap
 static void*
-_memory_allocate_from_heap(heap_t* heap, size_t size) {
-	//Calculate the size class index and do a dependent lookup of the final class index (in case of merged classes)
-	const size_t base_idx = (size <= SMALL_SIZE_LIMIT) ?
-	                        ((size + (SMALL_GRANULARITY - 1)) >> SMALL_GRANULARITY_SHIFT) :
-	                        SMALL_CLASS_COUNT + ((size - SMALL_SIZE_LIMIT + (MEDIUM_GRANULARITY - 1)) >> MEDIUM_GRANULARITY_SHIFT);
-	assert(!base_idx || ((base_idx - 1) < SIZE_CLASS_COUNT));
-	const size_t class_idx = _memory_size_class[base_idx ? (base_idx - 1) : 0].class_idx;
+_memory_allocate_from_heap(heap_t* heap, uint32_t class_idx) {
 	size_class_t* size_class = _memory_size_class + class_idx;
 
 	span_t* active_span = heap->active_span[class_idx];
@@ -1278,10 +1272,20 @@ _memory_deallocate_defer(span_t* span, void* p) {
 //! Allocate a block of the given size
 static void*
 _memory_allocate(size_t size) {
-	if (size <= _memory_medium_size_limit)
-		return _memory_allocate_from_heap(get_thread_heap(), size);
-	else if (size <= LARGE_SIZE_LIMIT)
+	if (size <= SMALL_SIZE_LIMIT) {
+		//Small sizes have unique size classes
+		const uint32_t class_idx = (uint32_t)(size >> SMALL_GRANULARITY_SHIFT);
+		return _memory_allocate_from_heap(get_thread_heap(), class_idx);
+	}
+	else if (size <= _memory_medium_size_limit) {
+		//Calculate the size class index and do a dependent lookup of the final class index (in case of merged classes)
+		const uint32_t base_idx = (uint32_t)(SMALL_CLASS_COUNT + ((size - SMALL_SIZE_LIMIT) >> MEDIUM_GRANULARITY_SHIFT));
+		const uint32_t class_idx = _memory_size_class[base_idx].class_idx;
+		return _memory_allocate_from_heap(get_thread_heap(), class_idx);
+	}
+	else if (size <= LARGE_SIZE_LIMIT) {
 		return _memory_allocate_large_from_heap(get_thread_heap(), size);
+	}
 
 	//Oversized, allocate pages directly
 	size += SPAN_HEADER_SIZE;
