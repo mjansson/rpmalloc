@@ -22,7 +22,7 @@
 #endif
 #ifndef ENABLE_ADAPTIVE_THREAD_CACHE
 //! Enable adaptive size of per-thread cache (still bounded by THREAD_CACHE_MULTIPLIER hard limit)
-#define ENABLE_ADAPTIVE_THREAD_CACHE  1
+#define ENABLE_ADAPTIVE_THREAD_CACHE  0
 #endif
 #ifndef ENABLE_GLOBAL_CACHE
 //! Enable global cache shared between all threads, requires thread cache
