@@ -201,7 +201,7 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 //! Small granularity shift count
 #define SMALL_GRANULARITY_SHIFT   5
 //! Number of small block size classes
-#define SMALL_CLASS_COUNT         63
+#define SMALL_CLASS_COUNT         32
 //! Maximum size of a small block
 #define SMALL_SIZE_LIMIT          (SMALL_GRANULARITY * SMALL_CLASS_COUNT)
 //! Granularity of a medium allocation block
@@ -233,6 +233,8 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 /// Data types
 //! A memory heap, per thread
 typedef struct heap_t heap_t;
+//! Heap spans per size class
+typedef struct heap_class_t heap_class_t;
 //! Span of memory pages
 typedef struct span_t span_t;
 //! Span list
@@ -314,13 +316,20 @@ struct span_t {
 };
 _Static_assert(sizeof(span_t) <= SPAN_HEADER_SIZE, "span size mismatch");
 
+struct heap_class_t {
+	//! Current free list
+	void*        free_list;
+	//! Active span
+	span_t*      active_span;
+	//! List of semi-used spans with free blocks for each size class (double linked list)
+	span_t*      used_span;
+};
+
 struct heap_t {
 	//! Heap ID
 	int32_t      id;
-	//! Active span for each size class
-	span_t*      active_span[SIZE_CLASS_COUNT];
-	//! List of semi-used spans with free blocks for each size class (double linked list)
-	span_t*      size_cache[SIZE_CLASS_COUNT];
+	//! Spans
+	heap_class_t span_class[SIZE_CLASS_COUNT];
 #if ENABLE_THREAD_CACHE
 	//! List of free spans (single linked list)
 	span_t*      span_cache[LARGE_CLASS_COUNT];
@@ -936,42 +945,46 @@ _memory_heap_cache_extract(heap_t* heap, size_t span_count) {
 	return 0;
 }
 
+static inline void*
+free_list_pop(void** list) {
+	void* block = *list;
+	if (block)
+		*list = *((void**)block);
+	return block;
+}
+
 //! Allocate a small/medium sized memory block from the given heap
 static void*
-_memory_allocate_from_heap(heap_t* heap, uint32_t class_idx) {
+_memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 	size_class_t* size_class = _memory_size_class + class_idx;
+	heap_class_t* heap_class = heap->span_class + class_idx;
 
-	span_t* active_span = heap->active_span[class_idx];
-	if (active_span) {
-use_active:
-		assert(atomic_load32(&active_span->heap_id) == heap->id);
-		//Step 1: Try to get a block from the currently active span free list
-		void* block = active_span->free_list;
-		if (block) {
-			active_span->free_list = *((void**)block);
-			return block;
-		}
-
-		//Step 2: Active span has no blocks in free list, swap in deferred free list
-swap_free_list:
-		atomic_thread_fence_acquire();
-		//If list has at least one element the compound 64-bit value will not be set to raw flag
-		if ((uint64_t)atomic_load64(&active_span->free_list_deferred) != FREE_LIST_FLAG_ACTIVE) {
-			uint64_t free_list_deferred;
+	span_t* active_span = heap_class->active_span;
+	if (!active_span) {
+		//If we have no active span try promoting a semi-used span
+		active_span = heap_class->used_span;
+		if (active_span) {
+			assert(atomic_load32(&active_span->heap_id) == heap->id);
+			heap_class->free_list = active_span->free_list;
+			heap_class->active_span = active_span;
+			heap_class->used_span = active_span->data.list.next;
+			//Mark span as active
+			uint64_t free_list_deferred, new_list_deferred;
 			do {
-				// Safe to assume nothing else can reset to a null list here, only owning thread can do this
 				free_list_deferred = (uint64_t)atomic_load64(&active_span->free_list_deferred);
-			} while (!atomic_cas64(&active_span->free_list_deferred, (int64_t)FREE_LIST_FLAG_ACTIVE, (int64_t)free_list_deferred));
-
-			active_span->free_list = pointer_offset(active_span, SPAN_HEADER_SIZE + (size_class->size * (uint32_t)free_list_deferred));
-			goto use_active;
+				new_list_deferred = free_list_deferred | FREE_LIST_FLAG_ACTIVE;
+			} while (!atomic_cas64(&active_span->free_list_deferred, (int64_t)new_list_deferred, (int64_t)free_list_deferred));
+			active_span->data.active.free_list_limit = size_class->block_count;
 		}
+	}
 
-		//Step 3: If the span did not fully initialize free list, link up another pages worth of block
+	while (active_span) {
+		//Step 1: If the span did not fully initialize free list, link up another pages worth of block
+		assert(atomic_load32(&heap_class->active_span->heap_id) == heap->id);
 		if (active_span->data.active.free_list_limit < size_class->block_count) {
-			block = pointer_offset(active_span, SPAN_HEADER_SIZE);
+			void* block = pointer_offset(active_span, SPAN_HEADER_SIZE);
 			void* free_block = pointer_offset(block, active_span->data.active.free_list_limit * size_class->size);
-			active_span->free_list = free_block;
+			heap_class->free_list = free_block;
 			uint32_t count_limit = (uint32_t)(_memory_page_size / size_class->size);
 			uint32_t block_count = size_class->block_count - active_span->data.active.free_list_limit;
 			if ((count_limit > 2) && (block_count > count_limit))
@@ -984,41 +997,39 @@ swap_free_list:
 			}
 			*((void**)free_block) = 0;
 			active_span->data.active.free_list_limit += block_count + 1;
-			goto use_active;
+			return block;
+		}
+
+		//Step 2: Swap in deferred free list (if list has at least one element the compound 64-bit value will not be set to raw flag)
+		atomic_thread_fence_acquire();
+		if ((uint64_t)atomic_load64(&active_span->free_list_deferred) != FREE_LIST_FLAG_ACTIVE) {
+			uint64_t free_list_deferred;
+			do {
+				// Safe to assume nothing else can reset to a null list here, only owning thread can do this
+				free_list_deferred = (uint64_t)atomic_load64(&active_span->free_list_deferred);
+			} while (!atomic_cas64(&active_span->free_list_deferred, (int64_t)FREE_LIST_FLAG_ACTIVE, (int64_t)free_list_deferred));
+
+			heap_class->free_list = pointer_offset(active_span, SPAN_HEADER_SIZE + (size_class->size * (uint32_t)free_list_deferred));
+			return free_list_pop(&heap_class->free_list);
 		}
 
 		//If the active span is fully allocated, mark span as free floating (fully allocated and not part of any list)
+		//If CAS fails some other thread freed up additional blocks, then loop around and try again
 		assert(active_span->data.active.free_list_limit == size_class->block_count);
 		active_span->free_count = 0;
-		if (atomic_cas64(&active_span->free_list_deferred, 0, (int64_t)FREE_LIST_FLAG_ACTIVE)) {
-			heap->active_span[class_idx] = 0;
-		} else {
-			//Some other thread freed up additional blocks, grab them
-			goto swap_free_list;
-		}
+		active_span->free_list = 0;
+		if (atomic_cas64(&active_span->free_list_deferred, 0, (int64_t)FREE_LIST_FLAG_ACTIVE))
+			active_span = heap_class->active_span = 0;
 	}
 
-	//Step 4: Check if there is a semi-used span of the requested size class available,
-	//        if so promote it to active and retry
-	if (heap->size_cache[class_idx]) {
-		active_span = heap->size_cache[class_idx];
-		assert(atomic_load32(&active_span->heap_id) == heap->id);
-		heap->size_cache[class_idx] = active_span->data.list.next;
-		heap->active_span[class_idx] = active_span;
-		//Mark span as active
-		uint64_t free_list_deferred, new_list_deferred;
-		do {
-			free_list_deferred = (uint64_t)atomic_load64(&active_span->free_list_deferred);
-			new_list_deferred = free_list_deferred | FREE_LIST_FLAG_ACTIVE;
-		} while (!atomic_cas64(&active_span->free_list_deferred, (int64_t)new_list_deferred, (int64_t)free_list_deferred));
-		active_span->data.active.free_list_limit = size_class->block_count;
-		goto use_active;
-	}
+	assert(!heap_class->active_span);
+	assert(!heap_class->free_list);
+	assert(!heap_class->used_span);
 
-	//Step 5: Find a span in one of the cache levels
+	//Step 3: Find a span in one of the cache levels
 	span_t* span = _memory_heap_cache_extract(heap, 1);
 	if (!span) {
-		//Step 6: Map in more virtual memory
+		//Step 4: Map in more virtual memory
 		span = _memory_map_spans(heap, 1);
 		if (!span)
 			return span;
@@ -1040,7 +1051,8 @@ swap_free_list:
 	if (size_class->block_count > 1) {
 		//Setup free list. Only initialize one system page worth of blocks free list for now
 		void* free_block = pointer_offset(block, size_class->size);
-		span->free_list = free_block;
+		heap_class->free_list = free_block;
+		heap_class->active_span = span;
 		uint32_t count_limit = (uint32_t)(_memory_page_size / size_class->size);
 		uint32_t block_count = size_class->block_count;
 		if ((count_limit > 2) && (block_count > count_limit))
@@ -1053,7 +1065,6 @@ swap_free_list:
 		}
 		*((void**)free_block) = 0;
 		span->data.active.free_list_limit = block_count + 2;
-		heap->active_span[class_idx] = span;
 		atomic_store64(&span->free_list_deferred, (int64_t)FREE_LIST_FLAG_ACTIVE);
 	}
 	else {
@@ -1154,6 +1165,7 @@ static void
 _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 	const uint32_t class_idx = span->size_class;
 	size_class_t* size_class = _memory_size_class + class_idx;
+	heap_class_t* heap_class = heap->span_class + class_idx;
 	void* blocks_start = pointer_offset(span, SPAN_HEADER_SIZE);
 	uint32_t block_offset = (uint32_t)pointer_diff(p, blocks_start);
 	uint32_t block_idx = block_offset / (uint32_t)size_class->size;
@@ -1161,9 +1173,9 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 
 	//Fast path for active span
 	assert(atomic_load32(&span->heap_id) == heap->id);
-	if (heap->active_span[class_idx] == span) {
-		*((void**)block) = span->free_list;
-		span->free_list = block;
+	if (heap_class->active_span == span) {
+		*((void**)block) = heap_class->free_list;
+		heap_class->free_list = block;
 		return;
 	}
 
@@ -1178,7 +1190,7 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 	if (free_count == size_class->block_count) {
 		//Remove from partial free list if we had a previous locally free block and add to heap cache
 		if (span->free_count)
-			_memory_span_list_doublelink_remove(&heap->size_cache[class_idx], span);
+			_memory_span_list_doublelink_remove(&heap_class->used_span, span);
 #if ENABLE_ADAPTIVE_THREAD_CACHE
 		if (heap->span_use[0].current)
 			--heap->span_use[0].current;
@@ -1189,7 +1201,7 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 
 	//Check if first free block for this span (previously fully allocated or only deferred frees)
 	if (!span->free_count)
-		_memory_span_list_doublelink_add(&heap->size_cache[class_idx], span);
+		_memory_span_list_doublelink_add(&heap_class->used_span, span);
 	*((void**)block) = span->free_list;
 	span->free_list = block;
 	++span->free_count;
@@ -1267,16 +1279,23 @@ _memory_deallocate_defer(span_t* span, void* p) {
 //! Allocate a block of the given size
 static void*
 _memory_allocate(size_t size) {
+	heap_t* heap = get_thread_heap();
 	if (size <= SMALL_SIZE_LIMIT) {
 		//Small sizes have unique size classes
 		const uint32_t class_idx = (uint32_t)(size >> SMALL_GRANULARITY_SHIFT);
-		return _memory_allocate_from_heap(get_thread_heap(), class_idx);
+		void* block = free_list_pop(&heap->span_class[class_idx].free_list);
+		if (block)
+			return block;
+		return _memory_allocate_from_heap_fallback(heap, class_idx);
 	}
 	else if (size <= _memory_medium_size_limit) {
 		//Calculate the size class index and do a dependent lookup of the final class index (in case of merged classes)
 		const uint32_t base_idx = (uint32_t)(SMALL_CLASS_COUNT + ((size - SMALL_SIZE_LIMIT) >> MEDIUM_GRANULARITY_SHIFT));
 		const uint32_t class_idx = _memory_size_class[base_idx].class_idx;
-		return _memory_allocate_from_heap(get_thread_heap(), class_idx);
+		void* block = free_list_pop(&heap->span_class[class_idx].free_list);
+		if (block)
+			return block;
+		return _memory_allocate_from_heap_fallback(get_thread_heap(), class_idx);
 	}
 	else if (size <= LARGE_SIZE_LIMIT) {
 		return _memory_allocate_large_from_heap(get_thread_heap(), size);
@@ -1658,9 +1677,16 @@ rpmalloc_finalize(void) {
 			}
 
 			for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
-				span_t* span = heap->active_span[iclass];
-				if (span)
+				heap_class_t* heap_class = heap->span_class + iclass;
+				if (heap_class->active_span)
+					_memory_heap_cache_insert(heap, heap_class->active_span);
+				assert(!heap_class->used_span);
+				span_t* span = heap_class->used_span;
+				while (span) {
+					span_t* next = span->data.list.next;
 					_memory_heap_cache_insert(heap, span);
+					span = next;
+				}
 			}
 
 			//Free span caches (other thread might have deferred after the thread using this heap finalized)
@@ -2061,13 +2087,14 @@ rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats) {
 	memset(stats, 0, sizeof(rpmalloc_thread_statistics_t));
 	heap_t* heap = get_thread_heap();
 
-	for (size_t isize = 0; isize < SIZE_CLASS_COUNT; ++isize) {
-		span_t* cache = heap->size_cache[isize];
-		while (cache) {
+	for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
+		heap_class_t* heap_class = heap->span_class + iclass;
+		span_t* span = heap_class->used_span;
+		while (span) {
 			atomic_thread_fence_acquire();
-			uint64_t free_list_deferred = (uint64_t)atomic_load64(&cache->free_list_deferred);
-			stats->sizecache = (cache->free_count + (uint32_t)free_list_deferred) * _memory_size_class[cache->size_class].size;
-			cache = cache->data.list.next;
+			uint64_t free_list_deferred = (uint64_t)atomic_load64(&span->free_list_deferred);
+			stats->sizecache = (span->free_count + (uint32_t)free_list_deferred) * _memory_size_class[iclass].size;
+			span = span->data.list.next;
 		}
 	}
 
