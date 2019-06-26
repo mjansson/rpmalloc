@@ -34,11 +34,11 @@
 #endif
 #ifndef ENABLE_STATISTICS
 //! Enable statistics collection
-#define ENABLE_STATISTICS         0
+#define ENABLE_STATISTICS         1
 #endif
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            0
+#define ENABLE_ASSERTS            1
 #endif
 #ifndef ENABLE_PRELOAD
 //! Support preloading
@@ -960,47 +960,31 @@ _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 	heap_class_t* heap_class = heap->span_class + class_idx;
 
 	span_t* active_span = heap_class->active_span;
-	if (!active_span) {
-		//If we have no active span try promoting a semi-used span
-		active_span = heap_class->used_span;
-		if (active_span) {
-			assert(atomic_load32(&active_span->heap_id) == heap->id);
-			heap_class->free_list = active_span->free_list;
-			heap_class->active_span = active_span;
-			heap_class->used_span = active_span->data.list.next;
-			//Mark span as active
-			uint64_t free_list_deferred, new_list_deferred;
-			do {
-				free_list_deferred = (uint64_t)atomic_load64(&active_span->free_list_deferred);
-				new_list_deferred = free_list_deferred | FREE_LIST_FLAG_ACTIVE;
-			} while (!atomic_cas64(&active_span->free_list_deferred, (int64_t)new_list_deferred, (int64_t)free_list_deferred));
-			active_span->data.active.free_list_limit = size_class->block_count;
-		}
-	}
-
-	while (active_span) {
-		//Step 1: If the span did not fully initialize free list, link up another pages worth of block
+	if (active_span) {
+		//If the span did not fully initialize free list, link up another pages worth of block
 		assert(atomic_load32(&heap_class->active_span->heap_id) == heap->id);
 		if (active_span->data.active.free_list_limit < size_class->block_count) {
-			void* block = pointer_offset(active_span, SPAN_HEADER_SIZE);
-			void* free_block = pointer_offset(block, active_span->data.active.free_list_limit * size_class->size);
+			void* block = pointer_offset(active_span, SPAN_HEADER_SIZE + (active_span->data.active.free_list_limit * size_class->size));
+			void* free_block = pointer_offset(block, size_class->size);
 			heap_class->free_list = free_block;
 			uint32_t count_limit = (uint32_t)(_memory_page_size / size_class->size);
 			uint32_t block_count = size_class->block_count - active_span->data.active.free_list_limit;
-			if ((count_limit > 2) && (block_count > count_limit))
+			if ((count_limit > 2) && (block_count > (count_limit + 2)))
 				block_count = count_limit;
-			--block_count;
-			for (uint16_t iblock = 0; iblock < block_count; ++iblock) {
+			for (uint16_t iblock = 2; iblock < block_count; ++iblock) {
 				void* next_block = pointer_offset(free_block, size_class->size);
 				*((void**)free_block) = next_block;
 				free_block = next_block;
 			}
 			*((void**)free_block) = 0;
-			active_span->data.active.free_list_limit += block_count + 1;
+			active_span->data.active.free_list_limit += block_count;
 			return block;
 		}
+	}
 
-		//Step 2: Swap in deferred free list (if list has at least one element the compound 64-bit value will not be set to raw flag)
+	//Swap in deferred free list (if list has at least one element the compound 64-bit value will not be set to raw flag)
+	while (active_span) {
+retry_active_span:
 		atomic_thread_fence_acquire();
 		if ((uint64_t)atomic_load64(&active_span->free_list_deferred) != FREE_LIST_FLAG_ACTIVE) {
 			uint64_t free_list_deferred;
@@ -1020,6 +1004,28 @@ _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 		active_span->free_list = 0;
 		if (atomic_cas64(&active_span->free_list_deferred, 0, (int64_t)FREE_LIST_FLAG_ACTIVE))
 			active_span = heap_class->active_span = 0;
+	}
+
+	assert(!heap_class->active_span);
+	assert(!active_span);
+
+	//Try promoting a semi-used span
+	active_span = heap_class->used_span;
+	if (active_span) {
+		assert(atomic_load32(&active_span->heap_id) == heap->id);
+		//Mark span as active
+		uint64_t free_list_deferred, new_list_deferred;
+		do {
+			free_list_deferred = (uint64_t)atomic_load64(&active_span->free_list_deferred);
+			new_list_deferred = free_list_deferred | FREE_LIST_FLAG_ACTIVE;
+		} while (!atomic_cas64(&active_span->free_list_deferred, (int64_t)new_list_deferred, (int64_t)free_list_deferred));
+		heap_class->free_list = active_span->free_list;
+		heap_class->active_span = active_span;
+		heap_class->used_span = active_span->data.list.next;
+		active_span->data.active.free_list_limit = size_class->block_count;
+		if (heap_class->free_list)
+			return free_list_pop(heap_class->free_list);
+		goto retry_active_span;
 	}
 
 	assert(!heap_class->active_span);
@@ -1057,14 +1063,13 @@ _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 		uint32_t block_count = size_class->block_count;
 		if ((count_limit > 2) && (block_count > count_limit))
 			block_count = count_limit;
-		block_count -= 2;
-		for (uint16_t iblock = 0; iblock < block_count; ++iblock) {
+		for (uint16_t iblock = 2; iblock < block_count; ++iblock) {
 			void* next_block = pointer_offset(free_block, size_class->size);
 			*((void**)free_block) = next_block;
 			free_block = next_block;
 		}
 		*((void**)free_block) = 0;
-		span->data.active.free_list_limit = block_count + 2;
+		span->data.active.free_list_limit = block_count;
 		atomic_store64(&span->free_list_deferred, (int64_t)FREE_LIST_FLAG_ACTIVE);
 	}
 	else {

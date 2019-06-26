@@ -22,6 +22,12 @@ static void
 test_initialize(void);
 
 static int
+test_fail(const char* reason) {
+	fprintf(stderr, "FAIL: %s\n", reason);
+	return -1;
+}
+
+static int
 test_alloc(void) {
 	unsigned int iloop = 0;
 	unsigned int ipass = 0;
@@ -40,49 +46,49 @@ test_alloc(void) {
 	testptr = rprealloc(testptr, 154);
 	//Verify that blocks are 32 byte size aligned
 	if (rpmalloc_usable_size(testptr) != 160)
-		return -1;
+		return test_fail("Bad usable size");
 	if (rpmalloc_usable_size(pointer_offset(testptr, 16)) != 144)
-		return -1;
+		return test_fail("Bad offset usable size");
 	rpfree(testptr);
 
 	//Reallocation tests
-	for (iloop = 1; iloop < 32; ++iloop) {
+	for (iloop = 1; iloop < 24; ++iloop) {
 		size_t size = 37 * iloop;
 		testptr = rpmalloc(size);
 		*((uintptr_t*)testptr) = 0x12345678;
 		if (rpmalloc_usable_size(testptr) < size)
-			return -1;
+			return test_fail("Bad usable size");
 		if (rpmalloc_usable_size(testptr) >= (size + 32))
-			return -1;
+			return test_fail("Bad usable size");
 		testptr = rprealloc(testptr, size + 32);
 		if (rpmalloc_usable_size(testptr) < (size + 32))
-			return -1;
+			return test_fail("Bad usable size");
 		if (rpmalloc_usable_size(testptr) >= ((size + 32) * 2))
-			return -1;
+			return test_fail("Bad usable size");
 		if (*((uintptr_t*)testptr) != 0x12345678)
-			return -1;
+			return test_fail("Data not preserved on realloc");
 		rpfree(testptr);
 
 		testptr = rpaligned_alloc(128, size);
 		*((uintptr_t*)testptr) = 0x12345678;
 		if (rpmalloc_usable_size(testptr) < size)
-			return -1;
+			return test_fail("Bad usable size");
 		if (rpmalloc_usable_size(testptr) >= (size + 128 + 32))
-			return -1;
+			return test_fail("Bad usable size");
 		testptr = rpaligned_realloc(testptr, 128, size + 32, 0, 0);
 		if (rpmalloc_usable_size(testptr) < (size + 32))
-			return -1;
+			return test_fail("Bad usable size");
 		if (rpmalloc_usable_size(testptr) >= (((size + 32) * 2) + 128))
-			return -1;
+			return test_fail("Bad usable size");
 		if (*((uintptr_t*)testptr) != 0x12345678)
-			return -1;
+			return test_fail("Data not preserved on realloc");
 		void* unaligned = rprealloc(testptr, size);
 		if (unaligned != testptr) {
 			ptrdiff_t diff = pointer_diff(testptr, unaligned);
 			if (diff < 0)
-				return -1;
+				return test_fail("Bad realloc behaviour");
 			if (diff >= 128)
-				return -1;
+				return test_fail("Bad realloc behaviour");
 		}
 		rpfree(testptr);
 	}
@@ -99,7 +105,7 @@ test_alloc(void) {
 			baseptr = rprealloc(baseptr, resize);
 			for (size_t ibyte = 0; ibyte < capsize; ++ibyte) {
 				if (baseptr[ibyte] != (char)(ibyte & 0xFF))
-					return -1;
+					return test_fail("Data not preserved on realloc");
 			}
 
 			size_t alignsize = (iloop * ipass + datasize[(iloop + ipass * 3) % 7]) & 0x2FF;
@@ -107,7 +113,7 @@ test_alloc(void) {
 			baseptr = rpaligned_realloc(baseptr, 128, alignsize, resize, 0);
 			for (size_t ibyte = 0; ibyte < capsize; ++ibyte) {
 				if (baseptr[ibyte] != (char)(ibyte & 0xFF))
-					return -1;
+					return test_fail("Data not preserved on realloc");
 			}
 
 			rpfree(baseptr);
@@ -118,27 +124,27 @@ test_alloc(void) {
 		for (ipass = 0; ipass < 8142; ++ipass) {
 			addr[ipass] = rpmalloc(500);
 			if (addr[ipass] == 0)
-				return -1;
+				return test_fail("Allocation failed");
 
 			memcpy(addr[ipass], data + ipass, 500);
 
 			for (icheck = 0; icheck < ipass; ++icheck) {
 				if (addr[icheck] == addr[ipass])
-					return -1;
+					return test_fail("Bad allocation result");
 				if (addr[icheck] < addr[ipass]) {
 					if (pointer_offset(addr[icheck], 500) > addr[ipass])
-						return -1;
+						return test_fail("Bad allocation result");
 				}
 				else if (addr[icheck] > addr[ipass]) {
 					if (pointer_offset(addr[ipass], 500) > addr[icheck])
-						return -1;
+						return test_fail("Bad allocation result");
 				}
 			}
 		}
 
 		for (ipass = 0; ipass < 8142; ++ipass) {
 			if (memcmp(addr[ipass], data + ipass, 500))
-				return -1;
+				return test_fail("Data corruption");
 		}
 
 		for (ipass = 0; ipass < 8142; ++ipass)
@@ -151,7 +157,7 @@ test_alloc(void) {
 
 			addr[ipass] = rpmalloc(cursize);
 			if (addr[ipass] == 0)
-				return -1;
+				return test_fail("Allocation failed");
 
 			memcpy(addr[ipass], data + ipass, cursize);
 
@@ -160,11 +166,11 @@ test_alloc(void) {
 					return -1;
 				if (addr[icheck] < addr[ipass]) {
 					if (pointer_offset(addr[icheck], rpmalloc_usable_size(addr[icheck])) > addr[ipass])
-						return -1;
+						return test_fail("Bad allocation result");
 				}
 				else if (addr[icheck] > addr[ipass]) {
 					if (pointer_offset(addr[ipass], rpmalloc_usable_size(addr[ipass])) > addr[icheck])
-						return -1;
+						return test_fail("Bad allocation result");
 				}
 			}
 		}
@@ -172,7 +178,7 @@ test_alloc(void) {
 		for (ipass = 0; ipass < 1024; ++ipass) {
 			unsigned int cursize = datasize[ipass%7] + ipass;
 			if (memcmp(addr[ipass], data + ipass, cursize))
-				return -1;
+				return test_fail("Data corruption");
 		}
 
 		for (ipass = 0; ipass < 1024; ++ipass)
