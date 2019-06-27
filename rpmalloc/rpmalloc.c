@@ -34,11 +34,11 @@
 #endif
 #ifndef ENABLE_STATISTICS
 //! Enable statistics collection
-#define ENABLE_STATISTICS         1
+#define ENABLE_STATISTICS         0
 #endif
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            1
+#define ENABLE_ASSERTS            0
 #endif
 #ifndef ENABLE_PRELOAD
 //! Support preloading
@@ -124,14 +124,6 @@
 #  endif
 #endif
 
-#ifndef ARCH_64BIT
-#  if defined(__LLP64__) || defined(__LP64__) || defined(_WIN64)
-#    define ARCH_64BIT 1
-#  else
-#    define ARCH_64BIT 0
-#  endif
-#endif
-
 #include <stdint.h>
 #include <string.h>
 
@@ -165,7 +157,7 @@ static FORCEINLINE void    atomic_store64(atomic64_t* dst, int64_t val) { *dst =
 static FORCEINLINE int     atomic_cas64(atomic64_t* dst, int64_t val, int64_t ref) { return (_InterlockedCompareExchange64((volatile long long*)dst, (long long)val, (long long)ref) == (long long)ref) ? 1 : 0; }
 static FORCEINLINE void*   atomic_load_ptr(atomicptr_t* src) { return (void*)*src; }
 static FORCEINLINE void    atomic_store_ptr(atomicptr_t* dst, void* val) { *dst = val; }
-#if ARCH_64BIT
+#  if defined(__LLP64__) || defined(__LP64__) || defined(_WIN64)
 static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref) { return (_InterlockedCompareExchange64((volatile long long*)dst, (long long)val, (long long)ref) == (long long)ref) ? 1 : 0; }
 #else
 static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref) { return (_InterlockedCompareExchange((volatile long*)dst, (long)val, (long)ref) == (long)ref) ? 1 : 0; }
@@ -209,7 +201,7 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 //! Medium granularity shift count
 #define MEDIUM_GRANULARITY_SHIFT  9
 //! Number of medium block size classes
-#define MEDIUM_CLASS_COUNT        63
+#define MEDIUM_CLASS_COUNT        61
 //! Total number of small + medium size classes
 #define SIZE_CLASS_COUNT          (SMALL_CLASS_COUNT + MEDIUM_CLASS_COUNT)
 //! Number of large block size classes
@@ -1024,7 +1016,7 @@ retry_active_span:
 		heap_class->used_span = active_span->data.list.next;
 		active_span->data.active.free_list_limit = size_class->block_count;
 		if (heap_class->free_list)
-			return free_list_pop(heap_class->free_list);
+			return free_list_pop(&heap_class->free_list);
 		goto retry_active_span;
 	}
 
@@ -1038,7 +1030,7 @@ retry_active_span:
 		//Step 4: Map in more virtual memory
 		span = _memory_map_spans(heap, 1);
 		if (!span)
-			return span;
+			return 0;
 	}
 
 #if ENABLE_ADAPTIVE_THREAD_CACHE
