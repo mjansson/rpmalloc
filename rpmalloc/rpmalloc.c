@@ -193,7 +193,7 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 //! Small granularity shift count
 #define SMALL_GRANULARITY_SHIFT   5
 //! Number of small block size classes
-#define SMALL_CLASS_COUNT         32
+#define SMALL_CLASS_COUNT         64
 //! Maximum size of a small block
 #define SMALL_SIZE_LIMIT          (SMALL_GRANULARITY * SMALL_CLASS_COUNT)
 //! Granularity of a medium allocation block
@@ -201,7 +201,7 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 //! Medium granularity shift count
 #define MEDIUM_GRANULARITY_SHIFT  9
 //! Number of medium block size classes
-#define MEDIUM_CLASS_COUNT        61
+#define MEDIUM_CLASS_COUNT        59
 //! Total number of small + medium size classes
 #define SIZE_CLASS_COUNT          (SMALL_CLASS_COUNT + MEDIUM_CLASS_COUNT)
 //! Number of large block size classes
@@ -945,38 +945,50 @@ free_list_pop(void** list) {
 	return block;
 }
 
+static uint32_t
+free_list_partial_init(void** list, void** first_block, void* block_start, uint32_t block_count, uint32_t page_limit, uint32_t block_size) {
+	assert(block_count);
+	*first_block = block_start;
+	void* free_block = pointer_offset(block_start, block_size);
+	if (block_count > 1) {
+		*list = free_block;
+		if ((page_limit > 2) && (block_count > (page_limit + 2)))
+			block_count = page_limit;
+		for (uint16_t iblock = 2; iblock < block_count; ++iblock) {
+			void* next_block = pointer_offset(free_block, block_size);
+			*((void**)free_block) = next_block;
+			free_block = next_block;
+		}
+		*((void**)free_block) = 0;
+	} else {
+		*list = 0;
+	}
+	return block_count;
+}
+
 //! Allocate a small/medium sized memory block from the given heap
 static void*
 _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 	size_class_t* size_class = _memory_size_class + class_idx;
 	heap_class_t* heap_class = heap->span_class + class_idx;
+	void* block;
 
 	span_t* active_span = heap_class->active_span;
 	if (active_span) {
-		//If the span did not fully initialize free list, link up another pages worth of block
+		//If the span did not fully initialize free list, link up another page worth of blocks
 		assert(atomic_load32(&heap_class->active_span->heap_id) == heap->id);
 		if (active_span->data.active.free_list_limit < size_class->block_count) {
-			void* block = pointer_offset(active_span, SPAN_HEADER_SIZE + (active_span->data.active.free_list_limit * size_class->size));
-			void* free_block = pointer_offset(block, size_class->size);
-			heap_class->free_list = free_block;
-			uint32_t count_limit = (uint32_t)(_memory_page_size / size_class->size);
-			uint32_t block_count = size_class->block_count - active_span->data.active.free_list_limit;
-			if ((count_limit > 2) && (block_count > (count_limit + 2)))
-				block_count = count_limit;
-			for (uint16_t iblock = 2; iblock < block_count; ++iblock) {
-				void* next_block = pointer_offset(free_block, size_class->size);
-				*((void**)free_block) = next_block;
-				free_block = next_block;
-			}
-			*((void**)free_block) = 0;
-			active_span->data.active.free_list_limit += block_count;
+			active_span->data.active.free_list_limit += free_list_partial_init(&heap_class->free_list, &block,
+				pointer_offset(active_span, SPAN_HEADER_SIZE + (active_span->data.active.free_list_limit * size_class->size)),
+				size_class->block_count - active_span->data.active.free_list_limit, 
+				(uint32_t)(_memory_page_size / size_class->size), size_class->size);
 			return block;
 		}
 	}
 
 	//Swap in deferred free list (if list has at least one element the compound 64-bit value will not be set to raw flag)
 	while (active_span) {
-retry_active_span:
+retry_deferred_free_list:
 		atomic_thread_fence_acquire();
 		if ((uint64_t)atomic_load64(&active_span->free_list_deferred) != FREE_LIST_FLAG_ACTIVE) {
 			uint64_t free_list_deferred;
@@ -1011,25 +1023,28 @@ retry_active_span:
 			free_list_deferred = (uint64_t)atomic_load64(&active_span->free_list_deferred);
 			new_list_deferred = free_list_deferred | FREE_LIST_FLAG_ACTIVE;
 		} while (!atomic_cas64(&active_span->free_list_deferred, (int64_t)new_list_deferred, (int64_t)free_list_deferred));
+		//Move data to heap size class, set span as active and remove the span from used list
 		heap_class->free_list = active_span->free_list;
 		heap_class->active_span = active_span;
 		heap_class->used_span = active_span->data.list.next;
+		//A span which has been put in the used list has always been fully initialized
 		active_span->data.active.free_list_limit = size_class->block_count;
+		//Grab either from the local free list or go back and try the deferred free list
 		if (heap_class->free_list)
 			return free_list_pop(&heap_class->free_list);
-		goto retry_active_span;
+		goto retry_deferred_free_list;
 	}
 
 	assert(!heap_class->active_span);
 	assert(!heap_class->free_list);
 	assert(!heap_class->used_span);
 
-	//Step 3: Find a span in one of the cache levels
-	span_t* span = _memory_heap_cache_extract(heap, 1);
-	if (!span) {
-		//Step 4: Map in more virtual memory
-		span = _memory_map_spans(heap, 1);
-		if (!span)
+	//Find a span in one of the cache levels
+	active_span = _memory_heap_cache_extract(heap, 1);
+	if (!active_span) {
+		//Final fallback, map in more virtual memory (potentially using a previously reserved span)
+		active_span = _memory_map_spans(heap, 1);
+		if (!active_span)
 			return 0;
 	}
 
@@ -1040,37 +1055,28 @@ retry_active_span:
 #endif
 
 	//Mark span as owned by this heap and set base data
-	assert(span->span_count == 1);
-	span->size_class = (uint16_t)class_idx;
-	atomic_store32(&span->heap_id, heap->id);
+	assert(active_span->span_count == 1);
+	active_span->size_class = (uint16_t)class_idx;
+	atomic_store32(&active_span->heap_id, heap->id);
 
-	//Return first block in span
-	void* block = pointer_offset(span, SPAN_HEADER_SIZE);
 	if (size_class->block_count > 1) {
-		//Setup free list. Only initialize one system page worth of blocks free list for now
-		void* free_block = pointer_offset(block, size_class->size);
-		heap_class->free_list = free_block;
-		heap_class->active_span = span;
-		uint32_t count_limit = (uint32_t)(_memory_page_size / size_class->size);
-		uint32_t block_count = size_class->block_count;
-		if ((count_limit > 2) && (block_count > count_limit))
-			block_count = count_limit;
-		for (uint16_t iblock = 2; iblock < block_count; ++iblock) {
-			void* next_block = pointer_offset(free_block, size_class->size);
-			*((void**)free_block) = next_block;
-			free_block = next_block;
-		}
-		*((void**)free_block) = 0;
-		span->data.active.free_list_limit = block_count;
-		atomic_store64(&span->free_list_deferred, (int64_t)FREE_LIST_FLAG_ACTIVE);
+		//Setup free list. Only initialize one system page worth of free blocks in list
+		heap_class->active_span = active_span;
+		active_span->data.active.free_list_limit = free_list_partial_init(&heap_class->free_list, &block, 
+			pointer_offset(active_span, SPAN_HEADER_SIZE), size_class->block_count,
+			(uint32_t)(_memory_page_size / size_class->size), size_class->size);
+		atomic_store64(&active_span->free_list_deferred, (int64_t)FREE_LIST_FLAG_ACTIVE);
 	}
 	else {
-		span->free_list = 0;
-		span->data.active.free_list_limit = 1;
-		atomic_store64(&span->free_list_deferred, 0);
+		//Single block span (should not happen with default size configurations)
+		block = pointer_offset(active_span, SPAN_HEADER_SIZE);
+		active_span->free_list = 0;
+		active_span->data.active.free_list_limit = 1;
+		atomic_store64(&active_span->free_list_deferred, 0);
 	}
 	atomic_thread_fence_release();
 
+	//Return first block in span
 	return block;
 }
 
