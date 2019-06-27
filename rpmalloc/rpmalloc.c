@@ -1683,7 +1683,6 @@ rpmalloc_finalize(void) {
 				heap_class_t* heap_class = heap->span_class + iclass;
 				if (heap_class->active_span)
 					_memory_heap_cache_insert(heap, heap_class->active_span);
-				assert(!heap_class->used_span);
 				span_t* span = heap_class->used_span;
 				while (span) {
 					span_t* next = span->data.list.next;
