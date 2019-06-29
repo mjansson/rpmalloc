@@ -51,7 +51,7 @@ operator delete(void* ptr, size_t) noexcept;
 extern void
 operator delete[](void* ptr, size_t) noexcept;
 
-static int is_initialized;
+extern int is_initialized;
 
 static void
 initializer(void) {
