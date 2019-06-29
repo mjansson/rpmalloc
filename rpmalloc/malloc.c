@@ -30,6 +30,9 @@
 
 //This file provides overrides for the standard library malloc style entry points
 
+extern int is_initialized;
+int is_initialized = 0;
+
 extern RPMALLOC_RESTRICT void* RPMALLOC_CDECL
 malloc(size_t size);
 
@@ -83,7 +86,6 @@ malloc_size(void* ptr);
 #include <Windows.h>
 
 static size_t page_size;
-static int is_initialized;
 
 static void
 initializer(void) {
@@ -116,7 +118,6 @@ finalizer(void) {
 
 static size_t page_size;
 static pthread_key_t destructor_key;
-static int is_initialized;
 
 static void
 thread_destructor(void*);
