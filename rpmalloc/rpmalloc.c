@@ -22,7 +22,7 @@
 #endif
 #ifndef ENABLE_ADAPTIVE_THREAD_CACHE
 //! Enable adaptive size of per-thread cache (still bounded by THREAD_CACHE_MULTIPLIER hard limit)
-#define ENABLE_ADAPTIVE_THREAD_CACHE  0
+#define ENABLE_ADAPTIVE_THREAD_CACHE  1
 #endif
 #ifndef ENABLE_GLOBAL_CACHE
 //! Enable global cache shared between all threads, requires thread cache
@@ -1064,7 +1064,7 @@ retry_deferred_free_list:
 		goto retry_deferred_free_list;
 	}
 
-	assert(!*heap_class->free_list);
+	assert(!heap_class->free_list);
 	assert(!heap_class->active_span);
 	assert(!heap_class->used_span);
 
