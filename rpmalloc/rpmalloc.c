@@ -453,10 +453,10 @@ set_thread_heap(heap_t* heap) {
 }
 
 //! Fast thread ID
-static inline uintptr_t
+static inline void*
 get_thread_id(void) {
 #if PLATFORM_WINDOWS
-	return (uintptr_t)NtCurrentTeb();
+	return (void*)NtCurrentTeb();
 #else
 	uintptr_t tid;
 #  if defined(__i386__) || defined(__MACH__)
@@ -470,9 +470,10 @@ get_thread_id(void) {
 #  elif defined(__aarch64__)
 	asm volatile ("mrs %0, tpidr_el0" : "=r" (tid));
 #  else
-	tid = (uintptr_t)get_thread_heap();
+	void* thread_heap = get_thread_heap();
+	tid = (uintptr_t)thread_heap;
 #  endif
-	return tid;
+	return (void*)tid;
 #endif
 }
 
@@ -835,7 +836,7 @@ _memory_heap_cache_adopt_deferred(heap_t* heap) {
 	} while (!atomic_cas_ptr(&heap->span_cache_deferred, 0, span));
 	while (span) {
 		span_t* next_span = span->next;
-		assert(atomic_load_ptr(&span->thread_id) == (void*)get_thread_id());
+		assert(atomic_load_ptr(&span->thread_id) == get_thread_id());
 		_memory_span_list_push(&heap->span_cache[0], span);
 		span = next_span;
 	}
@@ -990,7 +991,7 @@ _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 
 	span_t* active_span = heap_class->active_span;
 	if (active_span) {
-		active_span->thread_id = (void*)get_thread_id();
+		atomic_store_ptr(&active_span->thread_id, get_thread_id());
 		//Swap in free list if not empty
 		if (active_span->free_list) {
 			heap_class->free_list = active_span->free_list;
@@ -1011,7 +1012,7 @@ _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 	//Swap in deferred free list (if list has at least one element the compound 64-bit value will not be set to raw flag)
 	while (active_span) {
 retry_deferred_free_list:
-		active_span->thread_id = (void*)get_thread_id();
+		atomic_store_ptr(&active_span->thread_id, get_thread_id());
 		atomic_thread_fence_acquire();
 		if ((uint64_t)atomic_load64(&active_span->free_list_deferred) != FREE_LIST_FLAG_ACTIVE) {
 			uint64_t free_list_deferred;
@@ -1043,7 +1044,7 @@ retry_deferred_free_list:
 	//Try promoting a semi-used span
 	active_span = heap_class->used_span;
 	if (active_span) {
-		active_span->thread_id = (void*)get_thread_id();
+		atomic_store_ptr(&active_span->thread_id, get_thread_id());
 		//Mark span as active
 		uint64_t free_list_deferred, new_list_deferred;
 		do {
@@ -1086,9 +1087,8 @@ retry_deferred_free_list:
 	//Mark span as owned by this heap and set base data
 	assert(active_span->span_count == 1);
 	active_span->size_class = (uint16_t)class_idx;
-	active_span->thread_id = (void*)get_thread_id();
 	active_span->heap = heap;
-	atomic_store_ptr(&active_span->thread_id, (void*)get_thread_id());
+	atomic_store_ptr(&active_span->thread_id, get_thread_id());
 
 	if (size_class->block_count > 1) {
 		//Setup free list. Only initialize one system page worth of free blocks in list
@@ -1141,7 +1141,7 @@ _memory_allocate_large_from_heap(heap_t* heap, size_t size) {
 	assert(span->span_count == span_count);
 	span->size_class = (uint16_t)(SIZE_CLASS_COUNT + idx);
 	span->heap = heap;
-	atomic_store_ptr(&span->thread_id, (void*)get_thread_id());
+	atomic_store_ptr(&span->thread_id, get_thread_id());
 	atomic_thread_fence_release();
 
 	return pointer_offset(span, SPAN_HEADER_SIZE);
@@ -1204,7 +1204,7 @@ _memory_deallocate_direct(span_t* span, void* p) {
 	uint32_t block_idx = block_offset / (uint32_t)size_class->size;
 	void* block = pointer_offset(blocks_start, block_idx * size_class->size);
 
-	assert(atomic_load_ptr(&span->thread_id) == (void*)get_thread_id());
+	assert(atomic_load_ptr(&span->thread_id) == get_thread_id());
 	*((void**)block) = span->free_list;
 	span->free_list = block;
 
@@ -1361,7 +1361,7 @@ _memory_deallocate(void* p) {
 
 	//Grab the span (always at start of span, using span alignment)
 	span_t* span = (void*)((uintptr_t)p & _memory_span_mask);
-	uintptr_t thread_id = (uintptr_t)atomic_load_ptr(&span->thread_id);
+	void* thread_id = atomic_load_ptr(&span->thread_id);
 	if (thread_id) {
 		if (span->size_class < SIZE_CLASS_COUNT) {
 			//Check if block belongs to this heap or if deallocation should be deferred
@@ -1371,7 +1371,7 @@ _memory_deallocate(void* p) {
 				// Check if span heap was transitioned across threads
 				heap_t* heap = get_thread_heap();
 				if (span->heap == heap) {
-					span->thread_id = (void*)get_thread_id();
+					atomic_store_ptr(&span->thread_id, get_thread_id());
 					_memory_deallocate_direct(span, p);
 				} else {
 					_memory_deallocate_defer(span, p);
@@ -1396,7 +1396,7 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 	if (p) {
 		//Grab the span using guaranteed span alignment
 		span_t* span = (void*)((uintptr_t)p & _memory_span_mask);
-		uintptr_t thread_id = (uintptr_t)atomic_load_ptr(&span->thread_id);
+		void* thread_id = atomic_load_ptr(&span->thread_id);
 		if (thread_id) {
 			if (span->size_class < SIZE_CLASS_COUNT) {
 				//Small/medium sized block
@@ -1458,7 +1458,7 @@ static size_t
 _memory_usable_size(void* p) {
 	//Grab the span using guaranteed span alignment
 	span_t* span = (void*)((uintptr_t)p & _memory_span_mask);
-	uintptr_t thread_id = (uintptr_t)atomic_load_ptr(&span->thread_id);
+	void* thread_id = atomic_load_ptr(&span->thread_id);
 	if (thread_id) {
 		//Small/medium block
 		if (span->size_class < SIZE_CLASS_COUNT) {
