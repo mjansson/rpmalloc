@@ -337,6 +337,8 @@ struct heap_t {
 	size_t       align_offset;
 	//! Heap ID
 	int32_t      id;
+	//! Owning thread
+	void*        owner_thread;
 #if ENABLE_STATISTICS
 	//! Number of bytes transitioned thread -> global
 	size_t       thread_to_global;
@@ -1158,12 +1160,12 @@ _memory_allocate_heap(void) {
 	atomic_thread_fence_acquire();
 	do {
 		raw_heap = atomic_load_ptr(&_memory_orphan_heaps);
-		heap = (void*)((uintptr_t)raw_heap & ~(uintptr_t)0xFF);
+		heap = (void*)((uintptr_t)raw_heap & ~(uintptr_t)0x1FF);
 		if (!heap)
 			break;
 		next_heap = heap->next_orphan;
 		orphan_counter = (uintptr_t)atomic_incr32(&_memory_orphan_counter);
-		next_raw_heap = (void*)((uintptr_t)next_heap | (orphan_counter & (uintptr_t)0xFF));
+		next_raw_heap = (void*)((uintptr_t)next_heap | (orphan_counter & (uintptr_t)0x1FF));
 	} while (!atomic_cas_ptr(&_memory_orphan_heaps, next_raw_heap, raw_heap));
 
 	if (!heap) {
@@ -1619,6 +1621,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 			_memory_huge_pages = 1;
 	}
 
+	//The ABA counter in heap orphan list is tied to using 512 (bitmask 0x1FF)
 	if (_memory_page_size < 512)
 		_memory_page_size = 512;
 	if (_memory_page_size > (64 * 1024 * 1024))
@@ -1777,6 +1780,9 @@ rpmalloc_thread_initialize(void) {
 	if (!get_thread_heap()) {
 		heap_t* heap = _memory_allocate_heap();
 		if (heap) {
+			atomic_thread_fence_acquire();
+			assert(!atomic_load_ptr(&heap->owner_thread));
+			atomic_store_ptr(&heap->owner_thread, get_thread_id());
 #if ENABLE_STATISTICS
 			atomic_incr32(&_memory_active_heaps);
 			heap->thread_to_global = 0;
@@ -1793,6 +1799,10 @@ rpmalloc_thread_finalize(void) {
 	heap_t* heap = get_thread_heap();
 	if (!heap)
 		return;
+
+	assert(heap->owner_thread == get_thread_id());
+	atomic_store_ptr(&heap->owner_thread, 0);
+	atomic_thread_fence_release();
 
 	//Release thread cache spans back to global cache
 #if ENABLE_THREAD_CACHE
@@ -1821,15 +1831,16 @@ rpmalloc_thread_finalize(void) {
 	heap_t* last_heap;
 	do {
 		last_heap = atomic_load_ptr(&_memory_orphan_heaps);
-		heap->next_orphan = (void*)((uintptr_t)last_heap & ~(uintptr_t)0xFF);
+		heap->next_orphan = (void*)((uintptr_t)last_heap & ~(uintptr_t)0x1FF);
 		orphan_counter = (uintptr_t)atomic_incr32(&_memory_orphan_counter);
-		raw_heap = (void*)((uintptr_t)heap | (orphan_counter & (uintptr_t)0xFF));
+		raw_heap = (void*)((uintptr_t)heap | (orphan_counter & (uintptr_t)0x1FF));
 	} while (!atomic_cas_ptr(&_memory_orphan_heaps, raw_heap, last_heap));
 
 	set_thread_heap(0);
 
 #if ENABLE_STATISTICS
 	atomic_add32(&_memory_active_heaps, -1);
+	assert(atomic_load32(&_memory_active_heaps) >= 0);
 #endif
 }
 
