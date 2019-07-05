@@ -1408,10 +1408,14 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 				uint32_t block_offset = (uint32_t)pointer_diff(p, blocks_start);
 				uint32_t block_idx = block_offset / (uint32_t)size_class->size;
 				void* block = pointer_offset(blocks_start, block_idx * size_class->size);
-				if ((size_t)size_class->size >= size)
-					return block; //Still fits in block, never mind trying to save memory
 				if (!oldsize)
 					oldsize = size_class->size - (uint32_t)pointer_diff(p, block);
+				if ((size_t)size_class->size >= size) {
+					//Still fits in block, never mind trying to save memory, but preserve data if alignment changed
+					if ((p != block) && !(flags & RPMALLOC_NO_PRESERVE))
+						memmove(block, p, oldsize);
+					return block;
+				}
 			} else {
 				//Large block
 				size_t total_size = size + SPAN_HEADER_SIZE;
@@ -1421,10 +1425,14 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 				size_t current_spans = (span->size_class - SIZE_CLASS_COUNT) + 1;
 				assert(current_spans == span->span_count);
 				void* block = pointer_offset(span, SPAN_HEADER_SIZE);
-				if ((current_spans >= num_spans) && (num_spans >= (current_spans / 2)))
-					return block; //Still fits and less than half of memory would be freed
 				if (!oldsize)
-					oldsize = (current_spans * _memory_span_size) - (size_t)pointer_diff(p, span);
+					oldsize = (current_spans * _memory_span_size) - (size_t)pointer_diff(p, block);
+				if ((current_spans >= num_spans) && (num_spans >= (current_spans / 2))) {
+					//Still fits in block, never mind trying to save memory, but preserve data if alignment changed
+					if ((p != block) && !(flags & RPMALLOC_NO_PRESERVE))
+						memmove(block, p, oldsize);
+					return block;
+				}
 			}
 		} else {
 			//Oversized block
@@ -1435,10 +1443,14 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 			//Page count is stored in span_count
 			size_t current_pages = span->span_count;
 			void* block = pointer_offset(span, SPAN_HEADER_SIZE);
-			if ((current_pages >= num_pages) && (num_pages >= (current_pages / 2)))
-				return block; //Still fits and less than half of memory would be freed
 			if (!oldsize)
-				oldsize = (current_pages * _memory_page_size) - (size_t)pointer_diff(p, span);
+				oldsize = (current_pages * _memory_page_size) - (size_t)pointer_diff(p, block);
+			if ((current_pages >= num_pages) && (num_pages >= (current_pages / 2))) {
+				//Still fits in block, never mind trying to save memory, but preserve data if alignment changed
+				if ((p != block) && !(flags & RPMALLOC_NO_PRESERVE))
+					memmove(block, p, oldsize);
+				return block;
+			}
 		}
 	}
 

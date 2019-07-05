@@ -12,6 +12,8 @@ Use faster thread id in deallocation path to avoid accessing heap in common best
 
 Avoid realigning block in deallocation unless span marked as used by alignment > 32 bytes
 
+Bugfix for preserving data when reallocating a previously aligned (>32 bytes) block
+
 
 1.3.2
 
