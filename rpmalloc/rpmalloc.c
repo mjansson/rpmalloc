@@ -34,11 +34,11 @@
 #endif
 #ifndef ENABLE_STATISTICS
 //! Enable statistics collection
-#define ENABLE_STATISTICS         0
+#define ENABLE_STATISTICS         1
 #endif
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            0
+#define ENABLE_ASSERTS            1
 #endif
 #ifndef ENABLE_PRELOAD
 //! Support preloading
@@ -213,7 +213,7 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 //! Maximum size of a large block
 #define LARGE_SIZE_LIMIT          ((LARGE_CLASS_COUNT * _memory_span_size) - SPAN_HEADER_SIZE)
 //! Size of a span header
-#define SPAN_HEADER_SIZE          128
+#define SPAN_HEADER_SIZE          96
 
 #if ENABLE_VALIDATE_ARGS
 //! Maximum allocation size to avoid integer overflow
@@ -542,12 +542,12 @@ _memory_map_spans(heap_t* heap, size_t span_count) {
 			assert(span->flags & SPAN_FLAG_MASTER);
 		} else {
 			//Declare the span to be a subspan with given distance from master span
-			uint16_t distance = (uint16_t)((uintptr_t)pointer_diff(span, heap->span_reserve_master) >> _memory_span_size_shift);
+			uint32_t distance = (uint32_t)((uintptr_t)pointer_diff(span, heap->span_reserve_master) >> _memory_span_size_shift);
 			span->flags = SPAN_FLAG_SUBSPAN;
 			span->total_spans_or_distance = distance;
 			span->align_offset = 0;
 		}
-		span->span_count = (uint16_t)span_count;
+		span->span_count = (uint32_t)span_count;
 		return span;
 	}
 
@@ -561,8 +561,8 @@ _memory_map_spans(heap_t* heap, size_t span_count) {
 	if (!span)
 		return span;
 	span->align_offset = (uint32_t)align_offset;
-	span->total_spans_or_distance = (uint16_t)request_spans;
-	span->span_count = (uint16_t)span_count;
+	span->total_spans_or_distance = (uint32_t)request_spans;
+	span->span_count = (uint32_t)span_count;
 	span->flags = SPAN_FLAG_MASTER;
 	atomic_store32(&span->remaining_spans, (int32_t)request_spans);
 	_memory_statistics_add(&_reserved_spans, request_spans);
@@ -572,12 +572,12 @@ _memory_map_spans(heap_t* heap, size_t span_count) {
 			if (prev_span == heap->span_reserve_master) {
 				assert(prev_span->flags & SPAN_FLAG_MASTER);
 			} else {
-				uint16_t distance = (uint16_t)((uintptr_t)pointer_diff(prev_span, heap->span_reserve_master) >> _memory_span_size_shift);
+				uint32_t distance = (uint32_t)((uintptr_t)pointer_diff(prev_span, heap->span_reserve_master) >> _memory_span_size_shift);
 				prev_span->flags = SPAN_FLAG_SUBSPAN;
 				prev_span->total_spans_or_distance = distance;
 				prev_span->align_offset = 0;
 			}
-			prev_span->span_count = (uint16_t)heap->spans_reserved;
+			prev_span->span_count = (uint32_t)heap->spans_reserved;
 			_memory_heap_cache_insert(heap, prev_span);
 		}
 		heap->span_reserve_master = span;
@@ -595,7 +595,7 @@ _memory_unmap_span(span_t* span) {
 	assert(!(span->flags & SPAN_FLAG_MASTER) || !(span->flags & SPAN_FLAG_SUBSPAN));
 
 	int is_master = !!(span->flags & SPAN_FLAG_MASTER);
-	span_t* master = is_master ? span : (pointer_offset(span, -(int32_t)((uint32_t)span->total_spans_or_distance * _memory_span_size)));
+	span_t* master = is_master ? span : (pointer_offset(span, -(int32_t)(span->total_spans_or_distance * _memory_span_size)));
 
 	assert(is_master || (span->flags & SPAN_FLAG_SUBSPAN));
 	assert(master->flags & SPAN_FLAG_MASTER);
@@ -618,9 +618,9 @@ _memory_unmap_span(span_t* span) {
 		assert(!!(master->flags & SPAN_FLAG_MASTER) && !!(master->flags & SPAN_FLAG_SUBSPAN));
 		size_t unmap_count = master->span_count;
 		if (_memory_span_size < _memory_page_size)
-			unmap_count = (size_t)master->total_spans_or_distance;
+			unmap_count = master->total_spans_or_distance;
 		_memory_statistics_sub(&_reserved_spans, unmap_count);
-		_memory_unmap(master, unmap_count * _memory_span_size, master->align_offset, (size_t)master->total_spans_or_distance * _memory_span_size);
+		_memory_unmap(master, unmap_count * _memory_span_size, master->align_offset, master->total_spans_or_distance * _memory_span_size);
 	}
 }
 
@@ -647,15 +647,15 @@ _memory_span_split(span_t* span, size_t use_count) {
 	assert(!(span->flags & SPAN_FLAG_MASTER) || !(span->flags & SPAN_FLAG_SUBSPAN));
 	assert(!(span->flags & SPAN_FLAG_MASTER) || !(span->flags & SPAN_FLAG_SUBSPAN));
 
-	span->span_count = (uint16_t)use_count;
+	span->span_count = (uint32_t)use_count;
 	if (span->flags & SPAN_FLAG_SUBSPAN)
 		distance = span->total_spans_or_distance;
 
 	//Setup remainder as a subspan
 	span_t* subspan = pointer_offset(span, use_count * _memory_span_size);
 	subspan->flags = SPAN_FLAG_SUBSPAN;
-	subspan->total_spans_or_distance = (uint16_t)(distance + use_count);
-	subspan->span_count = (uint16_t)(current_count - use_count);
+	subspan->total_spans_or_distance = (uint32_t)(distance + use_count);
+	subspan->span_count = (uint32_t)(current_count - use_count);
 	subspan->align_offset = 0;
 	return subspan;
 }
@@ -1342,7 +1342,7 @@ _memory_allocate(size_t size) {
 		return span;
 	atomic_store_ptr(&span->thread_id, 0);
 	//Store page count in span_count
-	span->span_count = (uint16_t)num_pages;
+	span->span_count = (uint32_t)num_pages;
 	span->align_offset = (uint32_t)align_offset;
 
 	return pointer_offset(span, SPAN_HEADER_SIZE);
@@ -2091,7 +2091,7 @@ retry:
 
 	atomic_store_ptr(&span->thread_id, 0);
 	//Store page count in span_count
-	span->span_count = (uint16_t)num_pages;
+	span->span_count = (uint32_t)num_pages;
 	span->align_offset = (uint32_t)align_offset;
 
 	return ptr;
