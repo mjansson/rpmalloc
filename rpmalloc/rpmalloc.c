@@ -1781,8 +1781,8 @@ rpmalloc_thread_initialize(void) {
 		heap_t* heap = _memory_allocate_heap();
 		if (heap) {
 			atomic_thread_fence_acquire();
-			assert(!atomic_load_ptr(&heap->owner_thread));
-			atomic_store_ptr(&heap->owner_thread, get_thread_id());
+			assert(!heap->owner_thread);
+			heap->owner_thread = get_thread_id();
 #if ENABLE_STATISTICS
 			atomic_incr32(&_memory_active_heaps);
 			heap->thread_to_global = 0;
@@ -1801,7 +1801,7 @@ rpmalloc_thread_finalize(void) {
 		return;
 
 	assert(heap->owner_thread == get_thread_id());
-	atomic_store_ptr(&heap->owner_thread, 0);
+	heap->owner_thread = 0;
 	atomic_thread_fence_release();
 
 	//Release thread cache spans back to global cache
