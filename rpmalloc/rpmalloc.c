@@ -101,7 +101,7 @@
 
 /// Platform and arch specifics
 #if defined(_MSC_VER) && !defined(__clang__)
-#  define FORCEINLINE __forceinline
+#  define FORCEINLINE inline __forceinline
 #  define _Static_assert static_assert
 #else
 #  define FORCEINLINE inline __attribute__((__always_inline__))
@@ -165,6 +165,8 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref) { return (_InterlockedCompareExchange((volatile long*)dst, (long)val, (long)ref) == (long)ref) ? 1 : 0; }
 #endif
 
+#define CACHELINE_ALIGNED
+
 #else
 
 #include <stdatomic.h>
@@ -186,6 +188,13 @@ static FORCEINLINE int     atomic_cas64(atomic64_t* dst, int64_t val, int64_t re
 static FORCEINLINE void*   atomic_load_ptr(atomicptr_t* src) { return atomic_load_explicit(src, memory_order_relaxed); }
 static FORCEINLINE void    atomic_store_ptr(atomicptr_t* dst, void* val) { atomic_store_explicit(dst, val, memory_order_relaxed); }
 static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref) { return atomic_compare_exchange_weak_explicit(dst, &ref, val, memory_order_release, memory_order_acquire); }
+
+#if defined(__i386__) || defined(__x86_64__) || defined(__aarch64__)
+#  define CACHELINE_ALIGNED __attribute__((aligned(64)))
+//Add arch specific alignment if needed here
+#else
+#  define CACHELINE_ALIGNED
+#endif
 
 #endif
 
@@ -435,7 +444,7 @@ static pthread_key_t _memory_thread_heap;
 #      define _Thread_local __thread
 #    endif
 #  endif
-static _Thread_local heap_t* _memory_thread_heap TLS_MODEL;
+static _Thread_local heap_t* _memory_thread_heap TLS_MODEL CACHELINE_ALIGNED;
 #endif
 
 static FORCEINLINE heap_t*
@@ -960,7 +969,7 @@ _memory_heap_cache_extract(heap_t* heap, size_t span_count) {
 	return 0;
 }
 
-static inline void*
+static FORCEINLINE void*
 free_list_pop(void** list) {
 	void* block = *list;
 	*list = *((void**)block);
@@ -1327,7 +1336,7 @@ _memory_deallocate_defer(span_t* span, void* p) {
 }
 
 //! Allocate a block of the given size
-static void*
+static FORCEINLINE void*
 _memory_allocate(size_t size) {
 	heap_t* heap = get_thread_heap();
 	if (size <= SMALL_SIZE_LIMIT) {
@@ -1365,7 +1374,7 @@ _memory_allocate(size_t size) {
 }
 
 //! Deallocate the given block
-static void
+static FORCEINLINE void
 _memory_deallocate(void* p) {
 	if (!p)
 		return;
@@ -1963,7 +1972,7 @@ _memory_unmap_os(void* address, size_t size, size_t offset, size_t release) {
 
 // Extern interface
 
-RPMALLOC_RESTRICT void*
+RPMALLOC_RESTRICT CACHELINE_ALIGNED void*
 rpmalloc(size_t size) {
 #if ENABLE_VALIDATE_ARGS
 	if (size >= MAX_ALLOC_SIZE) {
@@ -1974,7 +1983,7 @@ rpmalloc(size_t size) {
 	return _memory_allocate(size);
 }
 
-void
+CACHELINE_ALIGNED void
 rpfree(void* ptr) {
 	_memory_deallocate(ptr);
 }
