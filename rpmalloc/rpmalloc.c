@@ -191,9 +191,9 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 
 /// Preconfigured limits and sizes
 //! Granularity of a small allocation block
-#define SMALL_GRANULARITY         32
+#define SMALL_GRANULARITY         16
 //! Small granularity shift count
-#define SMALL_GRANULARITY_SHIFT   5
+#define SMALL_GRANULARITY_SHIFT   4
 //! Number of small block size classes
 #define SMALL_CLASS_COUNT         64
 //! Maximum size of a small block
@@ -203,7 +203,7 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 //! Medium granularity shift count
 #define MEDIUM_GRANULARITY_SHIFT  9
 //! Number of medium block size classes
-#define MEDIUM_CLASS_COUNT        59
+#define MEDIUM_CLASS_COUNT        61
 //! Total number of small + medium size classes
 #define SIZE_CLASS_COUNT          (SMALL_CLASS_COUNT + MEDIUM_CLASS_COUNT)
 //! Number of large block size classes
@@ -367,6 +367,8 @@ struct global_cache_t {
 };
 
 /// Global data
+//! Initialized flag
+static int _rpmalloc_initialized;
 //! Configuration
 static rpmalloc_config_t _memory_config;
 //! Memory page size
@@ -436,14 +438,26 @@ static pthread_key_t _memory_thread_heap;
 static _Thread_local heap_t* _memory_thread_heap TLS_MODEL;
 #endif
 
-//! Get the current thread heap
 static FORCEINLINE heap_t*
-get_thread_heap(void) {
+get_thread_heap_raw(void) {
 #if (defined(__APPLE__) || defined(__HAIKU__)) && ENABLE_PRELOAD
 	return pthread_getspecific(_memory_thread_heap);
 #else
 	return _memory_thread_heap;
 #endif
+}
+
+//! Get the current thread heap
+static FORCEINLINE heap_t*
+get_thread_heap(void) {
+	heap_t* heap = get_thread_heap_raw();
+#if ENABLE_PRELOAD
+	if (!heap) {
+		rpmalloc_initialize();
+		return get_thread_heap_raw();
+	}
+#endif
+	return heap;
 }
 
 //! Set the current thread heap
@@ -1318,13 +1332,13 @@ _memory_allocate(size_t size) {
 	heap_t* heap = get_thread_heap();
 	if (size <= SMALL_SIZE_LIMIT) {
 		//Small sizes have unique size classes
-		const uint32_t class_idx = (uint32_t)(size >> SMALL_GRANULARITY_SHIFT);
+		const uint32_t class_idx = (uint32_t)((size - !!size) >> SMALL_GRANULARITY_SHIFT);
 		if (heap->span_class[class_idx].free_list)
 			return free_list_pop(&heap->span_class[class_idx].free_list);
 		return _memory_allocate_from_heap_fallback(heap, class_idx);
 	} else if (size <= _memory_medium_size_limit) {
 		//Calculate the size class index and do a dependent lookup of the final class index (in case of merged classes)
-		const uint32_t base_idx = (uint32_t)(SMALL_CLASS_COUNT + ((size - SMALL_SIZE_LIMIT) >> MEDIUM_GRANULARITY_SHIFT));
+		const uint32_t base_idx = (uint32_t)(SMALL_CLASS_COUNT + ((size - (SMALL_SIZE_LIMIT + 1)) >> MEDIUM_GRANULARITY_SHIFT));
 		const uint32_t class_idx = _memory_size_class[base_idx].class_idx;
 		if (heap->span_class[class_idx].free_list)
 			return free_list_pop(&heap->span_class[class_idx].free_list);
@@ -1530,12 +1544,22 @@ _memory_adjust_size_class(size_t iclass) {
 //! Initialize the allocator and setup global data
 int
 rpmalloc_initialize(void) {
+	if (_rpmalloc_initialized) {
+		rpmalloc_thread_initialize();
+		return 0;
+	}
 	memset(&_memory_config, 0, sizeof(rpmalloc_config_t));
 	return rpmalloc_initialize_config(0);
 }
 
 int
 rpmalloc_initialize_config(const rpmalloc_config_t* config) {
+	if (_rpmalloc_initialized) {
+		rpmalloc_thread_initialize();
+		return 0;
+	}
+	_rpmalloc_initialized = 1;
+
 	if (config)
 		memcpy(&_memory_config, config, sizeof(rpmalloc_config_t));
 
@@ -1772,12 +1796,13 @@ rpmalloc_finalize(void) {
 #if (defined(__APPLE__) || defined(__HAIKU__)) && ENABLE_PRELOAD
 	pthread_key_delete(_memory_thread_heap);
 #endif
+	_rpmalloc_initialized = 0;
 }
 
 //! Initialize thread, assign heap
 void
 rpmalloc_thread_initialize(void) {
-	if (!get_thread_heap()) {
+	if (!get_thread_heap_raw()) {
 		heap_t* heap = _memory_allocate_heap();
 		if (heap) {
 			atomic_thread_fence_acquire();
