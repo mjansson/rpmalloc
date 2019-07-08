@@ -204,7 +204,7 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 //! Small granularity shift count
 #define SMALL_GRANULARITY_SHIFT   4
 //! Number of small block size classes
-#define SMALL_CLASS_COUNT         64
+#define SMALL_CLASS_COUNT         65
 //! Maximum size of a small block
 #define SMALL_SIZE_LIMIT          (SMALL_GRANULARITY * SMALL_CLASS_COUNT)
 //! Granularity of a medium allocation block
@@ -280,13 +280,13 @@ struct span_t {
 	//!	Owning thread ID
 	atomicptr_t thread_id;
 	//! Free list
-	void* free_list;
+	void*       free_list;
+	//! Deferred free list (count in 32 high bits, block index in 32 low bits)
+	atomic64_t  free_list_deferred;
 	//! Size class
 	uint32_t    size_class;
 	//! Free count when not active
 	uint32_t    free_count;
-	//! Deferred free list (count in 32 high bits, block index in 32 low bits)
-	atomic64_t  free_list_deferred;
 	//! Index of last block initialized in free list
 	uint32_t    free_list_limit;
 	//! Remaining span counter, for master spans
@@ -1221,8 +1221,6 @@ _memory_allocate_heap(void) {
 //! Deallocate the given small/medium memory block in the current thread local heap
 static void
 _memory_deallocate_direct(span_t* span, void* p) {
-	const uint32_t class_idx = span->size_class;
-	size_class_t* size_class = _memory_size_class + class_idx;
 	void* block = p;
 
 	atomic_thread_fence_acquire();
@@ -1235,6 +1233,9 @@ _memory_deallocate_direct(span_t* span, void* p) {
 
 	if (is_active)
 		return;
+
+	const uint32_t class_idx = span->size_class;
+	const size_class_t* size_class = _memory_size_class + class_idx;
 
 	++span->free_count;
 	assert(span->free_count <= size_class->block_count);
@@ -1341,7 +1342,7 @@ _memory_allocate(size_t size) {
 	heap_t* heap = get_thread_heap();
 	if (size <= SMALL_SIZE_LIMIT) {
 		//Small sizes have unique size classes
-		const uint32_t class_idx = (uint32_t)((size - !!size) >> SMALL_GRANULARITY_SHIFT);
+		const uint32_t class_idx = (uint32_t)((size + (SMALL_GRANULARITY - 1)) >> SMALL_GRANULARITY_SHIFT);
 		if (heap->span_class[class_idx].free_list)
 			return free_list_pop(&heap->span_class[class_idx].free_list);
 		return _memory_allocate_from_heap_fallback(heap, class_idx);
@@ -1376,11 +1377,10 @@ _memory_allocate(size_t size) {
 //! Deallocate the given block
 static FORCEINLINE void
 _memory_deallocate(void* p) {
-	if (!p)
-		return;
-
 	//Grab the span (always at start of span, using span alignment)
 	span_t* span = (void*)((uintptr_t)p & _memory_span_mask);
+	if (!span)
+		return;
 	void* thread_id = atomic_load_ptr(&span->thread_id);
 	if (thread_id) {
 		if (span->size_class < SIZE_CLASS_COUNT) {
@@ -1712,9 +1712,11 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 #endif
 
 	//Setup all small and medium size classes
-	size_t iclass;
-	for (iclass = 0; iclass < SMALL_CLASS_COUNT; ++iclass) {
-		size_t size = (iclass + 1) * SMALL_GRANULARITY;
+	size_t iclass = 0;
+	_memory_size_class[iclass].size = SMALL_GRANULARITY;
+	_memory_adjust_size_class(iclass);
+	for (iclass = 1; iclass < SMALL_CLASS_COUNT; ++iclass) {
+		size_t size = iclass * SMALL_GRANULARITY;
 		_memory_size_class[iclass].size = (uint16_t)size;
 		_memory_adjust_size_class(iclass);
 	}
