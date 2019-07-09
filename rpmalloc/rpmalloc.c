@@ -34,11 +34,11 @@
 #endif
 #ifndef ENABLE_STATISTICS
 //! Enable statistics collection
-#define ENABLE_STATISTICS         1
+#define ENABLE_STATISTICS         0
 #endif
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            1
+#define ENABLE_ASSERTS            0
 #endif
 #ifndef ENABLE_PRELOAD
 //! Support preloading
@@ -222,7 +222,7 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 //! Maximum size of a large block
 #define LARGE_SIZE_LIMIT          ((LARGE_CLASS_COUNT * _memory_span_size) - SPAN_HEADER_SIZE)
 //! Size of a span header
-#define SPAN_HEADER_SIZE          96
+#define SPAN_HEADER_SIZE          80
 
 #if ENABLE_VALIDATE_ARGS
 //! Maximum allocation size to avoid integer overflow
