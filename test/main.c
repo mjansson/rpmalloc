@@ -414,7 +414,7 @@ crossallocator_thread(void* argp) {
 	for (iloop = 0; iloop < arg.loops; ++iloop) {
 		for (ipass = 0; ipass < arg.passes; ++ipass) {
 			size_t iarg = (iloop + ipass + iextra++) % arg.num_datasize;
-			cursize = arg.datasize[iarg] + ((iloop + ipass) % 97);
+			cursize = arg.datasize[iarg] + ((iloop + ipass) % 21);
 			void* first_addr = rpmalloc(cursize);
 			if (first_addr == 0) {
 				ret = test_fail("Allocation failed");
@@ -437,9 +437,9 @@ crossallocator_thread(void* argp) {
 				goto end;
 			}
 
-			arg.pointers[iloop * arg.passes + ipass] = first_addr;
-			extra_pointers[iloop * arg.passes + ipass] = second_addr;
-			rpfree(third_addr);
+			rpfree(first_addr);
+			arg.pointers[iloop * arg.passes + ipass] = second_addr;
+			extra_pointers[iloop * arg.passes + ipass] = third_addr;
 
 			while ((next_crossthread < end_crossthread) &&
 			        arg.crossthread_pointers[next_crossthread]) {
