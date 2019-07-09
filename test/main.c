@@ -42,9 +42,30 @@ test_alloc(void) {
 	for (id = 0; id < 20000; ++id)
 		data[id] = (char)(id % 139 + id % 17);
 
-	void* testptr = rpmalloc(253000);
-	testptr = rprealloc(testptr, 154);
-	//Verify that blocks are 32 byte size aligned
+	//Verify that blocks are 16 byte size aligned
+	void* testptr = rpmalloc(16);
+	if (rpmalloc_usable_size(testptr) != 16)
+		return test_fail("Bad base alloc usable size");
+	rpfree(testptr);
+	testptr = rpmalloc(32);
+	if (rpmalloc_usable_size(testptr) != 32)
+		return test_fail("Bad base alloc usable size");
+	rpfree(testptr);
+	testptr = rpmalloc(128);
+	if (rpmalloc_usable_size(testptr) != 128)
+		return test_fail("Bad base alloc usable size");
+	rpfree(testptr);
+	for (iloop = 0; iloop < 1000; ++iloop) {
+		testptr = rpmalloc(iloop);
+		size_t wanted_usable_size = 16 * ((iloop / 16) + ((!iloop || (iloop % 16)) ? 1 : 0));
+		if (rpmalloc_usable_size(testptr) != wanted_usable_size)
+			return test_fail("Bad base alloc usable size");
+		rpfree(testptr);
+	}
+
+	//Large reallocation test
+	testptr = rpmalloc(253000);
+	testptr = rprealloc(testptr, 151);
 	if (rpmalloc_usable_size(testptr) != 160)
 		return test_fail("Bad usable size");
 	if (rpmalloc_usable_size(pointer_offset(testptr, 16)) != 144)
@@ -56,30 +77,26 @@ test_alloc(void) {
 		size_t size = 37 * iloop;
 		testptr = rpmalloc(size);
 		*((uintptr_t*)testptr) = 0x12345678;
-		if (rpmalloc_usable_size(testptr) < size)
-			return test_fail("Bad usable size");
-		if (rpmalloc_usable_size(testptr) >= (size + 32))
-			return test_fail("Bad usable size");
-		testptr = rprealloc(testptr, size + 32);
-		if (rpmalloc_usable_size(testptr) < (size + 32))
-			return test_fail("Bad usable size");
-		if (rpmalloc_usable_size(testptr) >= ((size + 32) * 2))
-			return test_fail("Bad usable size");
+		size_t wanted_usable_size = 16 * ((size / 16) + ((size % 16) ? 1 : 0));
+		if (rpmalloc_usable_size(testptr) != wanted_usable_size)
+			return test_fail("Bad usable size (alloc)");
+		testptr = rprealloc(testptr, size + 16);
+		if (rpmalloc_usable_size(testptr) < (wanted_usable_size + 16))
+			return test_fail("Bad usable size (realloc)");
 		if (*((uintptr_t*)testptr) != 0x12345678)
 			return test_fail("Data not preserved on realloc");
 		rpfree(testptr);
 
 		testptr = rpaligned_alloc(128, size);
 		*((uintptr_t*)testptr) = 0x12345678;
-		if (rpmalloc_usable_size(testptr) < size)
-			return test_fail("Bad usable size");
-		if (rpmalloc_usable_size(testptr) >= (size + 128 + 32))
-			return test_fail("Bad usable size");
+		wanted_usable_size = 16 * ((size / 16) + ((size % 16) ? 1 : 0));
+		if (rpmalloc_usable_size(testptr) < wanted_usable_size)
+			return test_fail("Bad usable size (aligned alloc)");
+		if (rpmalloc_usable_size(testptr) > (wanted_usable_size + 128))
+			return test_fail("Bad usable size (aligned alloc)");
 		testptr = rpaligned_realloc(testptr, 128, size + 32, 0, 0);
-		if (rpmalloc_usable_size(testptr) < (size + 32))
-			return test_fail("Bad usable size");
-		if (rpmalloc_usable_size(testptr) >= (((size + 32) * 2) + 128))
-			return test_fail("Bad usable size");
+		if (rpmalloc_usable_size(testptr) < (wanted_usable_size + 32))
+			return test_fail("Bad usable size (aligned realloc)");
 		if (*((uintptr_t*)testptr) != 0x12345678)
 			return test_fail("Data not preserved on realloc");
 		void* unaligned = rprealloc(testptr, size);
