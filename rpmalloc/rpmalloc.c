@@ -2032,7 +2032,7 @@ rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize,
 
 RPMALLOC_RESTRICT void*
 rpaligned_alloc(size_t alignment, size_t size) {
-	if (alignment <= 32)
+	if (alignment <= 16)
 		return rpmalloc(size);
 
 #if ENABLE_VALIDATE_ARGS
