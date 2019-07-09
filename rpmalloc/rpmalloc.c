@@ -1241,11 +1241,8 @@ _memory_deallocate_direct(span_t* span, void* p) {
 	assert(span->free_count <= size_class->block_count);
 
 	//Not active span, check if the span will become completely free
-	uint32_t free_count = span->free_count;
-	if (free_count < size_class->block_count) {
-		uint32_t list_size = (uint32_t)((free_list_deferred & ~FREE_LIST_FLAG_ACTIVE) >> 32ULL);
-		free_count += list_size;
-	}
+	uint32_t list_size = (uint32_t)((free_list_deferred & ~FREE_LIST_FLAG_ACTIVE) >> 32ULL);
+	uint32_t free_count = span->free_count + list_size;
 	assert(span->free_count <= size_class->block_count);
 	if (free_count == size_class->block_count) {
 		heap_t* heap = get_thread_heap();
@@ -1260,8 +1257,7 @@ _memory_deallocate_direct(span_t* span, void* p) {
 #endif
 		_memory_heap_cache_insert(heap, span);
 		return;
-	}
-	if (span->free_count == 1) {
+	} else if (span->free_count == 1) {
 		heap_t* heap = get_thread_heap();
 		heap_class_t* heap_class = heap->span_class + class_idx;
 		assert(heap_class->active_span != span);
