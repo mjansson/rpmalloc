@@ -30,11 +30,11 @@
 #endif
 #ifndef ENABLE_STATISTICS
 //! Enable statistics collection
-#define ENABLE_STATISTICS         0
+#define ENABLE_STATISTICS         1
 #endif
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            0
+#define ENABLE_ASSERTS            1
 #endif
 #ifndef ENABLE_PRELOAD
 //! Support preloading
@@ -266,9 +266,15 @@ typedef struct global_cache_t global_cache_t;
 #if ENABLE_ADAPTIVE_THREAD_CACHE || ENABLE_STATISTICS
 struct span_use_t {
 	//! Current number of spans used (actually used, not in cache)
-	unsigned int current;
+	uint32_t current;
 	//! High water mark of spans used
-	unsigned int high;
+	uint32_t high;
+#if ENABLE_STATISTICS
+	//! Number of spans transitioned to global cache
+	uint32_t spans_to_global;
+	//! Number of spans transitioned from global cache
+	uint32_t spans_from_global;
+#endif
 };
 typedef struct span_use_t span_use_t;
 #endif
@@ -283,6 +289,12 @@ struct size_class_use_t {
 	int32_t alloc_total;
 	//! Total number of frees
 	atomic32_t free_total;
+	//! Number of spans transitioned to cache
+	uint32_t spans_to_cache;
+	//! Number of spans transitioned from cache
+	uint32_t spans_from_cache;
+	//! Number of spans mapped
+	uint32_t spans_mapped;
 };
 typedef struct size_class_use_t size_class_use_t;
 #endif
@@ -889,7 +901,6 @@ _memory_global_cache_extract(size_t span_count) {
 #endif
 
 #if ENABLE_THREAD_CACHE
-
 //! Adopt the deferred span cache list
 static void
 _memory_heap_cache_adopt_deferred(heap_t* heap) {
@@ -903,10 +914,12 @@ _memory_heap_cache_adopt_deferred(heap_t* heap) {
 	while (span) {
 		span_t* next_span = span->next;
 		_memory_span_list_push(&heap->span_cache[0], span);
+#if ENABLE_STATISTICS
+		heap->size_class_use[span->size_class].spans_to_cache++;
+#endif
 		span = next_span;
 	}
 }
-
 #endif
 
 //! Insert a single span into thread heap cache, releasing to global cache if overflow
@@ -940,6 +953,7 @@ _memory_heap_cache_insert(heap_t* heap, span_t* span) {
 	assert(span->list_size == release_count);
 #if ENABLE_STATISTICS
 	heap->thread_to_global += (size_t)span->list_size * span_count * _memory_span_size;
+	heap->span_use[idx].spans_to_global += (uint32_t)(span->list_size * span_count);
 #endif
 #if ENABLE_GLOBAL_CACHE
 	_memory_global_cache_insert(span);
@@ -975,6 +989,7 @@ _memory_heap_cache_extract(heap_t* heap, size_t span_count) {
 	if (heap->span_cache[idx]) {
 #if ENABLE_STATISTICS
 		heap->global_to_thread += (size_t)heap->span_cache[idx]->list_size * span_count * _memory_span_size;
+		heap->span_use[idx].spans_from_global += (uint32_t)(heap->span_cache[idx]->list_size * span_count);
 #endif
 		return _memory_span_list_pop(&heap->span_cache[idx]);
 	}
@@ -1138,8 +1153,14 @@ retry_deferred_free_list:
 		active_span = _memory_map_spans(heap, 1);
 		if (!active_span)
 			return 0;
+#if ENABLE_STATISTICS
+		heap->size_class_use[class_idx].spans_mapped++;
+#endif
+	} else {
+#if ENABLE_STATISTICS
+		heap->size_class_use[class_idx].spans_from_cache++;
+#endif
 	}
-
 #if ENABLE_ADAPTIVE_THREAD_CACHE || ENABLE_STATISTICS
 	++heap->span_use[0].current;
 	if (heap->span_use[0].current > heap->span_use[0].high)
@@ -1291,6 +1312,9 @@ _memory_deallocate_direct(span_t* span, void* p) {
 #if ENABLE_ADAPTIVE_THREAD_CACHE || ENABLE_STATISTICS
 		if (heap->span_use[0].current)
 			--heap->span_use[0].current;
+#if ENABLE_STATISTICS
+		heap->size_class_use[class_idx].spans_to_cache++;
+#endif
 #endif
 		_memory_heap_cache_insert(heap, span);
 		return;
@@ -2242,7 +2266,6 @@ rpmalloc_global_statistics(rpmalloc_global_statistics_t* stats) {
 #endif
 }
 
-#if 0
 void
 rpmalloc_dump_statistics(FILE* file) {
 #if ENABLE_STATISTICS
@@ -2253,29 +2276,34 @@ rpmalloc_dump_statistics(FILE* file) {
 		heap_t* heap = atomic_load_ptr(&_memory_heaps[list_idx]);
 		while (heap) {
 			fprintf(file, "Heap %d stats:\n", heap->id);
-			fprintf(file, "Class   CurAlloc  PeakAlloc   TotAlloc   TotFree  BlkSize  PeakAllocKiB\n");
+			fprintf(file, "Class   CurAlloc  PeakAlloc   TotAlloc   TotFree  BlkSize  PeakAllocKiB  ToCacheKiB FromCacheKiB  MappedKiB\n");
 			for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
 				if (!heap->size_class_use[iclass].alloc_total) {
 					assert(!atomic_load32(&heap->size_class_use[iclass].free_total));
 					continue;
 				}
-				fprintf(file, "%3u:  %10u %10u %10u %10u %7u %13zu\n", (uint32_t)iclass,
+				fprintf(file, "%3u:  %10u %10u %10u %10u %7u %13zu %11zu %12zu %10zu\n", (uint32_t)iclass,
 					atomic_load32(&heap->size_class_use[iclass].alloc_current),
 					heap->size_class_use[iclass].alloc_peak,
 					heap->size_class_use[iclass].alloc_total,
 					atomic_load32(&heap->size_class_use[iclass].free_total),
 					_memory_size_class[iclass].size,
-					((size_t)heap->size_class_use[iclass].alloc_peak * (size_t)_memory_size_class[iclass].size) / 1024);
+					((size_t)heap->size_class_use[iclass].alloc_peak * (size_t)_memory_size_class[iclass].size) / 1024,
+					((size_t)heap->size_class_use[iclass].spans_to_cache * _memory_span_size) / 1024,
+					((size_t)heap->size_class_use[iclass].spans_from_cache * _memory_span_size) / 1024,
+					((size_t)heap->size_class_use[iclass].spans_mapped * _memory_span_size) / 1024);
 			}
-			fprintf(file, "Spans  Current     Peak  PeakMiB Cached\n");
+			fprintf(file, "Spans  Current     Peak  PeakMiB  Cached  ToGlobalMiB FromGlobalMiB\n");
 			for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
 				if (!heap->span_use[iclass].high)
 					continue;
-				fprintf(file, "%4u: %8u %8u %8zu %6u\n", (uint32_t)(iclass + 1),
+				fprintf(file, "%4u: %8u %8u %8zu %7u %12zu %12zu\n", (uint32_t)(iclass + 1),
 					heap->span_use[iclass].current,
 					heap->span_use[iclass].high,
 					((size_t)heap->span_use[iclass].high * (size_t)_memory_span_size * (iclass + 1)) / (size_t)(1024 * 1024),
-					heap->span_cache[iclass] ? heap->span_cache[iclass]->list_size : 0);
+					heap->span_cache[iclass] ? heap->span_cache[iclass]->list_size : 0,
+					((size_t)heap->span_use[iclass].spans_to_global * (size_t)_memory_span_size * (iclass + 1)) / (size_t)(1024 * 1024),
+					((size_t)heap->span_use[iclass].spans_from_global * (size_t)_memory_span_size * (iclass + 1)) / (size_t)(1024 * 1024));
 			}
 			fprintf(file, "ThreadToGlobalMiB GlobalToThreadMiB\n");
 			fprintf(file, "%17zu %17zu\n", (size_t)heap->thread_to_global / (size_t)(1024 * 1024), (size_t)heap->global_to_thread / (size_t)(1024 * 1024));
@@ -2302,4 +2330,3 @@ rpmalloc_dump_statistics(FILE* file) {
 	fprintf(file, "\n");
 #endif
 }
-#endif

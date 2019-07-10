@@ -138,6 +138,10 @@ rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats);
 extern void
 rpmalloc_global_statistics(rpmalloc_global_statistics_t* stats);
 
+//! Dump all statistics in human readable format to file (should be a FILE*)
+extern void
+rpmalloc_dump_statistics(void* file);
+
 //! Allocate a memory block of at least the given size
 extern RPMALLOC_RESTRICT void*
 rpmalloc(size_t size) RPMALLOC_ATTRIBUTE;
