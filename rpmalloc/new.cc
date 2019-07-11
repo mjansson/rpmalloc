@@ -22,10 +22,10 @@ using namespace std;
 #endif
 
 extern void*
-operator new(size_t size);
+operator new(size_t size) noexcept(false);
 
 extern void*
-operator new[](size_t size);
+operator new[](size_t size) noexcept(false);
 
 extern void
 operator delete(void* ptr) noexcept;
@@ -51,73 +51,92 @@ operator delete(void* ptr, size_t) noexcept;
 extern void
 operator delete[](void* ptr, size_t) noexcept;
 
-extern int is_initialized;
+#if (__cplusplus >= 201703L)
 
-static void
-initializer(void) {
-	if (!is_initialized) {
-		is_initialized = 1;
-		rpmalloc_initialize();
-	}
-	rpmalloc_thread_initialize();
-}
+extern void*
+operator new(size_t size, std::align_val_t align) noexcept(false);
+
+extern void*
+operator new[](size_t size, std::align_val_t align) noexcept(false);
+
+extern void*
+operator new(size_t size, std::align_val_t align, const std::nothrow_t&) noexcept;
+
+extern void*
+operator new[](size_t size, std::align_val_t align, const std::nothrow_t&) noexcept;
+
+#endif
 
 void*
-operator new(size_t size) {
-	initializer();
+operator new(size_t size) noexcept(false) {
 	return rpmalloc(size);
 }
 
 void
 operator delete(void* ptr) noexcept {
-	if (rpmalloc_is_thread_initialized())
-		rpfree(ptr);
+	rpfree(ptr);
 }
 
 void*
-operator new[](size_t size) {
-	initializer();
+operator new[](size_t size) noexcept(false) {
 	return rpmalloc(size);
 }
 
 void
 operator delete[](void* ptr) noexcept {
-	if (rpmalloc_is_thread_initialized())
-		rpfree(ptr);
+	rpfree(ptr);
 }
 
 void*
 operator new(size_t size, const std::nothrow_t&) noexcept {
-	initializer();
 	return rpmalloc(size);
 }
 
 void*
 operator new[](size_t size, const std::nothrow_t&) noexcept {
-	initializer();
 	return rpmalloc(size);
 }
 
 void
 operator delete(void* ptr, const std::nothrow_t&) noexcept {
-	if (rpmalloc_is_thread_initialized())
-		rpfree(ptr);
+	rpfree(ptr);
 }
 
 void
 operator delete[](void* ptr, const std::nothrow_t&) noexcept {
-	if (rpmalloc_is_thread_initialized())
-		rpfree(ptr);
+	rpfree(ptr);
 }
 
 void
 operator delete(void* ptr, size_t) noexcept {
-	if (rpmalloc_is_thread_initialized())
-		rpfree(ptr);
+	rpfree(ptr);
 }
 
 void
 operator delete[](void* ptr, size_t) noexcept {
-	if (rpmalloc_is_thread_initialized())
-		rpfree(ptr);
+	rpfree(ptr);
 }
+
+#if (__cplusplus >= 201703L)
+
+void*
+operator new(size_t size, std::align_val_t align) noexcept(false) {
+	return rpaligned_alloc(align, size);
+}
+
+void*
+operator new[](size_t size, std::align_val_t align) noexcept(false) {
+	return rpaligned_alloc(align, size);
+}
+
+void*
+operator new(size_t size, std::align_val_t align, const std::nothrow_t&) noexcept {
+	return rpaligned_alloc(align, size);
+}
+
+void*
+operator new[](size_t size, std::align_val_t align, const std::nothrow_t&) noexcept {
+	return rpaligned_alloc(align, size);
+}
+
+#endif

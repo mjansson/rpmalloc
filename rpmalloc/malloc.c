@@ -30,9 +30,6 @@
 
 //This file provides overrides for the standard library malloc style entry points
 
-extern int is_initialized;
-int is_initialized = 0;
-
 extern RPMALLOC_RESTRICT void* RPMALLOC_CDECL
 malloc(size_t size);
 
@@ -87,27 +84,51 @@ malloc_size(void* ptr);
 
 static size_t page_size;
 
-static void
-initializer(void) {
-	if (!is_initialized) {
-		is_initialized = 1;
-		SYSTEM_INFO system_info;
-		memset(&system_info, 0, sizeof(system_info));
-		GetSystemInfo(&system_info);
-		page_size = system_info.dwPageSize;
-		rpmalloc_initialize();
-	}
-	rpmalloc_thread_initialize();
+#if !defined(BUILD_DYNAMIC) || !BUILD_DYNAMIC
+
+#include <fibersapi.h>
+
+static DWORD fls_key;
+
+static void NTAPI
+thread_destructor(void* value) {
+	if (value)
+		rpmalloc_thread_finalize();
 }
 
+#endif
+
 static void
-finalizer(void) {
-	rpmalloc_thread_finalize();
-	if (is_initialized) {
-		is_initialized = 0;
-		rpmalloc_finalize();
-	}
+initializer(void) {
+	SYSTEM_INFO system_info;
+	memset(&system_info, 0, sizeof(system_info));
+	GetSystemInfo(&system_info);
+	page_size = system_info.dwPageSize;
+	rpmalloc_initialize();
+#if !defined(BUILD_DYNAMIC) || !BUILD_DYNAMIC
+    fls_key = FlsAlloc(&thread_destructor);
+#endif
 }
+
+#if defined(BUILD_DYNAMIC) && BUILD_DYNAMIC
+
+__declspec(dllexport) BOOL WINAPI
+DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
+	(void)sizeof(reserved);
+	(void)sizeof(instance);
+	if (reason == DLL_PROCESS_ATTACH) {
+		initializer();
+	} else if (reason == DLL_PROCESS_DETACH) {
+		rpmalloc_finalize();
+	} else if (reason == DLL_THREAD_ATTACH) {
+		rpmalloc_thread_initialize();
+	} else if (reason == DLL_THREAD_DETACH) {
+		rpmalloc_thread_finalize();
+	}
+	return TRUE;
+}
+
+#endif
 
 #else
 
@@ -124,23 +145,14 @@ thread_destructor(void*);
 
 static void __attribute__((constructor))
 initializer(void) {
-	if (!is_initialized) {
-		is_initialized = 1;
-		page_size = (size_t)sysconf(_SC_PAGESIZE);
-		pthread_key_create(&destructor_key, thread_destructor);
-		if (rpmalloc_initialize())
-			abort();
-	}
-	rpmalloc_thread_initialize();
+	page_size = (size_t)sysconf(_SC_PAGESIZE);
+	pthread_key_create(&destructor_key, thread_destructor);
+	rpmalloc_initialize();
 }
 
 static void __attribute__((destructor))
 finalizer(void) {
-	rpmalloc_thread_finalize();
-	if (is_initialized) {
-		is_initialized = 0;
-		rpmalloc_finalize();
-	}
+	rpmalloc_finalize();
 }
 
 typedef struct {
@@ -219,19 +231,16 @@ pthread_create(pthread_t* thread,
 
 RPMALLOC_RESTRICT void* RPMALLOC_CDECL
 malloc(size_t size) {
-	initializer();
 	return rpmalloc(size);
 }
 
 void* RPMALLOC_CDECL
 realloc(void* ptr, size_t size) {
-	initializer();
 	return rprealloc(ptr, size);
 }
 
 void* RPMALLOC_CDECL
 reallocf(void* ptr, size_t size) {
-	initializer();
 	return rprealloc(ptr, size);
 }
 
@@ -260,13 +269,11 @@ reallocarray(void* ptr, size_t count, size_t size) {
 
 RPMALLOC_RESTRICT void* RPMALLOC_CDECL
 calloc(size_t count, size_t size) {
-	initializer();
 	return rpcalloc(count, size);
 }
 
 RPMALLOC_RESTRICT void* RPMALLOC_CDECL
 valloc(size_t size) {
-	initializer();
 	if (!size)
 		size = page_size;
 	size_t total_size = size + page_size;
@@ -298,26 +305,21 @@ pvalloc(size_t size) {
 
 RPMALLOC_RESTRICT void* RPMALLOC_CDECL
 aligned_alloc(size_t alignment, size_t size) {
-	initializer();
 	return rpaligned_alloc(alignment, size);
 }
 
 RPMALLOC_RESTRICT void* RPMALLOC_CDECL
 memalign(size_t alignment, size_t size) {
-	initializer();
 	return rpmemalign(alignment, size);
 }
 
 int RPMALLOC_CDECL
 posix_memalign(void** memptr, size_t alignment, size_t size) {
-	initializer();
 	return rpposix_memalign(memptr, alignment, size);
 }
 
 void RPMALLOC_CDECL
 free(void* ptr) {
-	if (!is_initialized || !rpmalloc_is_thread_initialized())
-		return;
 	rpfree(ptr);
 }
 
@@ -334,8 +336,6 @@ malloc_usable_size(
 	void* ptr
 #endif
 	) {
-	if (!rpmalloc_is_thread_initialized())
-		return 0;
 	return rpmalloc_usable_size((void*)(uintptr_t)ptr);
 }
 
@@ -343,6 +343,65 @@ size_t RPMALLOC_CDECL
 malloc_size(void* ptr) {
 	return malloc_usable_size(ptr);
 }
+
+#if defined(__GLIBC__) && defined(__linux__)
+
+extern void* __libc_malloc(size_t size);
+extern void* __libc_calloc(size_t count, size_t size);
+extern void* __libc_realloc(void* p, size_t size);
+extern void __libc_free(void* p);
+extern void __libc_cfree(void* p);
+extern void* __libc_memalign(size_t align, size_t size);
+extern void* __libc_valloc(size_t size);
+extern void* __libc_pvalloc(size_t size);
+extern int __posix_memalign(void** p, size_t align, size_t size);
+
+void*
+__libc_malloc(size_t size) {
+	return rpmalloc(size);
+}
+
+void*
+__libc_calloc(size_t count, size_t size) {
+	return rpcalloc(count, size);
+}
+
+void*
+__libc_realloc(void* p, size_t size) {
+	return rprealloc(p, size);
+}
+
+void
+__libc_free(void* p) {
+	rpfree(p);
+}
+
+void
+__libc_cfree(void* p) {
+	rpfree(p);
+}
+
+void*
+__libc_memalign(size_t align, size_t size) {
+	return rpmemalign(align, size);
+}
+
+void*
+__libc_valloc(size_t size) {
+	return valloc(size);
+}
+
+void*
+__libc_pvalloc(size_t size) {
+	return pvalloc(size);
+}
+
+int
+__posix_memalign(void** p, size_t alignment, size_t size)  {
+	return rpposix_memalign(p, alignment,size);
+}
+
+#endif
 
 #ifdef _MSC_VER
 
@@ -353,7 +412,6 @@ _expand(void* block, size_t size) {
 
 extern RPMALLOC_RESTRICT void* RPMALLOC_CDECL
 _recalloc(void* block, size_t count, size_t size) {
-	initializer();
 	if (!block)
 		return rpcalloc(count, size);
 	size_t newsize = count * size;
@@ -371,14 +429,12 @@ _aligned_malloc(size_t size, size_t alignment) {
 
 extern RPMALLOC_RESTRICT void* RPMALLOC_CDECL
 _aligned_realloc(void* block, size_t size, size_t alignment) {
-	initializer();
 	size_t oldsize = rpmalloc_usable_size(block);
 	return rpaligned_realloc(block, alignment, size, oldsize, 0);
 }
 
 extern RPMALLOC_RESTRICT void* RPMALLOC_CDECL
 _aligned_recalloc(void* block, size_t count, size_t size, size_t alignment) {
-	initializer();
 	size_t newsize = count * size;
 	if (!block) {
 		block = rpaligned_alloc(count, newsize);
@@ -414,7 +470,6 @@ _get_heap_handle(void) {
 
 extern int RPMALLOC_CDECL
 _heap_init(void) {
-	initializer();
 	return 1;
 }
 
