@@ -16,6 +16,10 @@ Revert block granularity and natural alignment to 16 bytes to reduce memory wast
 
 Bugfix for preserving data when reallocating a previously aligned (>32 bytes) block
 
+More detailed statistics
+
+Disabled adaptive thread cache by default
+
 
 1.3.2
 

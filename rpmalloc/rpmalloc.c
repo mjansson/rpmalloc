@@ -2264,6 +2264,32 @@ rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats) {
 			stats->spancache = (size_t)deferred_list->list_size * (iclass + 1) * _memory_span_size;
 	}
 #endif
+#if ENABLE_STATISTICS
+	stats->thread_to_global = heap->thread_to_global;
+	stats->global_to_thread = heap->global_to_thread;
+
+	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
+		stats->span_use[iclass].current = (size_t)heap->span_use[iclass].current;
+		stats->span_use[iclass].peak = (size_t)heap->span_use[iclass].high;
+		stats->span_use[iclass].to_global = (size_t)heap->span_use[iclass].spans_to_global;
+		stats->span_use[iclass].from_global = (size_t)heap->span_use[iclass].spans_from_global;
+		stats->span_use[iclass].to_cache = (size_t)heap->span_use[iclass].spans_to_cache;
+		stats->span_use[iclass].from_cache = (size_t)heap->span_use[iclass].spans_from_cache;
+		stats->span_use[iclass].to_reserved = (size_t)heap->span_use[iclass].spans_to_reserved;
+		stats->span_use[iclass].from_reserved = (size_t)heap->span_use[iclass].spans_from_reserved;
+		stats->span_use[iclass].map_calls = (size_t)heap->span_use[iclass].spans_map_calls;
+	}
+	for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
+		stats->size_use[iclass].alloc_current = (size_t)atomic_load32(&heap->size_class_use[iclass].alloc_current);
+		stats->size_use[iclass].alloc_peak = (size_t)heap->size_class_use[iclass].alloc_peak;
+		stats->size_use[iclass].alloc_total = (size_t)heap->size_class_use[iclass].alloc_total;
+		stats->size_use[iclass].free_total = (size_t)atomic_load32(&heap->size_class_use[iclass].free_total);
+		stats->size_use[iclass].spans_to_cache = (size_t)heap->size_class_use[iclass].spans_to_cache;
+		stats->size_use[iclass].spans_from_cache = (size_t)heap->size_class_use[iclass].spans_from_cache;
+		stats->size_use[iclass].spans_from_reserved = (size_t)heap->size_class_use[iclass].spans_from_reserved;
+		stats->size_use[iclass].map_calls = (size_t)heap->size_class_use[iclass].spans_map_calls;
+	}
+#endif
 }
 
 void
@@ -2271,8 +2297,11 @@ rpmalloc_global_statistics(rpmalloc_global_statistics_t* stats) {
 	memset(stats, 0, sizeof(rpmalloc_global_statistics_t));
 #if ENABLE_STATISTICS
 	stats->mapped = (size_t)atomic_load32(&_mapped_pages) * _memory_page_size;
+	stats->mapped_peak = (size_t)_mapped_pages_peak * _memory_page_size;
 	stats->mapped_total = (size_t)atomic_load32(&_mapped_total) * _memory_page_size;
 	stats->unmapped_total = (size_t)atomic_load32(&_unmapped_total) * _memory_page_size;
+	stats->huge_alloc = (size_t)atomic_load32(&_huge_pages_current) * _memory_page_size;
+	stats->huge_alloc_peak = (size_t)_huge_pages_peak * _memory_page_size;
 #endif
 #if ENABLE_GLOBAL_CACHE
 	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {

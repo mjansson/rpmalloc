@@ -35,25 +35,71 @@ extern "C" {
 #define RPMALLOC_NO_PRESERVE    1
 
 typedef struct rpmalloc_global_statistics_t {
-	//! Current amount of virtual memory mapped (only if ENABLE_STATISTICS=1)
+	//! Current amount of virtual memory mapped, all of which might not have been committed (only if ENABLE_STATISTICS=1)
 	size_t mapped;
-	//! Current amount of memory in global caches for small and medium sizes (<64KiB)
+	//! Peak amount of virtual memory mapped, all of which might not have been committed (only if ENABLE_STATISTICS=1)
+	size_t mapped_peak;
+	//! Current amount of memory in global caches for small and medium sizes (<32KiB)
 	size_t cached;
-	//! Total amount of memory mapped (only if ENABLE_STATISTICS=1)
+	//! Current amount of memory allocated in huge allocations, i.e larger than LARGE_SIZE_LIMIT which is 2MiB by default (only if ENABLE_STATISTICS=1)
+	size_t huge_alloc;
+	//! Peak amount of memory allocated in huge allocations, i.e larger than LARGE_SIZE_LIMIT which is 2MiB by default (only if ENABLE_STATISTICS=1)
+	size_t huge_alloc_peak;
+	//! Total amount of memory mapped since initialization (only if ENABLE_STATISTICS=1)
 	size_t mapped_total;
-	//! Total amount of memory unmapped (only if ENABLE_STATISTICS=1)
+	//! Total amount of memory unmapped since initialization  (only if ENABLE_STATISTICS=1)
 	size_t unmapped_total;
 } rpmalloc_global_statistics_t;
 
 typedef struct rpmalloc_thread_statistics_t {
-	//! Current number of bytes available in thread size class caches
+	//! Current number of bytes available in thread size class caches for small and medium sizes (<32KiB)
 	size_t sizecache;
-	//! Current number of bytes available in thread span caches
+	//! Current number of bytes available in thread span caches for small and medium sizes (<32KiB)
 	size_t spancache;
-	//! Total number of bytes transitioned from thread cache to global cache
+	//! Total number of bytes transitioned from thread cache to global cache (only if ENABLE_STATISTICS=1)
 	size_t thread_to_global;
-	//! Total number of bytes transitioned from global cache to thread cache
+	//! Total number of bytes transitioned from global cache to thread cache (only if ENABLE_STATISTICS=1)
 	size_t global_to_thread;
+	//! Per span count statistics (only if ENABLE_STATISTICS=1)
+	struct {
+		//! Currently used number of spans
+		size_t current;
+		//! High water mark of spans used
+		size_t peak;
+		//! Number of spans transitioned to global cache
+		size_t to_global;
+		//! Number of spans transitioned from global cache
+		size_t from_global;
+		//! Number of spans transitioned to thread cache
+		size_t to_cache;
+		//! Number of spans transitioned from thread cache
+		size_t from_cache;
+		//! Number of spans transitioned to reserved state
+		size_t to_reserved;
+		//! Number of spans transitioned from reserved state
+		size_t from_reserved;
+		//! Number of raw memory map calls (not hitting the reserve spans but resulting in actual OS mmap calls)
+		size_t map_calls;
+	} span_use[32];
+	//! Per size class statistics (only if ENABLE_STATISTICS=1)
+	struct {
+		//! Current number of allocations
+		size_t alloc_current;
+		//! Peak number of allocations
+		size_t alloc_peak;
+		//! Total number of allocations
+		size_t alloc_total;
+		//! Total number of frees
+		size_t free_total;
+		//! Number of spans transitioned to cache
+		size_t spans_to_cache;
+		//! Number of spans transitioned from cache
+		size_t spans_from_cache;
+		//! Number of spans transitioned from reserved state
+		size_t spans_from_reserved;
+		//! Number of raw memory map calls (not hitting the reserve spans but resulting in actual OS mmap calls)
+		size_t map_calls;
+	} size_use[128];
 } rpmalloc_thread_statistics_t;
 
 typedef struct rpmalloc_config_t {
