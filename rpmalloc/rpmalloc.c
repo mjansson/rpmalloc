@@ -638,6 +638,8 @@ _memory_map_spans(heap_t* heap, size_t span_count) {
 			span->align_offset = 0;
 		}
 		span->span_count = (uint32_t)span_count;
+		if (span_count <= LARGE_CLASS_COUNT)
+			_memory_statistics_inc(heap->span_use[span_count - 1].spans_from_reserved, 1);
 		return span;
 	}
 
@@ -656,6 +658,8 @@ _memory_map_spans(heap_t* heap, size_t span_count) {
 	span->flags = SPAN_FLAG_MASTER;
 	atomic_store32(&span->remaining_spans, (int32_t)request_spans);
 	_memory_statistics_add(&_reserved_spans, request_spans);
+	if (span_count <= LARGE_CLASS_COUNT)
+		_memory_statistics_inc(heap->span_use[span_count - 1].spans_map_calls, 1);
 	if (request_spans > span_count) {
 		if (heap->spans_reserved) {
 			span_t* prev_span = heap->span_reserve;
@@ -674,7 +678,6 @@ _memory_map_spans(heap_t* heap, size_t span_count) {
 		heap->span_reserve = pointer_offset(span, span_count * _memory_span_size);
 		heap->spans_reserved = request_spans - span_count;
 	}
-	_memory_statistics_inc(heap->span_use[span_count - 1].spans_map_calls, 1);
 	return span;
 }
 
@@ -1002,10 +1005,8 @@ _memory_heap_thread_cache_extract(heap_t* heap, size_t span_count) {
 
 static FORCEINLINE span_t*
 _memory_heap_reserved_extract(heap_t* heap, size_t span_count) {
-	if (heap->spans_reserved >= span_count) {
-		_memory_statistics_inc(heap->span_use[span_count - 1].spans_from_reserved, 1);
+	if (heap->spans_reserved >= span_count)
 		return _memory_map_spans(heap, span_count);
-	}
 	return 0;
 }
 
@@ -1211,7 +1212,7 @@ _memory_allocate_large_from_heap(heap_t* heap, size_t size) {
 	if (size & (_memory_span_size - 1))
 		++span_count;
 	size_t idx = span_count - 1;
-#if ENABLE_ADAPTIVE_THREAD_CACHE
+#if ENABLE_ADAPTIVE_THREAD_CACHE || ENABLE_STATISTICS
 	++heap->span_use[idx].current;
 	if (heap->span_use[idx].current > heap->span_use[idx].high)
 		heap->span_use[idx].high = heap->span_use[idx].current;
@@ -2210,6 +2211,7 @@ retry:
 	//Store page count in span_count
 	span->span_count = (uint32_t)num_pages;
 	span->align_offset = (uint32_t)align_offset;
+	_memory_statistics_add_peak(&_huge_pages_current, num_pages, _huge_pages_peak);
 
 	return ptr;
 }
@@ -2309,7 +2311,7 @@ rpmalloc_dump_statistics(void* file) {
 			}
 			fprintf(file, "Spans  Current     Peak  PeakMiB  Cached  ToCacheMiB FromCacheMiB ToReserveMiB FromReserveMiB ToGlobalMiB FromGlobalMiB  MmapCalls\n");
 			for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
-				if (!heap->span_use[iclass].high)
+				if (!heap->span_use[iclass].high && !heap->span_use[iclass].spans_map_calls)
 					continue;
 				fprintf(file, "%4u: %8u %8u %8zu %7u %11zu %12zu %12zu %14zu %11zu %13zu %10u\n", (uint32_t)(iclass + 1),
 					heap->span_use[iclass].current,
@@ -2336,16 +2338,22 @@ rpmalloc_dump_statistics(void* file) {
 	fprintf(file, "%14zu %11zu\n", huge_current / (size_t)(1024 * 1024), huge_peak / (size_t)(1024 * 1024));
 
 	size_t mapped = (size_t)atomic_load32(&_mapped_pages) * _memory_page_size;
+	size_t mapped_os = (size_t)atomic_load32(&_mapped_pages_os) * _memory_page_size;
 	size_t mapped_peak = (size_t)_mapped_pages_peak * _memory_page_size;
 	size_t mapped_total = (size_t)atomic_load32(&_mapped_total) * _memory_page_size;
 	size_t unmapped_total = (size_t)atomic_load32(&_unmapped_total) * _memory_page_size;
-	fprintf(file, "MappedMiB MappedPeakMiB MappedTotalMiB UnmappedTotalMiB\n");
-	fprintf(file, "%9zu %13zu %14zu %16zu\n",
+	size_t reserved_total = (size_t)atomic_load32(&_reserved_spans) * _memory_span_size;
+	fprintf(file, "MappedMiB MappedOSMiB MappedPeakMiB MappedTotalMiB UnmappedTotalMiB ReservedTotalMiB\n");
+	fprintf(file, "%9zu %11zu %13zu %14zu %16zu %16zu\n",
 		mapped / (size_t)(1024 * 1024),
+		mapped_os / (size_t)(1024 * 1024),
 		mapped_peak / (size_t)(1024 * 1024),
 		mapped_total / (size_t)(1024 * 1024),
-		unmapped_total / (size_t)(1024 * 1024));
+		unmapped_total / (size_t)(1024 * 1024),
+		reserved_total / (size_t)(1024 * 1024));
 
 	fprintf(file, "\n");
+#else
+	(void)sizeof(file);
 #endif
 }
