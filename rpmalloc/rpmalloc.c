@@ -260,8 +260,6 @@ typedef struct global_cache_t global_cache_t;
 #define SPAN_FLAG_SUBSPAN 2U
 //! Flag indicating span has blocks with increased alignment
 #define SPAN_FLAG_ALIGNED_BLOCKS 4U
-//! Free list flag indicating span is active
-#define FREE_LIST_FLAG_ACTIVE 0x8000000000000000ULL
 
 #if ENABLE_ADAPTIVE_THREAD_CACHE || ENABLE_STATISTICS
 struct span_use_t {
@@ -1104,14 +1102,13 @@ _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 			return block;
 		}
 		//Swap in deferred free list (if list has at least one element the compound 64-bit value will not be set to raw flag)
-retry_deferred_free_list:
 		atomic_thread_fence_acquire();
-		if ((uint64_t)atomic_load64(&active_span->free_list_deferred) != FREE_LIST_FLAG_ACTIVE) {
+		if ((uint64_t)atomic_load64(&active_span->free_list_deferred)) {
 			uint64_t free_list_deferred;
 			do {
 				// Safe to assume nothing else can reset to a null list here, only owning thread can do this
 				free_list_deferred = (uint64_t)atomic_load64(&active_span->free_list_deferred);
-			} while (!atomic_cas64(&active_span->free_list_deferred, (int64_t)FREE_LIST_FLAG_ACTIVE, (int64_t)free_list_deferred));
+			} while (!atomic_cas64(&active_span->free_list_deferred, 0, (int64_t)free_list_deferred));
 
 			heap_class->free_list = pointer_offset(active_span, SPAN_HEADER_SIZE + (active_span->block_size * (uint32_t)free_list_deferred));
 			assert(heap_class->free_list);
@@ -1121,12 +1118,10 @@ retry_deferred_free_list:
 		//If the active span is fully allocated, mark span as free floating (fully allocated and not part of any list)
 		assert(!heap_class->free_list);
 		assert(active_span->free_list_limit == active_span->block_count);
-		//If CAS fails some other thread freed up additional blocks, then loop around and try again
-		if (!atomic_cas64(&active_span->free_list_deferred, 0, (int64_t)FREE_LIST_FLAG_ACTIVE))
-			goto retry_deferred_free_list;
+		active_span->used_count = active_span->block_count;
 		active_span->state = SPAN_STATE_FULL;
 		active_span->free_list = 0;
-		active_span->used_count = active_span->block_count;
+		atomic_thread_fence_release();
 		active_span = 0;
 		heap_class->active_span = 0;
 	}
@@ -1140,11 +1135,6 @@ retry_deferred_free_list:
 		//Mark span as active
 		assert(active_span->state == SPAN_STATE_PARTIAL);
 		assert(active_span->block_count == _memory_size_class[active_span->size_class].block_count);
-		uint64_t free_list_deferred, new_list_deferred;
-		do {
-			free_list_deferred = (uint64_t)atomic_load64(&active_span->free_list_deferred);
-			new_list_deferred = free_list_deferred | FREE_LIST_FLAG_ACTIVE;
-		} while (!atomic_cas64(&active_span->free_list_deferred, (int64_t)new_list_deferred, (int64_t)free_list_deferred));
 		//Move data to heap size class, set span as active and remove the span from used list
 		heap_class->free_list = active_span->free_list;
 		heap_class->active_span = active_span;
@@ -1153,11 +1143,8 @@ retry_deferred_free_list:
 		active_span->state = SPAN_STATE_ACTIVE;
 		active_span->free_list_limit = active_span->block_count;
 		active_span->free_list = 0;
-		//Grab either from the local free list or go back and try the deferred free list
-		if (heap_class->free_list)
-			return free_list_pop(&heap_class->free_list);
-		assert(atomic_load64(&active_span->free_list_deferred) != (int64_t)FREE_LIST_FLAG_ACTIVE);
-		goto retry_deferred_free_list;
+		assert(heap_class->free_list);
+		return free_list_pop(&heap_class->free_list);
 	}
 
 	assert(!heap_class->free_list);
@@ -1200,6 +1187,7 @@ retry_deferred_free_list:
 	active_span->block_count = size_class->block_count;
 	active_span->block_size = size_class->block_size;
 	active_span->state = SPAN_STATE_ACTIVE;
+	active_span->free_list = 0;
 
 	if (active_span->block_count > 1) {
 		//Setup free list. Only initialize one system page worth of free blocks in list
@@ -1207,17 +1195,14 @@ retry_deferred_free_list:
 		active_span->free_list_limit = free_list_partial_init(&heap_class->free_list, &block, 
 			active_span, pointer_offset(active_span, SPAN_HEADER_SIZE),
 			active_span->block_count, active_span->block_size);
-		active_span->free_list = 0;
-		atomic_store64(&active_span->free_list_deferred, (int64_t)FREE_LIST_FLAG_ACTIVE);
 	} else {
 		//Single block span (should not happen with default size configurations)
 		block = pointer_offset(active_span, SPAN_HEADER_SIZE);
-		active_span->free_list = 0;
 		active_span->free_list_limit = 1;
-		active_span->state = SPAN_STATE_FULL;
 		active_span->used_count = 1;
-		atomic_store64(&active_span->free_list_deferred, 0);
+		active_span->state = SPAN_STATE_FULL;
 	}
+	atomic_store64(&active_span->free_list_deferred, 0);
 	atomic_thread_fence_release();
 
 	//Return first block in span
@@ -1330,7 +1315,7 @@ _memory_deallocate_direct(span_t* span, void* p) {
 	--span->used_count;
 
 	//Not active span, check if the span will become completely free
-	uint32_t list_size = (uint32_t)((free_list_deferred & ~FREE_LIST_FLAG_ACTIVE) >> 32ULL);
+	uint32_t list_size = (uint32_t)(free_list_deferred >> 32ULL);
 	assert(span->used_count >= list_size);
 	if (list_size == span->used_count) {
 		heap_t* heap = get_thread_heap_raw();
@@ -1405,12 +1390,10 @@ _memory_deallocate_defer(span_t* span, void* p) {
 		free_list = (uint64_t)atomic_load64(&span->free_list_deferred);
 		uint32_t list_size = (uint32_t)(free_list >> 32ULL) & 0xFFFF;
 		uint32_t new_list_size = list_size + 1;
-		new_free_list = (free_list & FREE_LIST_FLAG_ACTIVE) | ((uint64_t)new_list_size << 32ULL) | (uint64_t)block_idx;
+		new_free_list = ((uint64_t)new_list_size << 32ULL) | (uint64_t)block_idx;
 		if (new_list_size == span->block_count) {
 			//Span will be completely freed by deferred deallocations
-			if (free_list & FREE_LIST_FLAG_ACTIVE) {
-				//Active span, just leave it
-			} else {
+			if (span->state == SPAN_STATE_FULL) {
 				//Free floating span, so no other thread can currently touch it
 				span_t* last_head;
 				heap_t* heap = span->heap;
