@@ -341,12 +341,12 @@ struct span_t {
 	atomicptr_t free_list_deferred;
 	//! Size of deferred free list
 	atomic32_t  free_list_deferred_size;
-	//! Remaining span counter, for master spans
-	atomic32_t  remaining_spans;
 	//! Flags and counters
 	uint32_t    flags;
 	//! Total span counter for master spans, distance for subspans
 	uint32_t    total_spans_or_distance;
+	//! Remaining span counter, for master spans
+	atomic32_t  remaining_spans;
 	//! Number of spans
 	uint32_t    span_count;
 	//! Alignment offset
@@ -636,79 +636,104 @@ _memory_unmap(void* address, size_t size, size_t offset, size_t release) {
 	_memory_config.memory_unmap(address, size, offset, release);
 }
 
+//! Declare the span to be a subspan and store distance from master span and span count
+static void
+_memory_span_mark_as_subspan_unless_master(span_t* master, span_t* subspan, size_t span_count) {
+	assert((subspan != master) || (subspan->flags & SPAN_FLAG_MASTER));
+	if (subspan != master) {
+		subspan->flags = SPAN_FLAG_SUBSPAN;
+		subspan->total_spans_or_distance = (uint32_t)((uintptr_t)pointer_diff(subspan, master) >> _memory_span_size_shift);
+		subspan->align_offset = 0;
+	}
+	subspan->span_count = (uint32_t)span_count;
+}
+
+//! Use reserved spans to fulfill a memory map request (reserve size must be checked by caller)
+static span_t*
+_memory_map_from_reserve(heap_t* heap, size_t span_count) {
+	//Update the heap span reserve
+	span_t* span = heap->span_reserve;
+	heap->span_reserve = pointer_offset(span, span_count * _memory_span_size);
+	heap->spans_reserved -= span_count;
+
+	_memory_span_mark_as_subspan_unless_master(heap->span_reserve_master, span, span_count);
+	if (span_count <= LARGE_CLASS_COUNT)
+		_memory_statistics_inc(heap->span_use[span_count - 1].spans_from_reserved, 1);
+
+	return span;
+}
+
+//! Get the aligned number of spans to map in based on wanted count, configured mapping granularity and the page size
+static size_t
+_memory_map_align_span_count(size_t span_count) {
+	size_t request_count = (span_count > _memory_span_map_count) ? span_count : _memory_span_map_count;
+	if ((_memory_page_size > _memory_span_size) && ((request_count * _memory_span_size) % _memory_page_size))
+		request_count += _memory_span_map_count - (request_count % _memory_span_map_count);	
+	return request_count;
+}
+
+//! Store the given spans as reserve in the given heap
+static void
+_memory_heap_set_reserved_spans(heap_t* heap, span_t* master, span_t* reserve, size_t reserve_span_count) {
+	heap->span_reserve_master = master;
+	heap->span_reserve = reserve;
+	heap->spans_reserved = reserve_span_count;
+}
+
+//! Setup a newly mapped span
+static void
+_memory_span_initialize(span_t* span, size_t total_span_count, size_t span_count, size_t align_offset) {
+	span->total_spans_or_distance = (uint32_t)total_span_count;
+	span->span_count = (uint32_t)span_count;
+	span->align_offset = (uint32_t)align_offset;
+	span->flags = SPAN_FLAG_MASTER;
+	atomic_store32(&span->remaining_spans, (int32_t)total_span_count);	
+}
+
+//! Map a akigned set of spans, taking configured mapping granularity and the page size into account
+static span_t*
+_memory_map_aligned_span_count(heap_t* heap, size_t span_count) {
+	//If we already have some, but not enough, reserved spans, release those to heap cache and map a new
+	//full set of spans. Otherwise we would waste memory if page size > span size (huge pages)
+	size_t aligned_span_count = _memory_map_align_span_count(span_count);
+	size_t align_offset = 0;
+	span_t* span = _memory_map(aligned_span_count * _memory_span_size, &align_offset);
+	if (!span)
+		return 0;
+	_memory_span_initialize(span, aligned_span_count, span_count, align_offset);
+	_memory_statistics_add(&_reserved_spans, aligned_span_count);
+	if (span_count <= LARGE_CLASS_COUNT)
+		_memory_statistics_inc(heap->span_use[span_count - 1].spans_map_calls, 1);
+	if (aligned_span_count > span_count) {
+		if (heap->spans_reserved) {
+			_memory_span_mark_as_subspan_unless_master(heap->span_reserve_master, heap->span_reserve, heap->spans_reserved);
+			_memory_heap_cache_insert(heap, heap->span_reserve);
+		}
+		_memory_heap_set_reserved_spans(heap, span, pointer_offset(span, span_count * _memory_span_size), aligned_span_count - span_count);
+	}
+	return span;
+}
+
 //! Map in memory pages for the given number of spans (or use previously reserved pages)
 static span_t*
 _memory_map_spans(heap_t* heap, size_t span_count) {
-	if (span_count <= heap->spans_reserved) {
-		span_t* span = heap->span_reserve;
-		heap->span_reserve = pointer_offset(span, span_count * _memory_span_size);
-		heap->spans_reserved -= span_count;
-		if (span == heap->span_reserve_master) {
-			assert(span->flags & SPAN_FLAG_MASTER);
-		} else {
-			//Declare the span to be a subspan with given distance from master span
-			uint32_t distance = (uint32_t)((uintptr_t)pointer_diff(span, heap->span_reserve_master) >> _memory_span_size_shift);
-			span->flags = SPAN_FLAG_SUBSPAN;
-			span->total_spans_or_distance = distance;
-			span->align_offset = 0;
-		}
-		span->span_count = (uint32_t)span_count;
-		if (span_count <= LARGE_CLASS_COUNT)
-			_memory_statistics_inc(heap->span_use[span_count - 1].spans_from_reserved, 1);
-		return span;
-	}
-
-	//If we already have some, but not enough, reserved spans, release those to heap cache and map a new
-	//full set of spans. Otherwise we would waste memory if page size > span size (huge pages)
-	size_t request_spans = (span_count > _memory_span_map_count) ? span_count : _memory_span_map_count;
-	if ((_memory_page_size > _memory_span_size) && ((request_spans * _memory_span_size) % _memory_page_size))
-		request_spans += _memory_span_map_count - (request_spans % _memory_span_map_count);
-	size_t align_offset = 0;
-	span_t* span = _memory_map(request_spans * _memory_span_size, &align_offset);
-	if (!span)
-		return span;
-	span->align_offset = (uint32_t)align_offset;
-	span->total_spans_or_distance = (uint32_t)request_spans;
-	span->span_count = (uint32_t)span_count;
-	span->flags = SPAN_FLAG_MASTER;
-	atomic_store32(&span->remaining_spans, (int32_t)request_spans);
-	_memory_statistics_add(&_reserved_spans, request_spans);
-	if (span_count <= LARGE_CLASS_COUNT)
-		_memory_statistics_inc(heap->span_use[span_count - 1].spans_map_calls, 1);
-	if (request_spans > span_count) {
-		if (heap->spans_reserved) {
-			span_t* prev_span = heap->span_reserve;
-			if (prev_span == heap->span_reserve_master) {
-				assert(prev_span->flags & SPAN_FLAG_MASTER);
-			} else {
-				uint32_t distance = (uint32_t)((uintptr_t)pointer_diff(prev_span, heap->span_reserve_master) >> _memory_span_size_shift);
-				prev_span->flags = SPAN_FLAG_SUBSPAN;
-				prev_span->total_spans_or_distance = distance;
-				prev_span->align_offset = 0;
-			}
-			prev_span->span_count = (uint32_t)heap->spans_reserved;
-			_memory_heap_cache_insert(heap, prev_span);
-		}
-		heap->span_reserve_master = span;
-		heap->span_reserve = pointer_offset(span, span_count * _memory_span_size);
-		heap->spans_reserved = request_spans - span_count;
-	}
-	return span;
+	if (span_count <= heap->spans_reserved)
+		return _memory_map_from_reserve(heap, span_count);
+	return _memory_map_aligned_span_count(heap, span_count);
 }
 
 //! Unmap memory pages for the given number of spans (or mark as unused if no partial unmappings)
 static void
 _memory_unmap_span(span_t* span) {
-	size_t span_count = span->span_count;
 	assert((span->flags & SPAN_FLAG_MASTER) || (span->flags & SPAN_FLAG_SUBSPAN));
 	assert(!(span->flags & SPAN_FLAG_MASTER) || !(span->flags & SPAN_FLAG_SUBSPAN));
 
 	int is_master = !!(span->flags & SPAN_FLAG_MASTER);
 	span_t* master = is_master ? span : (pointer_offset(span, -(int32_t)(span->total_spans_or_distance * _memory_span_size)));
-
 	assert(is_master || (span->flags & SPAN_FLAG_SUBSPAN));
 	assert(master->flags & SPAN_FLAG_MASTER);
 
+	size_t span_count = span->span_count;
 	if (!is_master) {
 		//Directly unmap subspans (unless huge pages, in which case we defer and unmap entire page range with master)
 		assert(span->align_offset == 0);
