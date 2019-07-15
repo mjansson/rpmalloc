@@ -8,13 +8,14 @@ Change span free list to a linked list, conditionally initialized one memory pag
 Reduce number of conditionals in the fast path allocation and avoid touching heap structure
 at all in best case
 
-Use faster thread id in deallocation path to avoid accessing heap in common best case
-
 Avoid realigning block in deallocation unless span marked as used by alignment > 32 bytes
 
 Revert block granularity and natural alignment to 16 bytes to reduce memory waste
 
 Bugfix for preserving data when reallocating a previously aligned (>32 bytes) block
+
+Use compile time span size by default for improved performance, added build time RPMALLOC_CONFIGURABLE
+preprocessor directive to reenable configurability of span and page size
 
 More detailed statistics
 
