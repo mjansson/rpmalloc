@@ -159,9 +159,6 @@ static FORCEINLINE int32_t atomic_load32(atomic32_t* src) { return *src; }
 static FORCEINLINE void    atomic_store32(atomic32_t* dst, int32_t val) { *dst = val; }
 static FORCEINLINE int32_t atomic_incr32(atomic32_t* val) { return (int32_t)_InterlockedExchangeAdd(val, 1) + 1; }
 static FORCEINLINE int32_t atomic_add32(atomic32_t* val, int32_t add) { return (int32_t)_InterlockedExchangeAdd(val, add) + add; }
-static FORCEINLINE int64_t atomic_load64(atomic64_t* src) { return *src; }
-static FORCEINLINE void    atomic_store64(atomic64_t* dst, int64_t val) { *dst = val; }
-static FORCEINLINE int     atomic_cas64(atomic64_t* dst, int64_t val, int64_t ref) { return (_InterlockedCompareExchange64((volatile long long*)dst, (long long)val, (long long)ref) == (long long)ref) ? 1 : 0; }
 static FORCEINLINE void*   atomic_load_ptr(atomicptr_t* src) { return (void*)*src; }
 static FORCEINLINE void    atomic_store_ptr(atomicptr_t* dst, void* val) { *dst = val; }
 #  if defined(__LLP64__) || defined(__LP64__) || defined(_WIN64)
@@ -187,9 +184,6 @@ static FORCEINLINE int32_t atomic_load32(atomic32_t* src) { return atomic_load_e
 static FORCEINLINE void    atomic_store32(atomic32_t* dst, int32_t val) { atomic_store_explicit(dst, val, memory_order_relaxed); }
 static FORCEINLINE int32_t atomic_incr32(atomic32_t* val) { return atomic_fetch_add_explicit(val, 1, memory_order_relaxed) + 1; }
 static FORCEINLINE int32_t atomic_add32(atomic32_t* val, int32_t add) { return atomic_fetch_add_explicit(val, add, memory_order_relaxed) + add; }
-static FORCEINLINE int64_t atomic_load64(atomic64_t* src) { return atomic_load_explicit(src, memory_order_relaxed); }
-static FORCEINLINE void    atomic_store64(atomic64_t* dst, int64_t val) { atomic_store_explicit(dst, val, memory_order_relaxed); }
-static FORCEINLINE int     atomic_cas64(atomic64_t* dst, int64_t val, int64_t ref) { return atomic_compare_exchange_weak_explicit(dst, &ref, val, memory_order_release, memory_order_acquire); }
 static FORCEINLINE void*   atomic_load_ptr(atomicptr_t* src) { return atomic_load_explicit(src, memory_order_relaxed); }
 static FORCEINLINE void    atomic_store_ptr(atomicptr_t* dst, void* val) { atomic_store_explicit(dst, val, memory_order_relaxed); }
 static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref) { return atomic_compare_exchange_weak_explicit(dst, &ref, val, memory_order_release, memory_order_acquire); }
@@ -237,6 +231,8 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 
 #define pointer_offset(ptr, ofs) (void*)((char*)(ptr) + (ptrdiff_t)(ofs))
 #define pointer_diff(first, second) (ptrdiff_t)((const char*)(first) - (const char*)(second))
+
+#define INVALID_POINTER ((void*)((uintptr_t)-1))
 
 /// Data types
 //! A memory heap, per thread
@@ -341,8 +337,10 @@ struct span_t {
 	uint32_t    block_size;
 	//! Owning heap
 	heap_t*     heap;
-	//! Deferred free list (count in 32 high bits, block index in 32 low bits)
-	atomic64_t  free_list_deferred;
+	//! Deferred free list
+	atomicptr_t free_list_deferred;
+	//! Size of deferred free list
+	atomic32_t  free_list_deferred_size;
 	//! Remaining span counter, for master spans
 	atomic32_t  remaining_spans;
 	//! Flags and counters
@@ -1107,16 +1105,17 @@ _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 				active_span->block_count - active_span->free_list_limit, active_span->block_size);
 			return block;
 		}
-		//Swap in deferred free list (if list has at least one element the compound 64-bit value will not be set to raw flag)
+		//Swap in deferred free list
 		atomic_thread_fence_acquire();
-		if ((uint64_t)atomic_load64(&active_span->free_list_deferred)) {
-			uint64_t free_list_deferred;
+		if (atomic_load_ptr(&active_span->free_list_deferred)) {
+			void* free_list_deferred;
 			do {
-				// Safe to assume nothing else can reset to a null list here, only owning thread can do this
-				free_list_deferred = (uint64_t)atomic_load64(&active_span->free_list_deferred);
-			} while (!atomic_cas64(&active_span->free_list_deferred, 0, (int64_t)free_list_deferred));
+				free_list_deferred = atomic_load_ptr(&active_span->free_list_deferred);
+			} while ((free_list_deferred == INVALID_POINTER) || !atomic_cas_ptr(&active_span->free_list_deferred, INVALID_POINTER, free_list_deferred));
+			atomic_store32(&active_span->free_list_deferred_size, 0);
+			atomic_store_ptr(&active_span->free_list_deferred, 0);
 
-			heap_class->free_list = pointer_offset(active_span, SPAN_HEADER_SIZE + (active_span->block_size * (uint32_t)free_list_deferred));
+			heap_class->free_list = free_list_deferred;
 			assert(heap_class->free_list);
 			return free_list_pop(&heap_class->free_list);
 		}
@@ -1208,7 +1207,8 @@ _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 		active_span->used_count = 1;
 		active_span->state = SPAN_STATE_FULL;
 	}
-	atomic_store64(&active_span->free_list_deferred, 0);
+	atomic_store_ptr(&active_span->free_list_deferred, 0);
+	atomic_store32(&active_span->free_list_deferred_size, 0);
 	atomic_thread_fence_release();
 
 	//Return first block in span
@@ -1315,13 +1315,12 @@ _memory_deallocate_direct(span_t* span, void* p) {
 	if (span->state == SPAN_STATE_ACTIVE)
 		return;
 
-	atomic_thread_fence_acquire();
-	uint64_t free_list_deferred = (uint64_t)atomic_load64(&span->free_list_deferred);
+	//Not active span, check if the span will become completely free
 	assert(span->used_count > 0);
 	--span->used_count;
 
-	//Not active span, check if the span will become completely free
-	uint32_t list_size = (uint32_t)(free_list_deferred >> 32ULL);
+	atomic_thread_fence_acquire();
+	uint32_t list_size = (uint32_t)atomic_load32(&span->free_list_deferred_size);
 	assert(span->used_count >= list_size);
 	if (list_size == span->used_count) {
 		heap_t* heap = get_thread_heap_raw();
@@ -1385,33 +1384,32 @@ _memory_deallocate_large_direct(heap_t* heap, span_t* span) {
 //! Put the block in the deferred free list of the owning span
 static void
 _memory_deallocate_defer(span_t* span, void* p) {
-	void* blocks_start = pointer_offset(span, SPAN_HEADER_SIZE);
-	uint32_t block_offset = (uint32_t)pointer_diff(p, blocks_start);
-	uint32_t block_idx = block_offset / (uint32_t)span->block_size;
 	void* block = p;
-	
-	uint64_t free_list, new_free_list;
+
 	atomic_thread_fence_acquire();
-	do {
-		free_list = (uint64_t)atomic_load64(&span->free_list_deferred);
-		uint32_t list_size = (uint32_t)(free_list >> 32ULL) & 0xFFFF;
-		uint32_t new_list_size = list_size + 1;
-		new_free_list = ((uint64_t)new_list_size << 32ULL) | (uint64_t)block_idx;
-		if (new_list_size == span->block_count) {
+	if (span->state == SPAN_STATE_FULL) {
+		uint32_t list_size = (uint32_t)atomic_load32(&span->free_list_deferred_size);
+		if ((list_size + 1) == span->block_count) {
 			//Span will be completely freed by deferred deallocations
-			if (span->state == SPAN_STATE_FULL) {
-				//Free floating span, so no other thread can currently touch it
-				span_t* last_head;
-				heap_t* heap = span->heap;
-				do {
-					last_head = atomic_load_ptr(&heap->span_cache_deferred);
-					span->next = last_head;
-				} while (!atomic_cas_ptr(&heap->span_cache_deferred, span, last_head));
-				return;
-			}
+			//Free floating span, so no other thread can currently touch it
+			span->state = SPAN_STATE_FREE;
+			span_t* last_head;
+			heap_t* heap = span->heap;
+			do {
+				last_head = atomic_load_ptr(&heap->span_cache_deferred);
+				span->next = last_head;
+			} while (!atomic_cas_ptr(&heap->span_cache_deferred, span, last_head));
+			return;
 		}
-		*((void**)block) = list_size ? pointer_offset(blocks_start, span->block_size * (uint32_t)free_list) : 0;
-	} while (!atomic_cas64(&span->free_list_deferred, (int64_t)new_free_list, (int64_t)free_list));
+	}
+	
+	void* free_list;
+	do {
+		free_list = atomic_load_ptr(&span->free_list_deferred);
+		*((void**)block) = free_list;
+	} while ((free_list == INVALID_POINTER) || !atomic_cas_ptr(&span->free_list_deferred, INVALID_POINTER, free_list));
+	atomic_incr32(&span->free_list_deferred_size);
+	atomic_store_ptr(&span->free_list_deferred, block);
 }
 
 //! Allocate a block of the given size
@@ -2265,8 +2263,8 @@ rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats) {
 		span_t* span = heap_class->used_span;
 		while (span) {
 			atomic_thread_fence_acquire();
-			uint64_t free_list_deferred = (uint64_t)atomic_load64(&span->free_list_deferred);
-			stats->sizecache = ((size_class->block_count - span->used_count) + (uint32_t)free_list_deferred) * size_class->block_size;
+			size_t list_size = (uint32_t)atomic_load32(&span->free_list_deferred_size);
+			stats->sizecache = ((size_class->block_count - span->used_count) + list_size) * size_class->block_size;
 			span = span->next;
 		}
 	}
