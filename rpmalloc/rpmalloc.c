@@ -438,12 +438,18 @@ static size_t _memory_page_size;
 static size_t _memory_page_size_shift;
 //! Granularity at which memory pages are mapped by OS
 static size_t _memory_map_granularity;
+#if RPMALLOC_CONFIGURABLE
 //! Size of a span of memory pages
 static size_t _memory_span_size;
 //! Shift to divide by span size
 static size_t _memory_span_size_shift;
 //! Mask to get to start of a memory span
 static uintptr_t _memory_span_mask;
+#else
+#define _memory_span_size (64 * 1024)
+#define _memory_span_size_shift 16
+#define _memory_span_mask 0xFFFFFFFFFFFF0000ULL
+#endif
 //! Number of spans to map in each map call
 static size_t _memory_span_map_count;
 //! Number of spans to release from thread cache to global cache (single spans)
@@ -998,7 +1004,7 @@ _memory_heap_cache_insert(heap_t* heap, span_t* span) {
 }
 
 //! Extract the given number of spans from the different cache levels
-static FORCEINLINE span_t*
+static span_t*
 _memory_heap_thread_cache_extract(heap_t* heap, size_t span_count) {
 #if ENABLE_THREAD_CACHE
 	size_t idx = span_count - 1;
@@ -1014,14 +1020,14 @@ _memory_heap_thread_cache_extract(heap_t* heap, size_t span_count) {
 	return 0;
 }
 
-static FORCEINLINE span_t*
+static span_t*
 _memory_heap_reserved_extract(heap_t* heap, size_t span_count) {
 	if (heap->spans_reserved >= span_count)
 		return _memory_map_spans(heap, span_count);
 	return 0;
 }
 
-static FORCEINLINE span_t*
+static span_t*
 _memory_heap_global_cache_extract(heap_t* heap, size_t span_count) {
 #if ENABLE_GLOBAL_CACHE
 	//Step 3: Extract from global cache
@@ -1038,7 +1044,7 @@ _memory_heap_global_cache_extract(heap_t* heap, size_t span_count) {
 	return 0;
 }
 
-static FORCEINLINE void*
+static void*
 free_list_pop(void** list) {
 	void* block = *list;
 	*list = *((void**)block);
@@ -1409,7 +1415,7 @@ _memory_deallocate_defer(span_t* span, void* p) {
 }
 
 //! Allocate a block of the given size
-static FORCEINLINE void*
+static void*
 _memory_allocate(size_t size) {
 #if ENABLE_PRELOAD
 	heap_t* heap = get_thread_heap();
@@ -1454,7 +1460,7 @@ _memory_allocate(size_t size) {
 }
 
 //! Deallocate the given block
-static FORCEINLINE void
+static void
 _memory_deallocate(void* p) {
 	//Grab the span (always at start of span, using span alignment)
 	span_t* span = (void*)((uintptr_t)p & _memory_span_mask);
@@ -1644,8 +1650,12 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		_memory_config.memory_unmap = _memory_unmap_os;
 	}
 
-	_memory_huge_pages = 0;
+#if RPMALLOC_CONFIGURABLE
 	_memory_page_size = _memory_config.page_size;
+#else
+	_memory_page_size = 0;
+#endif
+	_memory_huge_pages = 0;
 	_memory_map_granularity = _memory_page_size;
 	if (!_memory_page_size) {
 #if PLATFORM_WINDOWS
@@ -1734,12 +1744,12 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	}
 	_memory_page_size = ((size_t)1 << _memory_page_size_shift);
 
+#if RPMALLOC_CONFIGURABLE
 	size_t span_size = _memory_config.span_size;
 	if (!span_size)
 		span_size = (64 * 1024);
 	if (span_size > (256 * 1024))
 		span_size = (256 * 1024);
-	_memory_span_size = 4096;
 	_memory_span_size = 4096;
 	_memory_span_size_shift = 12;
 	while (_memory_span_size < span_size) {
@@ -1747,6 +1757,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		++_memory_span_size_shift;
 	}
 	_memory_span_mask = ~(uintptr_t)(_memory_span_size - 1);
+#endif
 
 	_memory_span_map_count = ( _memory_config.span_map_count ? _memory_config.span_map_count : DEFAULT_SPAN_MAP_COUNT);
 	if ((_memory_span_size * _memory_span_map_count) < _memory_page_size)

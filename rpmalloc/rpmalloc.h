@@ -31,6 +31,11 @@ extern "C" {
 # define RPMALLOC_CDECL
 #endif
 
+//! Define RPMALLOC_CONFIGURABLE to enable configuring sizes
+#ifndef RPMALLOC_CONFIGURABLE
+#define RPMALLOC_CONFIGURABLE 0
+#endif
+
 //! Flag to rpaligned_realloc to not preserve content in reallocation
 #define RPMALLOC_NO_PRESERVE    1
 
@@ -124,9 +129,11 @@ typedef struct rpmalloc_config_t {
 	void (*memory_unmap)(void* address, size_t size, size_t offset, size_t release);
 	//! Size of memory pages. The page size MUST be a power of two. All memory mapping
 	//  requests to memory_map will be made with size set to a multiple of the page size.
+	//  Used if RPMALLOC_CONFIGURABLE is defined to 1, otherwise system page size is used.
 	size_t page_size;
 	//! Size of a span of memory blocks. MUST be a power of two, and in [4096,262144]
-	//  range (unless 0 - set to 0 to use the default span size).
+	//  range (unless 0 - set to 0 to use the default span size). Used if RPMALLOC_CONFIGURABLE
+	//  is defined to 1.
 	size_t span_size;
 	//! Number of spans to map at each request to map new virtual memory blocks. This can
 	//  be used to minimize the system call overhead at the cost of virtual memory address
