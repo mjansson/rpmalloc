@@ -769,6 +769,7 @@ test_run(int argc, char** argv) {
 		return -1;
 	if (test_threaded())
 		return -1;
+	printf("All tests passed\n");
 	return 0;
 }
 
