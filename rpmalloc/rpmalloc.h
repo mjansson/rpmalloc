@@ -23,10 +23,10 @@ extern "C" {
 # define RPMALLOC_ATTRIB_MALLOC __attribute__((__malloc__))
 # if defined(__clang_major__) && (__clang_major__ < 4)
 # define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
-# define RPMALLOC_ATTRIB_ALLOC_SIZE2(count,size)
+# define RPMALLOC_ATTRIB_ALLOC_SIZE2(count, size)
 # else
 # define RPMALLOC_ATTRIB_ALLOC_SIZE(size) __attribute__((alloc_size(size)))
-# define RPMALLOC_ATTRIB_ALLOC_SIZE2(count,size)  __attribute__((alloc_size(count, size)))
+# define RPMALLOC_ATTRIB_ALLOC_SIZE2(count, size)  __attribute__((alloc_size(count, size)))
 # endif
 # define RPMALLOC_CDECL
 #elif defined(_MSC_VER)
@@ -39,7 +39,9 @@ extern "C" {
 #else
 # define RPMALLOC_EXPORT
 # define RPMALLOC_ALLOCATOR
-# define RPMALLOC_ATTRIBUTE
+# define RPMALLOC_ATTRIB_MALLOC
+# define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
+# define RPMALLOC_ATTRIB_ALLOC_SIZE2(count,size)
 # define RPMALLOC_CDECL
 #endif
 
