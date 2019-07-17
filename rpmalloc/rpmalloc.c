@@ -36,6 +36,10 @@
 //! Enable asserts
 #define ENABLE_ASSERTS            0
 #endif
+#ifndef ENABLE_OVERRIDE
+//! Override standard library malloc/free and new/delete entry points
+#define ENABLE_OVERRIDE           0
+#endif
 #ifndef ENABLE_PRELOAD
 //! Support preloading
 #define ENABLE_PRELOAD            0
@@ -512,7 +516,7 @@ static pthread_key_t _memory_thread_heap;
 static _Thread_local heap_t* _memory_thread_heap TLS_MODEL CACHELINE_ALIGNED;
 #endif
 
-extern inline heap_t*
+static inline heap_t*
 get_thread_heap_raw(void) {
 #if (defined(__APPLE__) || defined(__HAIKU__)) && ENABLE_PRELOAD
 	return pthread_getspecific(_memory_thread_heap);
@@ -522,7 +526,7 @@ get_thread_heap_raw(void) {
 }
 
 //! Get the current thread heap
-extern inline heap_t*
+static inline heap_t*
 get_thread_heap(void) {
 	heap_t* heap = get_thread_heap_raw();
 #if ENABLE_PRELOAD
@@ -1072,10 +1076,10 @@ _memory_heap_global_cache_extract(heap_t* heap, size_t span_count) {
 }
 
 static span_t*
-_memory_heap_new_span(heap_t* heap, size_t span_count, uint32_t class_idx) {
+_memory_heap_extract_new_span(heap_t* heap, size_t span_count, uint32_t class_idx) {
 	(void)sizeof(class_idx);
 #if ENABLE_ADAPTIVE_THREAD_CACHE || ENABLE_STATISTICS
-	uint32_t use_idx = span_count - 1;
+	uint32_t use_idx = (uint32_t)span_count - 1;
 	++heap->span_use[use_idx].current;
 	if (heap->span_use[use_idx].current > heap->span_use[use_idx].high)
 		heap->span_use[use_idx].high = heap->span_use[use_idx].current;
@@ -1091,7 +1095,7 @@ _memory_heap_new_span(heap_t* heap, size_t span_count, uint32_t class_idx) {
 		return span;
 	}
 	span = _memory_heap_global_cache_extract(heap, span_count);
-	if (span != 0) {
+	if (EXPECTED(span != 0)) {
 		_memory_statistics_inc(heap->size_class_use[class_idx].spans_from_cache, 1);
 		return span;
 	}
@@ -1237,7 +1241,7 @@ _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 	void* block;
 
 	span_t* active_span = heap_class->active_span;
-	if (active_span) {
+	if (EXPECTED(active_span != 0 )) {
 		assert(active_span->state == SPAN_STATE_ACTIVE);
 		assert(active_span->block_count == _memory_size_class[active_span->size_class].block_count);
 		//Swap in free list if not empty
@@ -1273,7 +1277,7 @@ _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 
 	//Try promoting a semi-used span to active
 	active_span = heap_class->used_span;
-	if (active_span) {
+	if (EXPECTED(active_span != 0)) {
 		_memory_span_set_partial_active(heap_class, active_span);
 		return free_list_pop(&heap_class->free_list);
 	}
@@ -1282,14 +1286,14 @@ _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 	assert(!heap_class->used_span);
 
 	//Find a span in one of the cache levels
-	active_span = _memory_heap_new_span(heap, 1, class_idx);
+	active_span = _memory_heap_extract_new_span(heap, 1, class_idx);
 
 	//Mark span as owned by this heap and set base data, return first block
 	return _memory_span_set_new_active(heap, active_span, class_idx);
 }
 
 //! Allocate a small sized memory block from the given heap
-extern inline void*
+static inline void*
 _memory_allocate_small(heap_t* heap, size_t size) {
 	//Small sizes have unique size classes
 	const uint32_t class_idx = (uint32_t)((size + (SMALL_GRANULARITY - 1)) >> SMALL_GRANULARITY_SHIFT);
@@ -1300,19 +1304,19 @@ _memory_allocate_small(heap_t* heap, size_t size) {
 }
 
 //! Allocate a medium sized memory block from the given heap
-extern inline void*
+static inline void*
 _memory_allocate_medium(heap_t* heap, size_t size) {
 	//Calculate the size class index and do a dependent lookup of the final class index (in case of merged classes)
 	const uint32_t base_idx = (uint32_t)(SMALL_CLASS_COUNT + ((size - (SMALL_SIZE_LIMIT + 1)) >> MEDIUM_GRANULARITY_SHIFT));
 	const uint32_t class_idx = _memory_size_class[base_idx].class_idx;
 	_memory_statistics_inc_alloc(heap, class_idx);
-	if (heap->span_class[class_idx].free_list)
+	if (EXPECTED(heap->span_class[class_idx].free_list != 0))
 		return free_list_pop(&heap->span_class[class_idx].free_list);
 	return _memory_allocate_from_heap_fallback(heap, class_idx);
 }
 
 //! Allocate a large sized memory block from the given heap
-extern inline void*
+static inline void*
 _memory_allocate_large(heap_t* heap, size_t size) {
 	//Calculate number of needed max sized spans (including header)
 	//Since this function is never called if size > LARGE_SIZE_LIMIT
@@ -1329,11 +1333,11 @@ _memory_allocate_large(heap_t* heap, size_t size) {
 #endif
 
 	//Find a span in one of the cache levels
-	span_t* span = _memory_heap_new_span(heap, span_count, SIZE_CLASS_COUNT);
+	span_t* span = _memory_heap_extract_new_span(heap, span_count, SIZE_CLASS_COUNT);
 
 	//Mark span as owned by this heap and set base data
 	assert(span->span_count == span_count);
-	span->size_class = (uint16_t)(SIZE_CLASS_COUNT + idx);
+	span->size_class = (uint32_t)(SIZE_CLASS_COUNT + idx);
 	span->heap = heap;
 	atomic_thread_fence_release();
 
@@ -1341,7 +1345,7 @@ _memory_allocate_large(heap_t* heap, size_t size) {
 }
 
 //! Allocate a huge block by mapping memory pages directly
-extern inline void*
+static inline void*
 _memory_allocate_huge(size_t size) {
 	size += SPAN_HEADER_SIZE;
 	size_t num_pages = size >> _memory_page_size_shift;
@@ -1517,7 +1521,7 @@ _memory_deallocate_huge(span_t* span) {
 }
 
 //! Allocate a block of the given size
-extern inline void*
+static inline void*
 _memory_allocate(heap_t* heap, size_t size) {
 	if (EXPECTED(size <= SMALL_SIZE_LIMIT))
 		return _memory_allocate_small(heap, size);
@@ -1530,7 +1534,7 @@ _memory_allocate(heap_t* heap, size_t size) {
 }
 
 //! Deallocate the given block
-extern inline void
+static inline void
 _memory_deallocate(void* p) {
 	//Grab the span (always at start of span, using span alignment)
 	span_t* span = (void*)((uintptr_t)p & _memory_span_mask);
@@ -1943,7 +1947,7 @@ rpmalloc_finalize(void) {
 }
 
 //! Initialize thread, assign heap
-void
+extern inline void
 rpmalloc_thread_initialize(void) {
 	if (!get_thread_heap_raw()) {
 		heap_t* heap = _memory_allocate_heap();
@@ -2469,7 +2473,7 @@ rpmalloc_dump_statistics(void* file) {
 #endif
 }
 
-#if ENABLE_PRELOAD
+#if ENABLE_PRELOAD || ENABLE_OVERRIDE
 
 #include "malloc.c"
 

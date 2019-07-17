@@ -26,6 +26,8 @@ _Static_assert(sizeof(void*) == 4, "Data type size mismatch");
 #  endif
 #endif
 
+#if ENABLE_OVERRIDE
+
 #ifdef _MSC_VER
 #pragma warning (disable : 4100)
 #undef malloc
@@ -156,12 +158,15 @@ pvalloc(size_t size) {
 	return valloc(size);
 }
 
+#endif
+
+#if ENABLE_PRELOAD
 
 #ifdef _WIN32
 
 #include <Windows.h>
 
-#if !defined(BUILD_DYNAMIC) || !BUILD_DYNAMIC
+#if !defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK
 
 #include <fibersapi.h>
 
@@ -176,14 +181,14 @@ thread_destructor(void* value) {
 static void
 initializer(void) {
 	rpmalloc_initialize();
-#if !defined(BUILD_DYNAMIC) || !BUILD_DYNAMIC
+#if !defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK
     fls_key = FlsAlloc(&thread_destructor);
 #endif
 }
 
 #endif
 
-#if defined(BUILD_DYNAMIC) && BUILD_DYNAMIC
+#if defined(BUILD_DYNAMIC_LINK) && BUILD_DYNAMIC_LINK
 
 __declspec(dllexport) BOOL WINAPI
 DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
@@ -299,6 +304,10 @@ pthread_create(pthread_t* thread,
 #endif
 
 #endif
+
+#endif
+
+#if ENABLE_OVERRIDE
 
 #if defined(__GLIBC__) && defined(__linux__)
 
@@ -495,5 +504,7 @@ _aligned_msize_dbg(void* block, size_t alignment, size_t offset) {
 #endif  // NDEBUG
 
 extern void* _crtheap = (void*)1;
+
+#endif
 
 #endif
