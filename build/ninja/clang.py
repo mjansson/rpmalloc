@@ -15,10 +15,10 @@ class ClangToolchain(toolchain.Toolchain):
     self.sdkpath = ''
     self.includepaths = []
     self.libpaths = libpaths
-    self.ccompiler = 'clang'
+    self.ccompiler = '/usr/bin/cc'
     self.cxxcompiler = 'clang++'
     self.archiver = 'ar'
-    self.linker = 'clang'
+    self.linker = '/usr/bin/cc'
     self.cxxlinker = 'clang++'
     if self.target.is_windows():
       self.archiver = 'llvm-ar'
@@ -39,16 +39,13 @@ class ClangToolchain(toolchain.Toolchain):
     self.linkcmd = '$toolchain$link $libpaths $configlibpaths $linkflags $linkarchflags $linkconfigflags -o $out $in $libs $archlibs $oslibs $frameworks'
 
     #Base flags
-    self.cflags = ['-D' + project.upper() + '_COMPILE=1',
-                   '-funit-at-a-time', '-fstrict-aliasing',
-                   '-fno-math-errno','-ffinite-math-only', '-funsafe-math-optimizations',
-                   '-fno-trapping-math', '-ffast-math']
-    self.cwarnflags = ['-W', '-Werror', '-pedantic', '-Wall', '-Weverything',
-                       '-Wno-padded', '-Wno-documentation-unknown-command']
+    self.cflags = ['-D' + project.upper() + '_COMPILE=1', '-ftls-model=initial-exec', '-fvisibility=hidden', '-fno-stack-protector', '-fomit-frame-pointer']
+    self.cwarnflags = ['-W', '-Werror', '-Wall',
+                       '-Wno-padded', '-Wno-documentation-unknown-command', '-Wno-static-in-inline']
     self.cmoreflags = []
     self.mflags = []
     self.arflags = []
-    self.linkflags = []
+    self.linkflags = ['-fomit-frame-pointer']
     self.oslibs = []
     self.frameworks = []
 
@@ -65,9 +62,9 @@ class ClangToolchain(toolchain.Toolchain):
     if self.target.is_linux() or self.target.is_bsd() or self.target.is_raspberrypi():
       self.cflags += ['-D_GNU_SOURCE=1']
       self.linkflags += ['-pthread']
-      self.oslibs += ['m']
-    if self.target.is_linux() or self.target.is_raspberrypi():
-      self.oslibs += ['dl']
+      #self.oslibs += ['m']
+    #if self.target.is_linux() or self.target.is_raspberrypi():
+    #  self.oslibs += ['dl']
     if self.target.is_bsd():
       self.oslibs += ['execinfo']
 
@@ -85,7 +82,7 @@ class ClangToolchain(toolchain.Toolchain):
       self.cflags += ['-w']
     self.cxxflags = list(self.cflags)
 
-    self.cflags += ['-std=c11']
+    self.cflags += ['-std=gnu11']
     if self.target.is_macos() or self.target.is_ios():
       self.cxxflags += ['-std=c++14', '-stdlib=libc++']
     else:
@@ -300,11 +297,11 @@ class ClangToolchain(toolchain.Toolchain):
         flags += [' -arch armv7']
       elif arch == 'arm64':
         flags += [' -arch arm64']
-    else:
-      if arch == 'x86':
-        flags += ['-m32']
-      elif arch == 'x86-64':
-        flags += ['-m64']
+    #else:
+    #  if arch == 'x86':
+    #    flags += ['-m32']
+    #  elif arch == 'x86-64':
+    #    flags += ['-m64']
     return flags
 
   def make_carchflags(self, arch, targettype):
@@ -321,11 +318,11 @@ class ClangToolchain(toolchain.Toolchain):
     if config == 'debug':
       flags += ['-DBUILD_DEBUG=1', '-g']
     elif config == 'release':
-      flags += ['-DBUILD_RELEASE=1', '-O3', '-g', '-funroll-loops']
+      flags += ['-DBUILD_RELEASE=1', '-DNDEBUG', '-O3', '-g', '-funroll-loops']
     elif config == 'profile':
-      flags += ['-DBUILD_PROFILE=1', '-O3', '-g', '-funroll-loops']
+      flags += ['-DBUILD_PROFILE=1', '-DNDEBUG', '-O3', '-g', '-funroll-loops']
     elif config == 'deploy':
-      flags += ['-DBUILD_DEPLOY=1', '-O3', '-g', '-funroll-loops']
+      flags += ['-DBUILD_DEPLOY=1', '-DNDEBUG', '-O3', '-g', '-funroll-loops']
     return flags
 
   def make_ararchflags(self, arch, targettype):
@@ -363,7 +360,9 @@ class ClangToolchain(toolchain.Toolchain):
         flags += ['-dynamiclib']
     else:
       if targettype == 'sharedlib':
-        flags += ['-shared']
+        flags += ['-shared', '-fPIC']
+    if config == 'release':
+      flags += ['-DNDEBUG', '-O3']
     return flags
 
   def make_linkarchlibs(self, arch, targettype):
