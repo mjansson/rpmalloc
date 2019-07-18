@@ -13,9 +13,6 @@
 #include <string.h>
 #include <math.h>
 
-#define pointer_offset(ptr, ofs) (void*)((char*)(ptr) + (ptrdiff_t)(ofs))
-#define pointer_diff(first, second) (ptrdiff_t)((const char*)(first) - (const char*)(second))
-
 static size_t _hardware_threads;
 
 static void
@@ -41,14 +38,14 @@ test_alloc(void) {
 		return test_fail("new failed");
 	if (rpmalloc_usable_size(p) != 16)
 		return test_fail("usable size invalid");
-	delete p;
+	delete static_cast<int*>(p);
 
 	p = new int[16];
 	if (!p)
 		return test_fail("new[] failed");
 	if (rpmalloc_usable_size(p) != 16*sizeof(int))
 		return test_fail("usable size invalid");
-	delete[] p;
+	delete[] static_cast<int*>(p);
 
 	printf("Allocation tests passed\n");
 	return 0;
@@ -58,11 +55,7 @@ static int
 test_free(void) {
 	free(rpmalloc(371));
 	free(new int);
-#ifdef _WIN32
 	free(new int[16]);
-#else
-	cfree(new int[16]);
-#endif
 	printf("Free tests passed\n");
 	return 0;	
 }
@@ -72,12 +65,12 @@ basic_thread(void* argp) {
 	(void)sizeof(argp);
 	int res = test_alloc();
 	if (res) {
-		thread_exit(res);
+		thread_exit(static_cast<uintptr_t>(res));
 		return;
 	}
 	res = test_free();
 	if (res) {
-		thread_exit(res);
+		thread_exit(static_cast<uintptr_t>(res));
 		return;
 	}
 	thread_exit(0);
@@ -89,8 +82,8 @@ test_thread(void) {
 	uintptr_t threadres[2];
 
 	thread_arg targ;
+	memset(&targ, 0, sizeof(targ));
 	targ.fn = basic_thread;
-	targ.arg = 0;
 	for (int i = 0; i < 2; ++i)
 		thread[i] = thread_run(&targ);
 
@@ -144,7 +137,7 @@ static void
 test_initialize(void) {
 	SYSTEM_INFO system_info;
 	GetSystemInfo(&system_info);
-	_hardware_threads = (size_t)system_info.dwNumberOfProcessors;
+	_hardware_threads = static_cast<size_t>(system_info.dwNumberOfProcessors);
 }
 
 #elif (defined(__linux__) || defined(__linux))
@@ -159,7 +152,7 @@ test_initialize(void) {
 	sched_getaffinity(0, sizeof(testmask), &testmask);     //Get mask for all CPUs
 	sched_setaffinity(0, sizeof(prevmask), &prevmask);     //Reset current mask
 	int num = CPU_COUNT(&testmask);
-	_hardware_threads = (size_t)(num > 1 ? num : 1);
+	_hardware_threads = static_cast<size_t>(num > 1 ? num : 1);
 }
 
 #else

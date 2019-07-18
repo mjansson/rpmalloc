@@ -52,11 +52,8 @@ class GCCToolchain(toolchain.Toolchain):
     if self.target.is_linux() or self.target.is_bsd() or self.target.is_raspberrypi():
       self.cflags += ['-D_GNU_SOURCE=1']
       self.linkflags += ['-pthread']
-      self.oslibs += ['m']
     if self.target.is_linux() or self.target.is_raspberrypi():
       self.oslibs += ['dl']
-    if self.target.is_bsd():
-      self.oslibs += ['execinfo']
 
     self.includepaths = self.prefix_includepaths((includepaths or []) + ['.'])
 

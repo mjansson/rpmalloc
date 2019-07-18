@@ -1235,7 +1235,7 @@ free_list_pop(void** list) {
 }
 
 //! Allocate a small/medium sized memory block from the given heap
-extern void*
+static void*
 _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 	heap_class_t* heap_class = heap->span_class + class_idx;
 	void* block;
