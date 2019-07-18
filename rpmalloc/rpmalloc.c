@@ -1669,6 +1669,16 @@ _memory_adjust_size_class(size_t iclass) {
 	}
 }
 
+#if defined(_MSC_VER) && !defined(__clang__) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
+#include <fibersapi.h>
+static DWORD fls_key;
+static void NTAPI
+rp_thread_destructor(void* value) {
+	if (value)
+		rpmalloc_thread_finalize();
+}
+#endif
+
 #if PLATFORM_POSIX
 #  include <sys/mman.h>
 #  include <sched.h>
@@ -1836,6 +1846,9 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	if (pthread_key_create(&_memory_thread_heap, 0))
 		return -1;
 #endif
+#if defined(_MSC_VER) && !defined(__clang__) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
+    fls_key = FlsAlloc(&rp_thread_destructor);
+#endif
 
 	atomic_store32(&_memory_heap_id, 0);
 	atomic_store32(&_memory_orphan_counter, 0);
@@ -1943,6 +1956,9 @@ rpmalloc_finalize(void) {
 #if (defined(__APPLE__) || defined(__HAIKU__)) && ENABLE_PRELOAD
 	pthread_key_delete(_memory_thread_heap);
 #endif
+#if defined(_MSC_VER) && !defined(__clang__) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
+    FlsFree(fls_key);
+#endif
 	_rpmalloc_initialized = 0;
 }
 
@@ -1959,6 +1975,9 @@ rpmalloc_thread_initialize(void) {
 			heap->global_to_thread = 0;
 #endif
 			set_thread_heap(heap);
+#if defined(_MSC_VER) && !defined(__clang__) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
+			FlsSetValue(fls_key, heap);
+#endif
 		}
 	}
 }

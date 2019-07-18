@@ -168,45 +168,20 @@ pvalloc(size_t size) {
 
 #ifdef _WIN32
 
-#include <Windows.h>
-
-#if !defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK
-
-#include <fibersapi.h>
-
-static DWORD fls_key;
-
-static void NTAPI
-thread_destructor(void* value) {
-	if (value)
-		rpmalloc_thread_finalize();
-}
-
-static void
-initializer(void) {
-	rpmalloc_initialize();
-#if !defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK
-    fls_key = FlsAlloc(&thread_destructor);
-#endif
-}
-
-#endif
-
 #if defined(BUILD_DYNAMIC_LINK) && BUILD_DYNAMIC_LINK
 
 __declspec(dllexport) BOOL WINAPI
 DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
 	(void)sizeof(reserved);
 	(void)sizeof(instance);
-	if (reason == DLL_PROCESS_ATTACH) {
+	if (reason == DLL_PROCESS_ATTACH)
 		rpmalloc_initialize();
-	} else if (reason == DLL_PROCESS_DETACH) {
+	else if (reason == DLL_PROCESS_DETACH)
 		rpmalloc_finalize();
-	} else if (reason == DLL_THREAD_ATTACH) {
+	else if (reason == DLL_THREAD_ATTACH)
 		rpmalloc_thread_initialize();
-	} else if (reason == DLL_THREAD_DETACH) {
+	else if (reason == DLL_THREAD_DETACH)
 		rpmalloc_thread_finalize();
-	}
 	return TRUE;
 }
 

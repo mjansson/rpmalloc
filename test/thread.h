@@ -1,6 +1,9 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 struct thread_arg {
 	void (*fn)(void*);
@@ -25,3 +28,7 @@ thread_yield(void);
 
 extern void
 thread_fence(void);
+
+#ifdef __cplusplus
+}
+#endif

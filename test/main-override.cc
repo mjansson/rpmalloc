@@ -67,6 +67,43 @@ test_free(void) {
 	return 0;	
 }
 
+static void
+basic_thread(void* argp) {
+	(void)sizeof(argp);
+	int res = test_alloc();
+	if (res) {
+		thread_exit(res);
+		return;
+	}
+	res = test_free();
+	if (res) {
+		thread_exit(res);
+		return;
+	}
+	thread_exit(0);
+}
+
+static int
+test_thread(void) {
+	uintptr_t thread[2];
+	uintptr_t threadres[2];
+
+	thread_arg targ;
+	targ.fn = basic_thread;
+	targ.arg = 0;
+	for (int i = 0; i < 2; ++i)
+		thread[i] = thread_run(&targ);
+
+	for (int i = 0; i < 2; ++i) {
+		threadres[i] = thread_join(thread[i]);
+		if (threadres[i])
+			return -1;
+	}
+
+	printf("Thread tests passed\n");
+	return 0;
+}
+
 int
 test_run(int argc, char** argv) {
 	(void)sizeof(argc);
@@ -75,6 +112,8 @@ test_run(int argc, char** argv) {
 	if (test_alloc())
 		return -1;
 	if (test_free())
+		return -1;
+	if (test_thread())
 		return -1;
 	printf("All tests passed\n");
 	return 0;
