@@ -330,10 +330,10 @@ typedef enum span_state_t {
 struct span_t {
 	//! Free list
 	void*       free_list;
-	//! Used count when not active (not including deferred free list)
-	uint32_t    used_count;
 	//! State
 	uint32_t    state;
+	//! Used count when not active (not including deferred free list)
+	uint32_t    used_count;
 	//! Block count class
 	uint32_t    block_count;
 	//! Size class
@@ -370,10 +370,9 @@ _Static_assert(sizeof(span_t) <= SPAN_HEADER_SIZE, "span size mismatch");
 struct heap_class_t {
 	//! Free list of active span
 	void*        free_list;
-	//! Active span
-	span_t*      active_span;
-	//! List of semi-used spans with free blocks for each size class (double linked list)
-	span_t*      used_span;
+	//! List of partially used spans with free blocks for each size class (double linked list).
+	//  Current active span is at head of list. Previous span pointer in head points to tail span of list.
+	span_t*      partial_span;
 };
 
 struct heap_t {
@@ -858,29 +857,64 @@ _memory_span_list_split(span_t* span, size_t limit) {
 
 #endif
 
-//! Add a span to a double linked list
+//! Add a span to a double linked list at the head
 static void
 _memory_span_list_doublelink_add(span_t** head, span_t* span) {
 	if (*head) {
-		(*head)->prev = span;
 		span->next = *head;
+		//Maintain pointer to tail span
+		span->prev = (*head)->prev;
+		(*head)->prev = span;
 	} else {
 		span->next = 0;
+		span->prev = span;
 	}
 	*head = span;
+}
+
+//! Add a span to a double linked list at the tail
+static void
+_memory_span_list_doublelink_add_tail(span_t** head, span_t* span) {
+	span->next = 0;
+	if (*head) {
+		span_t* tail = (*head)->prev;
+		tail->next = span;
+		span->prev = tail;
+		//Maintain pointer to tail span
+		(*head)->prev = span;
+	} else {
+		span->prev = span;
+		*head = span;
+	}
+}
+
+//! Pop head span from double linked list
+static void
+_memory_span_list_doublelink_pop_head(span_t** head) {
+	span_t* span = *head;
+	*head = span->next;
+	if (*head) {
+		//Maintain pointer to tail span
+		(*head)->prev = span->prev;
+	}
 }
 
 //! Remove a span from a double linked list
 static void
 _memory_span_list_doublelink_remove(span_t** head, span_t* span) {
 	if (UNEXPECTED(*head == span)) {
-		*head = span->next;
+		_memory_span_list_doublelink_pop_head(head);
 	} else {
 		span_t* next_span = span->next;
 		span_t* prev_span = span->prev;
-		if (EXPECTED(next_span != 0))
-			next_span->prev = prev_span;
 		prev_span->next = next_span;
+		if (EXPECTED(next_span != 0)) {
+			next_span->prev = prev_span;
+		}
+		else {
+			//Update pointer to tail span
+			(*head)->prev = prev_span;
+		}
 	}
 }
 
@@ -1109,9 +1143,9 @@ _memory_heap_extract_new_span(heap_t* heap, size_t span_count, uint32_t class_id
 static void
 _memory_span_release_to_cache(heap_t* heap, span_t* span) {
 	heap_class_t* heap_class = heap->span_class + span->size_class;
-	assert(heap_class->active_span != span);
+	assert(heap_class->partial_span != span);
 	if (span->state == SPAN_STATE_PARTIAL)
-		_memory_span_list_doublelink_remove(&heap_class->used_span, span);
+		_memory_span_list_doublelink_remove(&heap_class->partial_span, span);
 #if ENABLE_ADAPTIVE_THREAD_CACHE || ENABLE_STATISTICS
 	if (heap->span_use[0].current)
 		--heap->span_use[0].current;
@@ -1119,16 +1153,6 @@ _memory_span_release_to_cache(heap_t* heap, span_t* span) {
 	_memory_statistics_inc(heap->size_class_use[span->size_class].spans_to_cache, 1);
 #endif
 	_memory_heap_cache_insert(heap, span);
-}
-
-//! Move span from full to partial state
-static void
-_memory_span_set_partial(heap_t* heap, span_t* span) {
-	assert(span->state == SPAN_STATE_FULL);
-	span->state = SPAN_STATE_PARTIAL;
-	heap_class_t* heap_class = heap->span_class + span->size_class;
-	assert(heap_class->active_span != span);
-	_memory_span_list_doublelink_add(&heap_class->used_span, span);
 }
 
 //! Initialize a (partial) free list up to next system memory page, while reserving the first block
@@ -1179,13 +1203,13 @@ _memory_span_set_new_active(heap_t* heap, span_t* span, uint32_t class_idx) {
 	//Setup free list. Only initialize one system page worth of free blocks in list
 	void* block;
 	heap_class_t* heap_class = heap->span_class + class_idx;
-	heap_class->active_span = span;
 	span->free_list_limit = free_list_partial_init(&heap_class->free_list, &block, 
 		span, pointer_offset(span, SPAN_HEADER_SIZE), size_class->block_count, size_class->block_size);
 	atomic_store_ptr(&span->free_list_deferred, 0);
 	span->free_list_deferred_size = 0;
 	atomic_thread_fence_release();
 
+	_memory_span_list_doublelink_add(&heap_class->partial_span, span);
 	return block;
 }
 
@@ -1194,24 +1218,30 @@ static void
 _memory_span_set_partial_active(heap_class_t* heap_class, span_t* span) {
 	assert(span->state == SPAN_STATE_PARTIAL);
 	assert(span->block_count == _memory_size_class[span->size_class].block_count);
-	//Move data to heap size class, set span as active and remove the span from used list
+	//Move data to heap size class and set span as active
 	heap_class->free_list = span->free_list;
-	heap_class->active_span = span;
-	heap_class->used_span = span->next;
-	assert(heap_class->free_list);	
-	//A span which has been put in the used list has always been fully initialized
 	span->state = SPAN_STATE_ACTIVE;
-	span->free_list_limit = span->block_count;
 	span->free_list = 0;
+	assert(heap_class->free_list);	
 }
 
 //! Mark span as full (from active)
 static void
-_memory_span_set_full(span_t* span) {
+_memory_span_set_active_full(span_t* span) {
 	assert(span->state == SPAN_STATE_ACTIVE);
 	span->used_count = span->block_count;
 	span->state = SPAN_STATE_FULL;
 	span->free_list = 0;
+}
+
+//! Move span from full to partial state
+static void
+_memory_span_set_full_partial(heap_t* heap, span_t* span) {
+	assert(span->state == SPAN_STATE_FULL);
+	span->state = SPAN_STATE_PARTIAL;
+	heap_class_t* heap_class = heap->span_class + span->size_class;
+	assert(heap_class->partial_span != span);
+	_memory_span_list_doublelink_add_tail(&heap_class->partial_span, span);
 }
 
 static void*
@@ -1227,7 +1257,7 @@ _memory_span_extract_deferred(span_t* span) {
 }
 
 //! Pop first block from a free list
-static inline void*
+static void*
 free_list_pop(void** list) {
 	void* block = *list;
 	*list = *((void**)block);
@@ -1237,11 +1267,11 @@ free_list_pop(void** list) {
 //! Allocate a small/medium sized memory block from the given heap
 static void*
 _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
-	heap_class_t* heap_class = heap->span_class + class_idx;
+	heap_class_t* heap_class = &heap->span_class[class_idx];
 	void* block;
 
-	span_t* active_span = heap_class->active_span;
-	if (EXPECTED(active_span != 0 )) {
+	span_t* active_span = heap_class->partial_span;
+	if (EXPECTED(active_span != 0)) {
 		assert(active_span->state == SPAN_STATE_ACTIVE);
 		assert(active_span->block_count == _memory_size_class[active_span->size_class].block_count);
 		//Swap in free list if not empty
@@ -1267,23 +1297,20 @@ _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 
 		//If the active span is fully allocated, mark span as free floating (fully allocated and not part of any list)
 		assert(!heap_class->free_list);
-		assert(active_span->free_list_limit == active_span->block_count);
-		_memory_span_set_full(active_span);
-		active_span = 0;
-		heap_class->active_span = 0;
+		assert(active_span->free_list_limit >= active_span->block_count);
+		_memory_span_set_active_full(active_span);
+		_memory_span_list_doublelink_pop_head(&heap_class->partial_span);
 	}
 	assert(!heap_class->free_list);
-	assert(!heap_class->active_span);
 
 	//Try promoting a semi-used span to active
-	active_span = heap_class->used_span;
+	active_span = heap_class->partial_span;
 	if (EXPECTED(active_span != 0)) {
 		_memory_span_set_partial_active(heap_class, active_span);
 		return free_list_pop(&heap_class->free_list);
 	}
 	assert(!heap_class->free_list);
-	assert(!heap_class->active_span);
-	assert(!heap_class->used_span);
+	assert(!heap_class->partial_span);
 
 	//Find a span in one of the cache levels
 	active_span = _memory_heap_extract_new_span(heap, 1, class_idx);
@@ -1293,7 +1320,7 @@ _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 }
 
 //! Allocate a small sized memory block from the given heap
-static inline void*
+static void*
 _memory_allocate_small(heap_t* heap, size_t size) {
 	//Small sizes have unique size classes
 	const uint32_t class_idx = (uint32_t)((size + (SMALL_GRANULARITY - 1)) >> SMALL_GRANULARITY_SHIFT);
@@ -1304,7 +1331,7 @@ _memory_allocate_small(heap_t* heap, size_t size) {
 }
 
 //! Allocate a medium sized memory block from the given heap
-static inline void*
+static void*
 _memory_allocate_medium(heap_t* heap, size_t size) {
 	//Calculate the size class index and do a dependent lookup of the final class index (in case of merged classes)
 	const uint32_t base_idx = (uint32_t)(SMALL_CLASS_COUNT + ((size - (SMALL_SIZE_LIMIT + 1)) >> MEDIUM_GRANULARITY_SHIFT));
@@ -1316,7 +1343,7 @@ _memory_allocate_medium(heap_t* heap, size_t size) {
 }
 
 //! Allocate a large sized memory block from the given heap
-static inline void*
+static void*
 _memory_allocate_large(heap_t* heap, size_t size) {
 	//Calculate number of needed max sized spans (including header)
 	//Since this function is never called if size > LARGE_SIZE_LIMIT
@@ -1345,7 +1372,7 @@ _memory_allocate_large(heap_t* heap, size_t size) {
 }
 
 //! Allocate a huge block by mapping memory pages directly
-static inline void*
+static void*
 _memory_allocate_huge(size_t size) {
 	size += SPAN_HEADER_SIZE;
 	size_t num_pages = size >> _memory_page_size_shift;
@@ -1362,6 +1389,24 @@ _memory_allocate_huge(size_t size) {
 	_memory_statistics_add_peak(&_huge_pages_current, num_pages, _huge_pages_peak);
 
 	return pointer_offset(span, SPAN_HEADER_SIZE);
+}
+
+//! Allocate a block larger than medium size
+static void*
+_memory_allocate_oversized(heap_t* heap, size_t size) {
+	if (size <= LARGE_SIZE_LIMIT)
+		return _memory_allocate_large(heap, size);
+	return _memory_allocate_huge(size);
+}
+
+//! Allocate a block of the given size
+static void*
+_memory_allocate(heap_t* heap, size_t size) {
+	if (EXPECTED(size <= SMALL_SIZE_LIMIT))
+		return _memory_allocate_small(heap, size);
+	else if (size <= _memory_medium_size_limit)
+		return _memory_allocate_medium(heap, size);
+	return _memory_allocate_oversized(heap, size);
 }
 
 //! Allocate a new heap
@@ -1426,7 +1471,7 @@ _memory_deallocate_direct(heap_t* heap, span_t* span, void* block) {
 	if (UNEXPECTED(used == free))
 		_memory_span_release_to_cache(heap, span);
 	else if (UNEXPECTED(state == SPAN_STATE_FULL))
-		_memory_span_set_partial(heap, span);
+		_memory_span_set_full_partial(heap, span);
 }
 
 //! Put the block in the deferred free list of the owning span
@@ -1486,7 +1531,6 @@ _memory_deallocate_large(span_t* span) {
 	//Investigate if it is better to defer large spans as well through span_cache_deferred,
 	//possibly with some heuristics to pick either scheme at runtime per deallocation
 	heap_t* heap = get_thread_heap();
-	_memory_statistics_inc_free(heap, span->size_class);
 #if ENABLE_ADAPTIVE_THREAD_CACHE || ENABLE_STATISTICS
 	size_t idx = span->span_count - 1;
 	if (heap->span_use[idx].current)
@@ -1520,21 +1564,8 @@ _memory_deallocate_huge(span_t* span) {
 	_memory_statistics_sub(&_huge_pages_current, num_pages);
 }
 
-//! Allocate a block of the given size
-static inline void*
-_memory_allocate(heap_t* heap, size_t size) {
-	if (EXPECTED(size <= SMALL_SIZE_LIMIT))
-		return _memory_allocate_small(heap, size);
-	else if (size <= _memory_medium_size_limit)
-		return _memory_allocate_medium(heap, size);
-	else if (size <= LARGE_SIZE_LIMIT)
-		return _memory_allocate_large(heap, size);
-	else
-		return _memory_allocate_huge(size);
-}
-
 //! Deallocate the given block
-static inline void
+static void
 _memory_deallocate(void* p) {
 	//Grab the span (always at start of span, using span alignment)
 	span_t* span = (void*)((uintptr_t)p & _memory_span_mask);
@@ -1609,11 +1640,7 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 	}
 
 	//Size is greater than block size, need to allocate a new block and deallocate the old
-#if ENABLE_PRELOAD
 	heap_t* heap = get_thread_heap();
-#else
-	heap_t* heap = get_thread_heap_raw();
-#endif
 	//Avoid hysteresis by overallocating if increase is small (below 37%)
 	size_t lower_bound = oldsize + (oldsize >> 2) + (oldsize >> 3);
 	void* block = _memory_allocate(heap, (size > lower_bound) ? size : ((size > oldsize) ? lower_bound : size));
@@ -1912,18 +1939,36 @@ rpmalloc_finalize(void) {
 
 			for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
 				heap_class_t* heap_class = heap->span_class + iclass;
-				if (heap_class->active_span)
-					_memory_heap_cache_insert(heap, heap_class->active_span);
-				span_t* span = heap_class->used_span;
+				span_t* span = heap_class->partial_span;
 				while (span) {
 					span_t* next = span->next;
-					_memory_heap_cache_insert(heap, span);
+					if (span->state == SPAN_STATE_ACTIVE) {
+						uint32_t used_blocks = span->block_count;
+						if (span->free_list_limit < span->block_count)
+							used_blocks = span->free_list_limit;
+						uint32_t free_blocks = 0;
+						void* block = heap_class->free_list;
+						while (block) {
+							++free_blocks;
+							block = *((void**)block);
+						}
+						block = span->free_list;
+						while (block) {
+							++free_blocks;
+							block = *((void**)block);
+						}
+						if (used_blocks == (free_blocks + span->free_list_deferred_size))
+							_memory_heap_cache_insert(heap, span);
+					} else {
+						if (span->used_count == span->free_list_deferred_size)
+							_memory_heap_cache_insert(heap, span);
+					}
 					span = next;
 				}
 			}
 
-			//Free span caches (other thread might have deferred after the thread using this heap finalized)
 #if ENABLE_THREAD_CACHE
+			//Free span caches (other thread might have deferred after the thread using this heap finalized)
 			_memory_heap_cache_adopt_deferred(heap);
 			for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
 				if (heap->span_cache[iclass])
@@ -2132,11 +2177,7 @@ rpmalloc(size_t size) {
 		return 0;
 	}
 #endif
-#if ENABLE_PRELOAD
 	heap_t* heap = get_thread_heap();
-#else
-	heap_t* heap = get_thread_heap_raw();
-#endif
 	return _memory_allocate(heap, size);
 }
 
@@ -2165,11 +2206,7 @@ rpcalloc(size_t num, size_t size) {
 #else
 	total = num * size;
 #endif
-#if ENABLE_PRELOAD
 	heap_t* heap = get_thread_heap();
-#else
-	heap_t* heap = get_thread_heap_raw();
-#endif
 	void* block = _memory_allocate(heap, total);
 	memset(block, 0, total);
 	return block;
@@ -2350,11 +2387,13 @@ rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats) {
 	for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
 		size_class_t* size_class = _memory_size_class + iclass;
 		heap_class_t* heap_class = heap->span_class + iclass;
-		span_t* span = heap_class->used_span;
+		span_t* span = heap_class->partial_span;
 		while (span) {
 			atomic_thread_fence_acquire();
 			size_t free_count = span->free_list_deferred_size;
-			stats->sizecache = ((size_class->block_count - span->used_count) + free_count) * size_class->block_size;
+			if (span->state == SPAN_STATE_PARTIAL)
+				free_count += (size_class->block_count - span->used_count);
+			stats->sizecache = free_count * size_class->block_size;
 			span = span->next;
 		}
 	}
