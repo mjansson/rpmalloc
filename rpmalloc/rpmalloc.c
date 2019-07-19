@@ -334,7 +334,7 @@ struct span_t {
 	uint32_t    state;
 	//! Used count when not active (not including deferred free list)
 	uint32_t    used_count;
-	//! Block count class
+	//! Block count
 	uint32_t    block_count;
 	//! Size class
 	uint32_t    size_class;
@@ -342,8 +342,6 @@ struct span_t {
 	uint32_t    free_list_limit;
 	//! Size of a block
 	uint32_t    block_size;
-	//! Owning heap
-	heap_t*     heap;
 	//! Deferred free list
 	atomicptr_t free_list_deferred;
 	//! Size of deferred free list
@@ -360,6 +358,8 @@ struct span_t {
 	uint32_t    align_offset;
 	//! Span list size when part of a list
 	uint32_t    list_size;
+	//! Owning heap
+	heap_t*     heap;
 	//! Next span
 	span_t*     next;
 	//! Previous span
@@ -450,6 +450,7 @@ static size_t _memory_span_size_shift;
 //! Mask to get to start of a memory span
 static uintptr_t _memory_span_mask;
 #else
+//! Hardwired span size (64KiB)
 #define _memory_span_size (64 * 1024)
 #define _memory_span_size_shift 16
 #define _memory_span_mask 0xFFFFFFFFFFFF0000ULL
