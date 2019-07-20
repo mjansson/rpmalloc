@@ -68,6 +68,43 @@ extern inline void* _Znwjj(uint64_t size, uint64_t align) { return rpaligned_all
 extern inline void* _Znajj(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
 #endif
 
+#elif defined(__APPLE__)
+
+typedef struct interpose_t {
+	void* new_func;
+	void* orig_func;
+} interpose_t;
+
+#define MAC_INTERPOSE_PAIR(newf, oldf) 	{ (void*)newf, (void*)oldf }
+#define MAC_INTERPOSE_SINGLE(newf, oldf) \
+__attribute__((used)) static const interpose_t macinterpose##newf##oldf \
+__attribute__ ((section("__DATA, __interpose"))) = MAC_INTERPOSE_PAIR(newf, oldf)
+
+__attribute__((used)) static const interpose_t macinterpose_malloc
+__attribute__ ((section("__DATA, __interpose"))) = {
+	//new and new[]
+	MAC_INTERPOSE_PAIR(rpmalloc, _Znwm),
+	MAC_INTERPOSE_PAIR(rpmalloc, _Znam),
+	//delete and delete[]
+	MAC_INTERPOSE_PAIR(rpmalloc, _ZdlPv),
+	MAC_INTERPOSE_PAIR(rpmalloc, _ZdaPv),
+	MAC_INTERPOSE_PAIR(rpmalloc, malloc),
+	MAC_INTERPOSE_PAIR(rpmalloc, calloc),
+	MAC_INTERPOSE_PAIR(rprealloc, realloc),
+	MAC_INTERPOSE_PAIR(rprealloc, reallocf),
+	MAC_INTERPOSE_PAIR(rpaligned_alloc, aligned_alloc),
+	MAC_INTERPOSE_PAIR(rpmemalign, memalign),
+	MAC_INTERPOSE_PAIR(rpposix_memalign, posix_memalign),
+	MAC_INTERPOSE_PAIR(rpfree, free),
+	MAC_INTERPOSE_PAIR(rpfree, cfree),
+	MAC_INTERPOSE_PAIR(rpmalloc_usable_size, malloc_usable_size),
+	MAC_INTERPOSE_PAIR(rpmalloc_usable_size, malloc_size)
+};
+
+//aligned new and new[]
+extern inline void* _Znwmm(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
+extern inline void* _Znamm(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
+
 #else
 
 #define RPALIAS(fn) __attribute__((alias(#fn), used, visibility("default")));
@@ -246,17 +283,7 @@ pthread_create_proxy(pthread_t* thread,
 	return pthread_create(thread, attr, thread_starter, starter_arg);
 }
 
-typedef struct interpose_s {
-	void* new_func;
-	void* orig_func;
-} interpose_t;
-
-#define MAC_INTERPOSE(newf, oldf) __attribute__((used)) \
-static const interpose_t macinterpose##newf##oldf \
-__attribute__ ((section("__DATA, __interpose"))) = \
-	{ (void*)newf, (void*)oldf }
-
-MAC_INTERPOSE(pthread_create_proxy, pthread_create);
+MAC_INTERPOSE_SINGLE(pthread_create_proxy, pthread_create);
 
 #else
 
