@@ -444,7 +444,7 @@ static uintptr_t _memory_span_mask;
 //! Hardwired span size (64KiB)
 #define _memory_span_size (64 * 1024)
 #define _memory_span_size_shift 16
-#define _memory_span_mask 0xFFFFFFFFFFFF0000ULL
+#define _memory_span_mask (~((uintptr_t)(_memory_span_size - 1)))
 #endif
 //! Number of spans to map in each map call
 static size_t _memory_span_map_count;
