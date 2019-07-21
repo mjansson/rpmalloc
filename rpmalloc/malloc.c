@@ -80,7 +80,19 @@ typedef struct interpose_t {
 __attribute__((used)) static const interpose_t macinterpose##newf##oldf \
 __attribute__ ((section("__DATA, __interpose"))) = MAC_INTERPOSE_PAIR(newf, oldf)
 
-__attribute__((used)) static const interpose_t macinterpose_malloc
+extern void _ZdlPv(void*);
+extern void _ZdaPv(void*);
+extern void* _Znwm(uint64_t);
+extern void* _Znam(uint64_t);
+extern void* _Znwmm(uint64_t, uint64_t);
+extern void* _Znamm(uint64_t, uint64_t);
+extern void* aligned_alloc(size_t, size_t);
+extern void* memalign(size_t, size_t);
+extern void cfree(void*);
+extern size_t malloc_usable_size(void*);
+extern size_t malloc_size(void*);
+
+__attribute__((used)) static const interpose_t macinterpose_malloc[]
 __attribute__ ((section("__DATA, __interpose"))) = {
 	//new and new[]
 	MAC_INTERPOSE_PAIR(rpmalloc, _Znwm),
