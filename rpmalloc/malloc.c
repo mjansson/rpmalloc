@@ -147,8 +147,8 @@ extern inline void* _Znamm(uint64_t size, uint64_t align) { return rpaligned_all
 // 32-bit operators new and new[], normal and aligned
 void* _Znwj(uint32_t size) RPALIAS(rpmalloc)
 void* _Znaj(uint32_t size) RPALIAS(rpmalloc)
-extern inline void* _Znwjj(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
-extern inline void* _Znajj(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
+extern inline void* _Znwjj(uint32_t size, uint32_t align) { return rpaligned_alloc(align, size); }
+extern inline void* _Znajj(uint32_t size, uint32_t align) { return rpaligned_alloc(align, size); }
 #endif
 
 void* malloc(size_t size) RPALIAS(rpmalloc)
