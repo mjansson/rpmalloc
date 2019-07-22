@@ -98,8 +98,8 @@ __attribute__ ((section("__DATA, __interpose"))) = {
 	MAC_INTERPOSE_PAIR(rpmalloc, _Znwm),
 	MAC_INTERPOSE_PAIR(rpmalloc, _Znam),
 	//delete and delete[]
-	MAC_INTERPOSE_PAIR(rpmalloc, _ZdlPv),
-	MAC_INTERPOSE_PAIR(rpmalloc, _ZdaPv),
+	MAC_INTERPOSE_PAIR(rpfree, _ZdlPv),
+	MAC_INTERPOSE_PAIR(rpfree, _ZdaPv),
 	MAC_INTERPOSE_PAIR(rpmalloc, malloc),
 	MAC_INTERPOSE_PAIR(rpmalloc, calloc),
 	MAC_INTERPOSE_PAIR(rprealloc, realloc),
@@ -116,6 +116,16 @@ __attribute__ ((section("__DATA, __interpose"))) = {
 //aligned new and new[]
 extern inline void* _Znwmm(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
 extern inline void* _Znamm(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
+
+extern void _ZdlPv(void* p) { rpfree(p); }
+extern void _ZdaPv(void* p) { rpfree(p); }
+extern void* _Znwm(uint64_t size) { return rpmalloc(size); }
+extern void* _Znam(uint64_t size) { return rpmalloc(size); }
+
+extern void* aligned_alloc(size_t alignment, size_t size) { return rpaligned_alloc(alignment, size); }
+extern void* memalign(size_t alignment, size_t size) { return rpmemalign(alignment, size); }
+extern void cfree(void* p) { rpfree(p); }
+extern size_t malloc_usable_size(void* p) { return rpmalloc_usable_size(p); }
 
 #else
 
