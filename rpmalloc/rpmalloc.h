@@ -18,16 +18,30 @@ extern "C" {
 #endif
 
 #if defined(__clang__) || defined(__GNUC__)
-# define RPMALLOC_ATTRIBUTE __attribute__((__malloc__))
-# define RPMALLOC_RESTRICT
+# define RPMALLOC_EXPORT __attribute__((visibility("default")))
+# define RPMALLOC_ALLOCATOR 
+# define RPMALLOC_ATTRIB_MALLOC __attribute__((__malloc__))
+# if defined(__clang_major__) && (__clang_major__ < 4)
+# define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
+# define RPMALLOC_ATTRIB_ALLOC_SIZE2(count, size)
+# else
+# define RPMALLOC_ATTRIB_ALLOC_SIZE(size) __attribute__((alloc_size(size)))
+# define RPMALLOC_ATTRIB_ALLOC_SIZE2(count, size)  __attribute__((alloc_size(count, size)))
+# endif
 # define RPMALLOC_CDECL
 #elif defined(_MSC_VER)
-# define RPMALLOC_ATTRIBUTE
-# define RPMALLOC_RESTRICT __declspec(restrict)
+# define RPMALLOC_EXPORT
+# define RPMALLOC_ALLOCATOR __declspec(allocator) __declspec(restrict)
+# define RPMALLOC_ATTRIB_MALLOC
+# define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
+# define RPMALLOC_ATTRIB_ALLOC_SIZE2(count,size)
 # define RPMALLOC_CDECL __cdecl
 #else
-# define RPMALLOC_ATTRIBUTE
-# define RPMALLOC_RESTRICT
+# define RPMALLOC_EXPORT
+# define RPMALLOC_ALLOCATOR
+# define RPMALLOC_ATTRIB_MALLOC
+# define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
+# define RPMALLOC_ATTRIB_ALLOC_SIZE2(count,size)
 # define RPMALLOC_CDECL
 #endif
 
@@ -152,96 +166,96 @@ typedef struct rpmalloc_config_t {
 } rpmalloc_config_t;
 
 //! Initialize allocator with default configuration
-extern int
+RPMALLOC_EXPORT int
 rpmalloc_initialize(void);
 
 //! Initialize allocator with given configuration
-extern int
+RPMALLOC_EXPORT int
 rpmalloc_initialize_config(const rpmalloc_config_t* config);
 
 //! Get allocator configuration
-extern const rpmalloc_config_t*
+RPMALLOC_EXPORT const rpmalloc_config_t*
 rpmalloc_config(void);
 
 //! Finalize allocator
-extern void
+RPMALLOC_EXPORT void
 rpmalloc_finalize(void);
 
 //! Initialize allocator for calling thread
-extern void
+RPMALLOC_EXPORT void
 rpmalloc_thread_initialize(void);
 
 //! Finalize allocator for calling thread
-extern void
+RPMALLOC_EXPORT void
 rpmalloc_thread_finalize(void);
 
 //! Perform deferred deallocations pending for the calling thread heap
-extern void
+RPMALLOC_EXPORT void
 rpmalloc_thread_collect(void);
 
 //! Query if allocator is initialized for calling thread
-extern int
+RPMALLOC_EXPORT int
 rpmalloc_is_thread_initialized(void);
 
 //! Get per-thread statistics
-extern void
+RPMALLOC_EXPORT void
 rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats);
 
 //! Get global statistics
-extern void
+RPMALLOC_EXPORT void
 rpmalloc_global_statistics(rpmalloc_global_statistics_t* stats);
 
 //! Dump all statistics in human readable format to file (should be a FILE*)
-extern void
+RPMALLOC_EXPORT void
 rpmalloc_dump_statistics(void* file);
 
 //! Allocate a memory block of at least the given size
-extern RPMALLOC_RESTRICT void*
-rpmalloc(size_t size) RPMALLOC_ATTRIBUTE;
+RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
+rpmalloc(size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(1);
 
 //! Free the given memory block
-extern void
+RPMALLOC_EXPORT void
 rpfree(void* ptr);
 
 //! Allocate a memory block of at least the given size and zero initialize it
-extern RPMALLOC_RESTRICT void*
-rpcalloc(size_t num, size_t size) RPMALLOC_ATTRIBUTE;
+RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
+rpcalloc(size_t num, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE2(1, 2);
 
 //! Reallocate the given block to at least the given size
-extern void*
-rprealloc(void* ptr, size_t size);
+RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
+rprealloc(void* ptr, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(2);
 
 //! Reallocate the given block to at least the given size and alignment,
 //  with optional control flags (see RPMALLOC_NO_PRESERVE).
 //  Alignment must be a power of two and a multiple of sizeof(void*),
 //  and should ideally be less than memory page size. A caveat of rpmalloc
 //  internals is that this must also be strictly less than the span size (default 64KiB)
-extern void*
-rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize, unsigned int flags);
+RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
+rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize, unsigned int flags) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(3);
 
 //! Allocate a memory block of at least the given size and alignment.
 //  Alignment must be a power of two and a multiple of sizeof(void*),
 //  and should ideally be less than memory page size. A caveat of rpmalloc
 //  internals is that this must also be strictly less than the span size (default 64KiB)
-extern RPMALLOC_RESTRICT void*
-rpaligned_alloc(size_t alignment, size_t size) RPMALLOC_ATTRIBUTE;
+RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
+rpaligned_alloc(size_t alignment, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(2);
 
 //! Allocate a memory block of at least the given size and alignment.
 //  Alignment must be a power of two and a multiple of sizeof(void*),
 //  and should ideally be less than memory page size. A caveat of rpmalloc
 //  internals is that this must also be strictly less than the span size (default 64KiB)
-extern RPMALLOC_RESTRICT void*
-rpmemalign(size_t alignment, size_t size) RPMALLOC_ATTRIBUTE;
+RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
+rpmemalign(size_t alignment, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(2);
 
 //! Allocate a memory block of at least the given size and alignment.
 //  Alignment must be a power of two and a multiple of sizeof(void*),
 //  and should ideally be less than memory page size. A caveat of rpmalloc
 //  internals is that this must also be strictly less than the span size (default 64KiB)
-extern int
+RPMALLOC_EXPORT int
 rpposix_memalign(void **memptr, size_t alignment, size_t size);
 
 //! Query the usable size of the given memory block (from given pointer to the end of block)
-extern size_t
+RPMALLOC_EXPORT size_t
 rpmalloc_usable_size(void* ptr);
 
 #ifdef __cplusplus
