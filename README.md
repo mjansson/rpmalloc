@@ -8,6 +8,7 @@ Platforms currently supported:
 - iOS
 - Linux
 - Android
+- Haiku
 
 The code should be easily portable to any platform with atomic operations and an mmap-style virtual memory management API. The API used to map/unmap memory pages can be configured in runtime to a custom implementation and mapping granularity/size.
 
@@ -16,7 +17,7 @@ This library is put in the public domain; you can redistribute it and/or modify 
 Created by Mattias Jansson ([@maniccoder](https://twitter.com/maniccoder))
 
 # Performance
-We believe rpmalloc is faster than most popular memory allocators like tcmalloc, hoard, ptmalloc3 and others without causing extra allocated memory overhead in the thread caches compared to these allocators. We also believe the implementation to be easier to read and modify compared to these allocators, as it is a single source file of ~2200 lines of C code. All allocations have a natural 16-byte alignment.
+We believe rpmalloc is faster than most popular memory allocators like tcmalloc, hoard, ptmalloc3 and others without causing extra allocated memory overhead in the thread caches compared to these allocators. We also believe the implementation to be easier to read and modify compared to these allocators, as it is a single source file of ~2500 lines of C code. All allocations have a natural 16-byte alignment.
 
 Contained in a parallel repository is a benchmark utility that performs interleaved unaligned allocations and deallocations (both in-thread and cross-thread) in multiple threads. It measures number of memory operations performed per CPU second, as well as memory overhead by comparing the virtual memory mapped with the number of bytes requested in allocation calls. The setup of number of thread, cross-thread deallocation rate and allocation size limits is configured by command line arguments.
 
@@ -31,7 +32,7 @@ The benchmark producing these numbers were run on an Ubuntu 16.10 machine with 8
 Configuration of the thread and global caches can be important depending on your use pattern. See [CACHE](CACHE.md) for a case study and some comments/guidelines.
 
 # Using
-The easiest way to use the library is simply adding rpmalloc.[h|c] to your project and compile them along with your sources. This contains only the rpmalloc specific entry points and does not provide internal hooks to process and/or thread creation at the moment. You are required to call these functions from your own code in order to initialize and finalize the allocator in your process and threads:
+The easiest way to use the library is simply adding __rpmalloc.[h|c]__ to your project and compile them along with your sources. This contains only the rpmalloc specific entry points and does not provide internal hooks to process and/or thread creation at the moment. You are required to call these functions from your own code in order to initialize and finalize the allocator in your process and threads:
 
 __rpmalloc_initialize__ : Call at process start to initialize the allocator
 
@@ -47,12 +48,12 @@ __rpmalloc_config__: Get the current runtime configuration of the allocator
 
 Then simply use the __rpmalloc__/__rpfree__ and the other malloc style replacement functions. Remember all allocations are 16-byte aligned, so no need to call the explicit rpmemalign/rpaligned_alloc/rpposix_memalign functions unless you need greater alignment, they are simply wrappers to make it easier to replace in existing code.
 
-If you wish to override the standard library malloc family of functions and have automatic initialization/finalization of process and threads, also include the `malloc.c` file in your project. The automatic init/fini is only implemented for Linux and macOS targets. The list of libc entry points replaced may not be complete, use libc replacement only as a convenience for testing the library on an existing code base, not a final solution.
+If you wish to override the standard library malloc family of functions and have automatic initialization/finalization of process and threads, define __ENABLE_OVERRIDE__ to non-zero which will include the `malloc.c` file in compilation of __rpmalloc.c__. The list of libc entry points replaced may not be complete, use libc replacement only as a convenience for testing the library on an existing code base, not a final solution.
 
 # Building
 To compile as a static library run the configure python script which generates a Ninja build script, then build using ninja. The ninja build produces two static libraries, one named `rpmalloc` and one named `rpmallocwrap`, where the latter includes the libc entry point overrides.
 
-The configure + ninja build also produces two shared object/dynamic libraries. The `rpmallocwrap` shared library can be used with LD_PRELOAD/DYLD_INSERT_LIBRARIES to inject in a preexisting binary, replacing any malloc/free family of function calls. This is only implemented for Linux and macOS targets. The list of libc entry points replaced may not be complete, use preloading as a convenience for testing the library on an existing binary, not a final solution.
+The configure + ninja build also produces two shared object/dynamic libraries. The `rpmallocwrap` shared library can be used with LD_PRELOAD/DYLD_INSERT_LIBRARIES to inject in a preexisting binary, replacing any malloc/free family of function calls. This is only implemented for Linux and macOS targets. The list of libc entry points replaced may not be complete, use preloading as a convenience for testing the library on an existing binary, not a final solution. The dynamic library also provides automatic init/fini of process and threads for all platforms.
 
 The latest stable release is available in the master branch. For latest development code, use the develop branch.
 
@@ -69,6 +70,8 @@ __ENABLE_GLOBAL_CACHE__: By default defined to 1, enables the global cache share
 
 __ENABLE_THREAD_CACHE__: By default defined to 1, enables the per-thread cache. Set to 0 to disable the thread cache and directly unmap pages no longer in use (also disables the global cache).
 
+__ENABLE_ADAPTIVE_THREAD_CACHE__: Introduces a simple heuristics in the thread cache size, keeping 25% of the high water mark for each span count class.
+
 # Other configuration options
 Detailed statistics are available if __ENABLE_STATISTICS__ is defined to 1 (default is 0, or disabled), either on compile command line or by setting the value in `rpmalloc.c`. This will cause a slight overhead in runtime to collect statistics for each memory operation, and will also add 4 bytes overhead per allocation to track sizes.
 
@@ -77,6 +80,8 @@ Integer safety checks on all calls are enabled if __ENABLE_VALIDATE_ARGS__ is de
 Asserts are enabled if __ENABLE_ASSERTS__ is defined to 1 (default is 0, or disabled), either on compile command line or by setting the value in `rpmalloc.c`.
 
 Overwrite and underwrite guards are enabled if __ENABLE_GUARDS__ is defined to 1 (default is 0, or disabled), either on compile command line or by settings the value in `rpmalloc.c`. This will introduce up to 64 byte overhead on each allocation to store magic numbers, which will be verified when freeing the memory block. The actual overhead is dependent on the requested size compared to size class limits.
+
+To include __malloc.c__ in compilation and provide overrides of standard library malloc entry points define __ENABLE_OVERRIDE__ to 1. To enable automatic initialization of finalization of process and threads in order to preload the library into executables using standard library malloc, define __ENABLE_PRELOAD__ to 1.
 
 # Huge pages
 The allocator has support for huge/large pages on Windows, Linux and MacOS. To enable it, pass a non-zero value in the config value `enable_huge_pages` when initializing the allocator with `rpmalloc_initialize_config`. If the system does not support huge pages it will be automatically disabled. You can query the status by looking at `enable_huge_pages` in the config returned from a call to `rpmalloc_config` after initialization is done.
@@ -141,13 +146,11 @@ An application that has a producer-consumer scheme between threads where one thr
 Threads that perform a lot of allocations and deallocations in a pattern that have a large difference in high and low water marks, and that difference is larger than the thread cache size, will put a lot of contention on the global cache. What will happen is the thread cache will overflow on each low water mark causing pages to be released to the global cache, then underflow on high water mark causing pages to be re-acquired from the global cache. This can be mitigated by changing the __MAX_SPAN_CACHE_DIVISOR__ define in the source code (at the cost of higher average memory overhead).
 
 # Caveats
-Cross-thread deallocations are more costly than in-thread deallocations, since the spans are completely owned by the allocating thread. The free operation will be deferred using an atomic list operation and the actual free operation will be performed when the owner thread requires a new block of the corresponding size class.
+Cross-thread deallocations could leave dangling spans in the owning thread heap partially used list if the deallocation is the last used block in the span and the span is previously marked as partial (at least one block deallocated by the owning thread). However, an optimization for GC like use cases is that if all the blocks in the span are freed by other threads, the span can immediately be inserted in the owning thread span cache.
 
 VirtualAlloc has an internal granularity of 64KiB. However, mmap lacks this granularity control, and the implementation instead oversizes the memory mapping with configured span size to be able to always return a memory area with the required alignment. Since the extra memory pages are never touched this will not result in extra committed physical memory pages, but rather only increase virtual memory address space.
 
-The free, realloc and usable size functions all require the passed pointer to be within the first 64KiB (or whatever you set the span size to) of the start of the memory block. You cannot pass in any pointer from the memory block address range. 
-
-All entry points assume the passed values are valid, for example passing an invalid pointer to free would most likely result in a segmentation fault. The library does not try to guard against errors.
+All entry points assume the passed values are valid, for example passing an invalid pointer to free would most likely result in a segmentation fault. __The library does not try to guard against errors!__.
 
 # License
 
