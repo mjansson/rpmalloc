@@ -83,6 +83,8 @@ Overwrite and underwrite guards are enabled if __ENABLE_GUARDS__ is defined to 1
 
 To include __malloc.c__ in compilation and provide overrides of standard library malloc entry points define __ENABLE_OVERRIDE__ to 1. To enable automatic initialization of finalization of process and threads in order to preload the library into executables using standard library malloc, define __ENABLE_PRELOAD__ to 1.
 
+To enable the runtime configurable memory page and span sizes, define __ENABLE_CONFIGURABLE__ to 1. By default, memory page size is determined by system APIs and memory span size is set to 64KiB.
+
 # Huge pages
 The allocator has support for huge/large pages on Windows, Linux and MacOS. To enable it, pass a non-zero value in the config value `enable_huge_pages` when initializing the allocator with `rpmalloc_initialize_config`. If the system does not support huge pages it will be automatically disabled. You can query the status by looking at `enable_huge_pages` in the config returned from a call to `rpmalloc_config` after initialization is done.
 
