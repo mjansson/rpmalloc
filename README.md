@@ -100,7 +100,7 @@ Small blocks have a size class granularity of 16 bytes each in 64 buckets. Mediu
 
 Spans for small and medium blocks are cached in four levels to avoid calls to map/unmap memory pages. The first level is a per thread single active span for each size class. The second level is a per thread list of partially free spans for each size class. The third level is a per thread list of free spans. The fourth level is a global list of free spans.
 
-Each span for a small and medium size class keeps track of how many blocks are allocated/free, as well as a list of which blocks that are free for allocation. To avoid locks, each span is completely owned by the allocating thread, and all cross-thread deallocations will be deferred to the owner thread.
+Each span for a small and medium size class keeps track of how many blocks are allocated/free, as well as a list of which blocks that are free for allocation. To avoid locks, each span is completely owned by the allocating thread, and all cross-thread deallocations will be deferred to the owner thread through a separate free list per span.
 
 Large blocks, or super spans, are cached in two levels. The first level is a per thread list of free super spans. The second level is a global list of free super spans.
 
@@ -111,7 +111,7 @@ The returned memory address from the memory map function MUST be aligned to the 
 
 Memory mapping requests are always done in multiples of the memory page size. You can specify a custom page size when initializing rpmalloc with __rpmalloc_initialize_config__, or pass 0 to let rpmalloc determine the system memory page size using OS APIs. The page size MUST be a power of two.
 
-To reduce system call overhead, memory spans are mapped in batches controlled by the `span_map_count` configuration variable (which defaults to the `DEFAULT_SPAN_MAP_COUNT` value if 0, which in turn is sized according to the cache configuration define, defaulting to 32). If the memory page size is larger than the span size, the number of spans to map in a single call will be adjusted to guarantee a multiple of the page size, and the spans will be kept mapped until the entire span range can be unmapped in one call (to avoid trying to unmap partial pages).
+To reduce system call overhead, memory spans are mapped in batches controlled by the `span_map_count` configuration variable (which defaults to the `DEFAULT_SPAN_MAP_COUNT` value if 0, which in turn is sized according to the cache configuration define, defaulting to 64). If the memory page size is larger than the span size, the number of spans to map in a single call will be adjusted to guarantee a multiple of the page size, and the spans will be kept mapped until the entire span range can be unmapped in one call (to avoid trying to unmap partial pages).
 
 # Span breaking
 Super spans (spans a multiple > 1 of the span size) can be subdivided into smaller spans to fulfull a need to map a new span of memory. By default the allocator will greedily grab and break any larger span from the available caches before mapping new virtual memory. However, spans can currently not be glued together to form larger super spans again. Subspans can traverse the cache and be used by different threads individually.
@@ -130,10 +130,10 @@ There is no memory fragmentation by the allocator in the sense that it will not 
 
 However, there is memory fragmentation in the meaning that a request for x bytes followed by a request of y bytes where x and y are at least one size class different in size will return blocks that are at least one memory page apart in virtual address space. Only blocks of the same size will potentially be within the same memory page span.
 
-Unlike the similar tcmalloc where the linked list of individual blocks leads to back-to-back allocations of the same block size will spread across a different span of memory pages each time (depending on free order), rpmalloc keeps an "active span" for each size class. This leads to back-to-back allocations will most likely be served from within the same span of memory pages (unless the span runs out of free blocks). The rpmalloc implementation will also use any "holes" in memory pages in semi-filled spans before using a completely free span.
+rpmalloc keeps an "active span" and free list for each size class. This leads to back-to-back allocations will most likely be served from within the same span of memory pages (unless the span runs out of free blocks). The rpmalloc implementation will also use any "holes" in memory pages in semi-filled spans before using a completely free span.
 
 # Producer-consumer scenario
-Compared to the tcmalloc implementation, rpmalloc does not suffer as much from a producer-consumer thread scenario where one thread allocates memory blocks and another thread frees the blocks. In tcmalloc the free blocks need to traverse both the thread cache of the thread doing the free operations as well as the global cache before being reused in the allocating thread. In rpmalloc the freed blocks will be reused as soon as the allocating thread needs to get new spans from the thread cache.
+Compared to the some other allocators, rpmalloc does not suffer as much from a producer-consumer thread scenario where one thread allocates memory blocks and another thread frees the blocks. In some allocators the free blocks need to traverse both the thread cache of the thread doing the free operations as well as the global cache before being reused in the allocating thread. In rpmalloc the freed blocks will be reused as soon as the allocating thread needs to get new spans from the thread cache. This enables faster release of completely freed memory pages as blocks in a memory page will not be aliased between different owning threads.
 
 # Best case scenarios
 Threads that keep ownership of allocated memory blocks within the thread and free the blocks from the same thread will have optimal performance.
@@ -142,8 +142,6 @@ Threads that have allocation patterns where the difference in memory usage high 
 
 # Worst case scenarios
 Since each thread cache maps spans of memory pages per size class, a thread that allocates just a few blocks of each size class (16, 32, ...) for many size classes will never fill each bucket, and thus map a lot of memory pages while only using a small fraction of the mapped memory. However, the wasted memory will always be less than 4KiB (or the configured memory page size) per size class as each span is initialized one memory page at a time. The cache for free spans will be reused by all size classes.
-
-An application that has a producer-consumer scheme between threads where one thread performs all allocations and another frees all memory will have a sub-optimal performance due to blocks crossing thread boundaries will be freed in a two step process - first deferred to the allocating thread, then freed when that thread has need for more memory pages for the requested size. However, depending on the use case the performance overhead might be small.
 
 Threads that perform a lot of allocations and deallocations in a pattern that have a large difference in high and low water marks, and that difference is larger than the thread cache size, will put a lot of contention on the global cache. What will happen is the thread cache will overflow on each low water mark causing pages to be released to the global cache, then underflow on high water mark causing pages to be re-acquired from the global cache. This can be mitigated by changing the __MAX_SPAN_CACHE_DIVISOR__ define in the source code (at the cost of higher average memory overhead).
 
