@@ -206,7 +206,7 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 //! Number of small block size classes
 #define SMALL_CLASS_COUNT         65
 //! Maximum size of a small block
-#define SMALL_SIZE_LIMIT          (SMALL_GRANULARITY * SMALL_CLASS_COUNT)
+#define SMALL_SIZE_LIMIT          (SMALL_GRANULARITY * (SMALL_CLASS_COUNT - 1))
 //! Granularity of a medium allocation block
 #define MEDIUM_GRANULARITY        512
 //! Medium granularity shift count
@@ -1954,8 +1954,6 @@ rpmalloc_thread_initialize(void) {
 			atomic_thread_fence_acquire();
 #if ENABLE_STATISTICS
 			atomic_incr32(&_memory_active_heaps);
-			heap->thread_to_global = 0;
-			heap->global_to_thread = 0;
 #endif
 			set_thread_heap(heap);
 #if defined(_MSC_VER) && !defined(__clang__) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
@@ -1982,6 +1980,10 @@ rpmalloc_thread_finalize(void) {
 			assert(span->span_count == (iclass + 1));
 			size_t release_count = (!iclass ? _memory_span_release_count : _memory_span_release_count_large);
 			span_t* next = _memory_span_list_split(span, (uint32_t)release_count);
+#if ENABLE_STATISTICS
+			heap->thread_to_global += (size_t)span->list_size * span->span_count * _memory_span_size;
+			heap->span_use[iclass].spans_to_global += span->list_size;
+#endif
 			_memory_global_cache_insert(span);
 			span = next;
 		}
@@ -2406,9 +2408,10 @@ rpmalloc_dump_statistics(void* file) {
 			for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
 				if (!heap->size_class_use[iclass].alloc_total) {
 					assert(!atomic_load32(&heap->size_class_use[iclass].free_total));
+					assert(!heap->size_class_use[iclass].spans_map_calls);
 					continue;
 				}
-				fprintf(file, "%3u:  %10u %10u %10u %10u %8u %9u %13zu %11zu %12zu %14zu %9u\n", (uint32_t)iclass,
+				fprintf(file, "%3u:  %10u %10u %10u %10u %8u %8u %13zu %11zu %12zu %14zu %9u\n", (uint32_t)iclass,
 					atomic_load32(&heap->size_class_use[iclass].alloc_current),
 					heap->size_class_use[iclass].alloc_peak,
 					heap->size_class_use[iclass].alloc_total,

@@ -55,11 +55,20 @@ test_alloc(void) {
 	if (rpmalloc_usable_size(testptr) != 128)
 		return test_fail("Bad base alloc usable size");
 	rpfree(testptr);
-	for (iloop = 0; iloop < 1000; ++iloop) {
+	for (iloop = 0; iloop <= 1024; ++iloop) {
 		testptr = rpmalloc(iloop);
 		size_t wanted_usable_size = 16 * ((iloop / 16) + ((!iloop || (iloop % 16)) ? 1 : 0));
 		if (rpmalloc_usable_size(testptr) != wanted_usable_size)
 			return test_fail("Bad base alloc usable size");
+		rpfree(testptr);
+	}
+
+	//Verify medium block sizes (until class merging kicks in)
+	for (iloop = 1025; iloop <= 6000; ++iloop) {
+		testptr = rpmalloc(iloop);
+		size_t wanted_usable_size = 512 * ((iloop / 512) + ((iloop % 512) ? 1 : 0));
+		if (rpmalloc_usable_size(testptr) != wanted_usable_size)
+			return test_fail("Bad medium alloc usable size");
 		rpfree(testptr);
 	}
 
