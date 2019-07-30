@@ -2046,7 +2046,7 @@ _memory_map_os(size_t size, size_t* offset) {
 	// we have the guarantee the tag ID avaiable
 	// from 240 to 255, officially up to 98 to this day
 	// is already "taken" if we want to avoid data intersection.
-	int fd = (242<<24);
+	int fd = (127<<24);
 	if (_memory_huge_pages)
 		fd |= VM_FLAGS_SUPERPAGE_SIZE_2MB;
 	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, flags, fd, 0);
