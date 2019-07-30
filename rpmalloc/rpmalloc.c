@@ -1754,6 +1754,9 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 				_memory_map_granularity = _memory_page_size;
 			}
 #elif defined(__APPLE__)
+			// NOTE: might be not worthy with current macBook
+			// or maybe checking pse36 in cpu capacity to be sure
+			// it can handle 2MB.
 			_memory_huge_pages = 1;
 			_memory_page_size = 2 * 1024 * 1024;
 			_memory_map_granularity = _memory_page_size;
@@ -2040,7 +2043,13 @@ _memory_map_os(size_t size, size_t* offset) {
 #else
 	int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED;
 #  if defined(__APPLE__)
-	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, flags, (_memory_huge_pages ? VM_FLAGS_SUPERPAGE_SIZE_2MB : -1), 0);
+	// we have the guarantee the tag ID avaiable
+	// from 240 to 255, officially up to 98 to this day
+	// is already "taken" if we want to avoid data intersection.
+	int fd = (242<<24);
+	if (_memory_huge_pages)
+		fd |= VM_FLAGS_SUPERPAGE_SIZE_2MB;
+	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, flags, fd, 0);
 #  elif defined(MAP_HUGETLB)
 	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, (_memory_huge_pages ? MAP_HUGETLB : 0) | flags, -1, 0);
 #  else
