@@ -124,6 +124,7 @@
 #  include <stdlib.h>
 #  if defined(__APPLE__)
 #    include <mach/mach_vm.h>
+#    include <mach/vm_statistics.h>
 #    include <pthread.h>
 #  endif
 #  if defined(__HAIKU__)
@@ -1754,9 +1755,6 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 				_memory_map_granularity = _memory_page_size;
 			}
 #elif defined(__APPLE__)
-			// NOTE: might be not worthy with current macBook
-			// or maybe checking pse36 in cpu capacity to be sure
-			// it can handle 2MB.
 			_memory_huge_pages = 1;
 			_memory_page_size = 2 * 1024 * 1024;
 			_memory_map_granularity = _memory_page_size;
@@ -2043,10 +2041,7 @@ _memory_map_os(size_t size, size_t* offset) {
 #else
 	int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED;
 #  if defined(__APPLE__)
-	// we have the guarantee the tag ID avaiable
-	// from 240 to 255, officially up to 98 to this day
-	// is already "taken" if we want to avoid data intersection.
-	int fd = (127<<24);
+	int fd = (int)VM_MAKE_TAG(240U);
 	if (_memory_huge_pages)
 		fd |= VM_FLAGS_SUPERPAGE_SIZE_2MB;
 	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, flags, fd, 0);
