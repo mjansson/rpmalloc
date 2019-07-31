@@ -1065,9 +1065,11 @@ _memory_heap_extract_new_span(heap_t* heap, size_t span_count, uint32_t class_id
 	uint32_t current_count = atomic_incr32(&heap->span_use[idx].current);
 	if (current_count > heap->span_use[idx].high)
 		heap->span_use[idx].high = current_count;
+#if ENABLE_STATISTICS
 	uint32_t spans_current = ++heap->size_class_use[class_idx].spans_current;
 	if (spans_current > heap->size_class_use[class_idx].spans_peak)
 		heap->size_class_use[class_idx].spans_peak = spans_current;
+#endif
 #endif	
 	span_t* span = _memory_heap_thread_cache_extract(heap, span_count);
 	if (EXPECTED(span != 0)) {
@@ -1101,7 +1103,7 @@ _memory_span_release_to_cache(heap_t* heap, span_t* span) {
 	atomic_decr32(&heap->span_use[0].current);
 	_memory_statistics_inc(heap->span_use[0].spans_to_cache, 1);
 	_memory_statistics_inc(heap->size_class_use[span->size_class].spans_to_cache, 1);
-	--heap->size_class_use[span->size_class].spans_current;
+	_memory_statistics_inc(heap->size_class_use[span->size_class].spans_current, -1);
 #endif
 	_memory_heap_cache_insert(heap, span);
 }
