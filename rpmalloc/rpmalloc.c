@@ -162,7 +162,9 @@ typedef volatile void*     atomicptr_t;
 static FORCEINLINE int32_t atomic_load32(atomic32_t* src) { return *src; }
 static FORCEINLINE void    atomic_store32(atomic32_t* dst, int32_t val) { *dst = val; }
 static FORCEINLINE int32_t atomic_incr32(atomic32_t* val) { return (int32_t)_InterlockedExchangeAdd(val, 1) + 1; }
+#if ENABLE_STATISTICS
 static FORCEINLINE int32_t atomic_decr32(atomic32_t* val) { return (int32_t)_InterlockedExchangeAdd(val, -1) - 1; }
+#endif
 static FORCEINLINE int32_t atomic_add32(atomic32_t* val, int32_t add) { return (int32_t)_InterlockedExchangeAdd(val, add) + add; }
 static FORCEINLINE void*   atomic_load_ptr(atomicptr_t* src) { return (void*)*src; }
 static FORCEINLINE void    atomic_store_ptr(atomicptr_t* dst, void* val) { *dst = val; }
@@ -189,7 +191,9 @@ typedef volatile _Atomic(void*) atomicptr_t;
 static FORCEINLINE int32_t atomic_load32(atomic32_t* src) { return atomic_load_explicit(src, memory_order_relaxed); }
 static FORCEINLINE void    atomic_store32(atomic32_t* dst, int32_t val) { atomic_store_explicit(dst, val, memory_order_relaxed); }
 static FORCEINLINE int32_t atomic_incr32(atomic32_t* val) { return atomic_fetch_add_explicit(val, 1, memory_order_relaxed) + 1; }
+#if ENABLE_STATISTICS
 static FORCEINLINE int32_t atomic_decr32(atomic32_t* val) { return atomic_fetch_add_explicit(val, -1, memory_order_relaxed) - 1; }
+#endif
 static FORCEINLINE int32_t atomic_add32(atomic32_t* val, int32_t add) { return atomic_fetch_add_explicit(val, add, memory_order_relaxed) + add; }
 static FORCEINLINE void*   atomic_load_ptr(atomicptr_t* src) { return atomic_load_explicit(src, memory_order_relaxed); }
 static FORCEINLINE void    atomic_store_ptr(atomicptr_t* dst, void* val) { atomic_store_explicit(dst, val, memory_order_relaxed); }
@@ -1642,6 +1646,55 @@ _memory_adjust_size_class(size_t iclass) {
 	}
 }
 
+static void
+_memory_heap_finalize(void* heapptr) {
+	heap_t* heap = heapptr;
+	if (!heap)
+		return;
+	//Release thread cache spans back to global cache
+#if ENABLE_THREAD_CACHE
+	_memory_heap_cache_adopt_deferred(heap);
+	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
+		span_t* span = heap->span_cache[iclass];
+#if ENABLE_GLOBAL_CACHE
+		while (span) {
+			assert(span->span_count == (iclass + 1));
+			size_t release_count = (!iclass ? _memory_span_release_count : _memory_span_release_count_large);
+			span_t* next = _memory_span_list_split(span, (uint32_t)release_count);
+#if ENABLE_STATISTICS
+			heap->thread_to_global += (size_t)span->list_size * span->span_count * _memory_span_size;
+			heap->span_use[iclass].spans_to_global += span->list_size;
+#endif
+			_memory_global_cache_insert(span);
+			span = next;
+		}
+#else
+		if (span)
+			_memory_unmap_span_list(span);
+#endif
+		heap->span_cache[iclass] = 0;
+	}
+#endif
+
+	//Orphan the heap
+	void* raw_heap;
+	uintptr_t orphan_counter;
+	heap_t* last_heap;
+	do {
+		last_heap = atomic_load_ptr(&_memory_orphan_heaps);
+		heap->next_orphan = (void*)((uintptr_t)last_heap & ~(uintptr_t)0x1FF);
+		orphan_counter = (uintptr_t)atomic_incr32(&_memory_orphan_counter);
+		raw_heap = (void*)((uintptr_t)heap | (orphan_counter & (uintptr_t)0x1FF));
+	} while (!atomic_cas_ptr(&_memory_orphan_heaps, raw_heap, last_heap));
+
+	set_thread_heap(0);
+
+#if ENABLE_STATISTICS
+	atomic_decr32(&_memory_active_heaps);
+	assert(atomic_load32(&_memory_active_heaps) >= 0);
+#endif
+}
+
 #if defined(_MSC_VER) && !defined(__clang__) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
 #include <fibersapi.h>
 static DWORD fls_key;
@@ -1816,7 +1869,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	_memory_span_release_count_large = (_memory_span_release_count > 8 ? (_memory_span_release_count / 4) : 2);
 
 #if (defined(__APPLE__) || defined(__HAIKU__)) && ENABLE_PRELOAD
-	if (pthread_key_create(&_memory_thread_heap, 0))
+	if (pthread_key_create(&_memory_thread_heap, _memory_heap_finalize))
 		return -1;
 #endif
 #if defined(_MSC_VER) && !defined(__clang__) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
@@ -1976,51 +2029,8 @@ rpmalloc_thread_initialize(void) {
 void
 rpmalloc_thread_finalize(void) {
 	heap_t* heap = get_thread_heap_raw();
-	if (!heap)
-		return;
-
-	//Release thread cache spans back to global cache
-#if ENABLE_THREAD_CACHE
-	_memory_heap_cache_adopt_deferred(heap);
-	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
-		span_t* span = heap->span_cache[iclass];
-#if ENABLE_GLOBAL_CACHE
-		while (span) {
-			assert(span->span_count == (iclass + 1));
-			size_t release_count = (!iclass ? _memory_span_release_count : _memory_span_release_count_large);
-			span_t* next = _memory_span_list_split(span, (uint32_t)release_count);
-#if ENABLE_STATISTICS
-			heap->thread_to_global += (size_t)span->list_size * span->span_count * _memory_span_size;
-			heap->span_use[iclass].spans_to_global += span->list_size;
-#endif
-			_memory_global_cache_insert(span);
-			span = next;
-		}
-#else
-		if (span)
-			_memory_unmap_span_list(span);
-#endif
-		heap->span_cache[iclass] = 0;
-	}
-#endif
-
-	//Orphan the heap
-	void* raw_heap;
-	uintptr_t orphan_counter;
-	heap_t* last_heap;
-	do {
-		last_heap = atomic_load_ptr(&_memory_orphan_heaps);
-		heap->next_orphan = (void*)((uintptr_t)last_heap & ~(uintptr_t)0x1FF);
-		orphan_counter = (uintptr_t)atomic_incr32(&_memory_orphan_counter);
-		raw_heap = (void*)((uintptr_t)heap | (orphan_counter & (uintptr_t)0x1FF));
-	} while (!atomic_cas_ptr(&_memory_orphan_heaps, raw_heap, last_heap));
-
-	set_thread_heap(0);
-
-#if ENABLE_STATISTICS
-	atomic_add32(&_memory_active_heaps, -1);
-	assert(atomic_load32(&_memory_active_heaps) >= 0);
-#endif
+	if (heap)
+		_memory_heap_finalize(heap);
 }
 
 int
