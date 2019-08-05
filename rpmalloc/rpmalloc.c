@@ -570,6 +570,7 @@ _memory_heap_lookup(int32_t id) {
 
 #if ENABLE_STATISTICS
 #  define _memory_statistics_inc(counter, value) counter += value
+#  define _memory_statistics_dec(counter, value) counter -= value
 #  define _memory_statistics_add(atomic_counter, value) atomic_add32(atomic_counter, (int32_t)(value))
 #  define _memory_statistics_add_peak(atomic_counter, value, peak) do { int32_t _cur_count = atomic_add32(atomic_counter, (int32_t)(value)); if (_cur_count > (peak)) peak = _cur_count; } while (0)
 #  define _memory_statistics_sub(atomic_counter, value) atomic_add32(atomic_counter, -(int32_t)(value))
@@ -585,6 +586,7 @@ _memory_heap_lookup(int32_t id) {
 } while(0)
 #else
 #  define _memory_statistics_inc(counter, value) do {} while(0)
+#  define _memory_statistics_dec(counter, value) do {} while(0)
 #  define _memory_statistics_add(atomic_counter, value) do {} while(0)
 #  define _memory_statistics_add_peak(atomic_counter, value, peak) do {} while (0)
 #  define _memory_statistics_sub(atomic_counter, value) do {} while(0)
@@ -1066,7 +1068,7 @@ _memory_heap_extract_new_span(heap_t* heap, size_t span_count, uint32_t class_id
 	(void)sizeof(class_idx);
 #if ENABLE_ADAPTIVE_THREAD_CACHE || ENABLE_STATISTICS
 	uint32_t idx = (uint32_t)span_count - 1;
-	uint32_t current_count = atomic_incr32(&heap->span_use[idx].current);
+	uint32_t current_count = (uint32_t)atomic_incr32(&heap->span_use[idx].current);
 	if (current_count > heap->span_use[idx].high)
 		heap->span_use[idx].high = current_count;
 #if ENABLE_STATISTICS
@@ -1105,10 +1107,10 @@ _memory_span_release_to_cache(heap_t* heap, span_t* span) {
 		_memory_span_partial_list_remove(&heap_class->partial_span, span);
 #if ENABLE_ADAPTIVE_THREAD_CACHE || ENABLE_STATISTICS
 	atomic_decr32(&heap->span_use[0].current);
+#endif
 	_memory_statistics_inc(heap->span_use[0].spans_to_cache, 1);
 	_memory_statistics_inc(heap->size_class_use[span->size_class].spans_to_cache, 1);
-	_memory_statistics_inc(heap->size_class_use[span->size_class].spans_current, -1);
-#endif
+	_memory_statistics_dec(heap->size_class_use[span->size_class].spans_current, 1);
 	_memory_heap_cache_insert(heap, span);
 }
 
@@ -2440,8 +2442,8 @@ rpmalloc_dump_statistics(void* file) {
 					atomic_load32(&heap->size_class_use[iclass].free_total),
 					_memory_size_class[iclass].block_size,
 					_memory_size_class[iclass].block_count,
-					atomic_load32(&heap->size_class_use[iclass].spans_current),
-					atomic_load32(&heap->size_class_use[iclass].spans_peak),
+					heap->size_class_use[iclass].spans_current,
+					heap->size_class_use[iclass].spans_peak,
 					((size_t)heap->size_class_use[iclass].alloc_peak * (size_t)_memory_size_class[iclass].block_size) / (size_t)(1024 * 1024),
 					((size_t)heap->size_class_use[iclass].spans_to_cache * _memory_span_size) / (size_t)(1024 * 1024),
 					((size_t)heap->size_class_use[iclass].spans_from_cache * _memory_span_size) / (size_t)(1024 * 1024),
