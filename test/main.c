@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>
 
 #define pointer_offset(ptr, ofs) (void*)((char*)(ptr) + (ptrdiff_t)(ofs))
 #define pointer_diff(first, second) (ptrdiff_t)((const char*)(first) - (const char*)(second))
@@ -282,6 +283,37 @@ test_alloc(void) {
 	rpmalloc_finalize();
 
 	printf("Memory allocation tests passed\n");
+
+	return 0;
+}
+
+static int
+test_realloc(void) {
+	srand((unsigned int)time(0));
+
+	rpmalloc_initialize();
+
+	size_t pointer_count = 4096;
+	void** pointers = rpmalloc(sizeof(void*) * pointer_count);
+	memset(pointers, 0, sizeof(void*) * pointer_count);
+
+	size_t alignments[5] = {0, 16, 32, 64, 128};
+
+	for (size_t iloop = 0; iloop < 8000; ++iloop) {
+		for (size_t iptr = 0; iptr < pointer_count; ++iptr) {
+			if (iloop)
+				rpfree(rprealloc(pointers[iptr], rand() % 4096));
+			pointers[iptr] = rpaligned_alloc(alignments[(iptr + iloop) % 5], iloop + iptr);
+		}
+	}
+
+	for (size_t iptr = 0; iptr < pointer_count; ++iptr)
+		rpfree(pointers[iptr]);
+	rpfree(pointers);
+
+	rpmalloc_finalize();
+
+	printf("Memory reallocation tests passed\n");
 
 	return 0;
 }
@@ -769,6 +801,8 @@ test_run(int argc, char** argv) {
 	(void)sizeof(argv);
 	test_initialize();
 	if (test_alloc())
+		return -1;
+	if (test_realloc())
 		return -1;
 	if (test_superalign())
 		return -1;

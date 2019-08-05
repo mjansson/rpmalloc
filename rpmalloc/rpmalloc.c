@@ -1557,8 +1557,8 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 				size_t num_spans = total_size >> _memory_span_size_shift;
 				if (total_size & (_memory_span_mask - 1))
 					++num_spans;
-				size_t current_spans = (span->size_class - SIZE_CLASS_COUNT) + 1;
-				assert(current_spans == span->span_count);
+				size_t current_spans = span->span_count;
+				assert(current_spans == ((span->size_class - SIZE_CLASS_COUNT) + 1));
 				void* block = pointer_offset(span, SPAN_HEADER_SIZE);
 				if (!oldsize)
 					oldsize = (current_spans * _memory_span_size) - (size_t)pointer_diff(p, block);
@@ -1587,16 +1587,19 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 				return block;
 			}
 		}
+	} else {
+		oldsize = 0;
 	}
 
 	//Size is greater than block size, need to allocate a new block and deallocate the old
 	heap_t* heap = get_thread_heap();
 	//Avoid hysteresis by overallocating if increase is small (below 37%)
 	size_t lower_bound = oldsize + (oldsize >> 2) + (oldsize >> 3);
-	void* block = _memory_allocate(heap, (size > lower_bound) ? size : ((size > oldsize) ? lower_bound : size));
+	size_t new_size = (size > lower_bound) ? size : ((size > oldsize) ? lower_bound : size);
+	void* block = _memory_allocate(heap, new_size);
 	if (p) {
 		if (!(flags & RPMALLOC_NO_PRESERVE))
-			memcpy(block, p, oldsize < size ? oldsize : size);
+			memcpy(block, p, oldsize < new_size ? oldsize : new_size);
 		_memory_deallocate(p);
 	}
 
