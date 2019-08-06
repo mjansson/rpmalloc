@@ -162,7 +162,9 @@ typedef volatile void*     atomicptr_t;
 static FORCEINLINE int32_t atomic_load32(atomic32_t* src) { return *src; }
 static FORCEINLINE void    atomic_store32(atomic32_t* dst, int32_t val) { *dst = val; }
 static FORCEINLINE int32_t atomic_incr32(atomic32_t* val) { return (int32_t)_InterlockedExchangeAdd(val, 1) + 1; }
+#if ENABLE_STATISTICS || ENABLE_ADAPTIVE_THREAD_CACHE
 static FORCEINLINE int32_t atomic_decr32(atomic32_t* val) { return (int32_t)_InterlockedExchangeAdd(val, -1) - 1; }
+#endif
 static FORCEINLINE int32_t atomic_add32(atomic32_t* val, int32_t add) { return (int32_t)_InterlockedExchangeAdd(val, add) + add; }
 static FORCEINLINE void*   atomic_load_ptr(atomicptr_t* src) { return (void*)*src; }
 static FORCEINLINE void    atomic_store_ptr(atomicptr_t* dst, void* val) { *dst = val; }
@@ -189,7 +191,9 @@ typedef volatile _Atomic(void*) atomicptr_t;
 static FORCEINLINE int32_t atomic_load32(atomic32_t* src) { return atomic_load_explicit(src, memory_order_relaxed); }
 static FORCEINLINE void    atomic_store32(atomic32_t* dst, int32_t val) { atomic_store_explicit(dst, val, memory_order_relaxed); }
 static FORCEINLINE int32_t atomic_incr32(atomic32_t* val) { return atomic_fetch_add_explicit(val, 1, memory_order_relaxed) + 1; }
+#if ENABLE_STATISTICS || ENABLE_ADAPTIVE_THREAD_CACHE
 static FORCEINLINE int32_t atomic_decr32(atomic32_t* val) { return atomic_fetch_add_explicit(val, -1, memory_order_relaxed) - 1; }
+#endif
 static FORCEINLINE int32_t atomic_add32(atomic32_t* val, int32_t add) { return atomic_fetch_add_explicit(val, add, memory_order_relaxed) + add; }
 static FORCEINLINE void*   atomic_load_ptr(atomicptr_t* src) { return atomic_load_explicit(src, memory_order_relaxed); }
 static FORCEINLINE void    atomic_store_ptr(atomicptr_t* dst, void* val) { atomic_store_explicit(dst, val, memory_order_relaxed); }
@@ -566,6 +570,7 @@ _memory_heap_lookup(int32_t id) {
 
 #if ENABLE_STATISTICS
 #  define _memory_statistics_inc(counter, value) counter += value
+#  define _memory_statistics_dec(counter, value) counter -= value
 #  define _memory_statistics_add(atomic_counter, value) atomic_add32(atomic_counter, (int32_t)(value))
 #  define _memory_statistics_add_peak(atomic_counter, value, peak) do { int32_t _cur_count = atomic_add32(atomic_counter, (int32_t)(value)); if (_cur_count > (peak)) peak = _cur_count; } while (0)
 #  define _memory_statistics_sub(atomic_counter, value) atomic_add32(atomic_counter, -(int32_t)(value))
@@ -581,6 +586,7 @@ _memory_heap_lookup(int32_t id) {
 } while(0)
 #else
 #  define _memory_statistics_inc(counter, value) do {} while(0)
+#  define _memory_statistics_dec(counter, value) do {} while(0)
 #  define _memory_statistics_add(atomic_counter, value) do {} while(0)
 #  define _memory_statistics_add_peak(atomic_counter, value, peak) do {} while (0)
 #  define _memory_statistics_sub(atomic_counter, value) do {} while(0)
@@ -1062,7 +1068,7 @@ _memory_heap_extract_new_span(heap_t* heap, size_t span_count, uint32_t class_id
 	(void)sizeof(class_idx);
 #if ENABLE_ADAPTIVE_THREAD_CACHE || ENABLE_STATISTICS
 	uint32_t idx = (uint32_t)span_count - 1;
-	uint32_t current_count = atomic_incr32(&heap->span_use[idx].current);
+	uint32_t current_count = (uint32_t)atomic_incr32(&heap->span_use[idx].current);
 	if (current_count > heap->span_use[idx].high)
 		heap->span_use[idx].high = current_count;
 #if ENABLE_STATISTICS
@@ -1101,10 +1107,10 @@ _memory_span_release_to_cache(heap_t* heap, span_t* span) {
 		_memory_span_partial_list_remove(&heap_class->partial_span, span);
 #if ENABLE_ADAPTIVE_THREAD_CACHE || ENABLE_STATISTICS
 	atomic_decr32(&heap->span_use[0].current);
+#endif
 	_memory_statistics_inc(heap->span_use[0].spans_to_cache, 1);
 	_memory_statistics_inc(heap->size_class_use[span->size_class].spans_to_cache, 1);
-	_memory_statistics_inc(heap->size_class_use[span->size_class].spans_current, -1);
-#endif
+	_memory_statistics_dec(heap->size_class_use[span->size_class].spans_current, 1);
 	_memory_heap_cache_insert(heap, span);
 }
 
@@ -1553,8 +1559,8 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 				size_t num_spans = total_size >> _memory_span_size_shift;
 				if (total_size & (_memory_span_mask - 1))
 					++num_spans;
-				size_t current_spans = (span->size_class - SIZE_CLASS_COUNT) + 1;
-				assert(current_spans == span->span_count);
+				size_t current_spans = span->span_count;
+				assert(current_spans == ((span->size_class - SIZE_CLASS_COUNT) + 1));
 				void* block = pointer_offset(span, SPAN_HEADER_SIZE);
 				if (!oldsize)
 					oldsize = (current_spans * _memory_span_size) - (size_t)pointer_diff(p, block);
@@ -1583,16 +1589,19 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 				return block;
 			}
 		}
+	} else {
+		oldsize = 0;
 	}
 
 	//Size is greater than block size, need to allocate a new block and deallocate the old
 	heap_t* heap = get_thread_heap();
 	//Avoid hysteresis by overallocating if increase is small (below 37%)
 	size_t lower_bound = oldsize + (oldsize >> 2) + (oldsize >> 3);
-	void* block = _memory_allocate(heap, (size > lower_bound) ? size : ((size > oldsize) ? lower_bound : size));
+	size_t new_size = (size > lower_bound) ? size : ((size > oldsize) ? lower_bound : size);
+	void* block = _memory_allocate(heap, new_size);
 	if (p) {
 		if (!(flags & RPMALLOC_NO_PRESERVE))
-			memcpy(block, p, oldsize < size ? oldsize : size);
+			memcpy(block, p, oldsize < new_size ? oldsize : new_size);
 		_memory_deallocate(p);
 	}
 
@@ -1640,6 +1649,55 @@ _memory_adjust_size_class(size_t iclass) {
 		else
 			break;
 	}
+}
+
+static void
+_memory_heap_finalize(void* heapptr) {
+	heap_t* heap = heapptr;
+	if (!heap)
+		return;
+	//Release thread cache spans back to global cache
+#if ENABLE_THREAD_CACHE
+	_memory_heap_cache_adopt_deferred(heap);
+	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
+		span_t* span = heap->span_cache[iclass];
+#if ENABLE_GLOBAL_CACHE
+		while (span) {
+			assert(span->span_count == (iclass + 1));
+			size_t release_count = (!iclass ? _memory_span_release_count : _memory_span_release_count_large);
+			span_t* next = _memory_span_list_split(span, (uint32_t)release_count);
+#if ENABLE_STATISTICS
+			heap->thread_to_global += (size_t)span->list_size * span->span_count * _memory_span_size;
+			heap->span_use[iclass].spans_to_global += span->list_size;
+#endif
+			_memory_global_cache_insert(span);
+			span = next;
+		}
+#else
+		if (span)
+			_memory_unmap_span_list(span);
+#endif
+		heap->span_cache[iclass] = 0;
+	}
+#endif
+
+	//Orphan the heap
+	void* raw_heap;
+	uintptr_t orphan_counter;
+	heap_t* last_heap;
+	do {
+		last_heap = atomic_load_ptr(&_memory_orphan_heaps);
+		heap->next_orphan = (void*)((uintptr_t)last_heap & ~(uintptr_t)0x1FF);
+		orphan_counter = (uintptr_t)atomic_incr32(&_memory_orphan_counter);
+		raw_heap = (void*)((uintptr_t)heap | (orphan_counter & (uintptr_t)0x1FF));
+	} while (!atomic_cas_ptr(&_memory_orphan_heaps, raw_heap, last_heap));
+
+	set_thread_heap(0);
+
+#if ENABLE_STATISTICS
+	atomic_decr32(&_memory_active_heaps);
+	assert(atomic_load32(&_memory_active_heaps) >= 0);
+#endif
 }
 
 #if defined(_MSC_VER) && !defined(__clang__) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
@@ -1816,7 +1874,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	_memory_span_release_count_large = (_memory_span_release_count > 8 ? (_memory_span_release_count / 4) : 2);
 
 #if (defined(__APPLE__) || defined(__HAIKU__)) && ENABLE_PRELOAD
-	if (pthread_key_create(&_memory_thread_heap, 0))
+	if (pthread_key_create(&_memory_thread_heap, _memory_heap_finalize))
 		return -1;
 #endif
 #if defined(_MSC_VER) && !defined(__clang__) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
@@ -1976,51 +2034,8 @@ rpmalloc_thread_initialize(void) {
 void
 rpmalloc_thread_finalize(void) {
 	heap_t* heap = get_thread_heap_raw();
-	if (!heap)
-		return;
-
-	//Release thread cache spans back to global cache
-#if ENABLE_THREAD_CACHE
-	_memory_heap_cache_adopt_deferred(heap);
-	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
-		span_t* span = heap->span_cache[iclass];
-#if ENABLE_GLOBAL_CACHE
-		while (span) {
-			assert(span->span_count == (iclass + 1));
-			size_t release_count = (!iclass ? _memory_span_release_count : _memory_span_release_count_large);
-			span_t* next = _memory_span_list_split(span, (uint32_t)release_count);
-#if ENABLE_STATISTICS
-			heap->thread_to_global += (size_t)span->list_size * span->span_count * _memory_span_size;
-			heap->span_use[iclass].spans_to_global += span->list_size;
-#endif
-			_memory_global_cache_insert(span);
-			span = next;
-		}
-#else
-		if (span)
-			_memory_unmap_span_list(span);
-#endif
-		heap->span_cache[iclass] = 0;
-	}
-#endif
-
-	//Orphan the heap
-	void* raw_heap;
-	uintptr_t orphan_counter;
-	heap_t* last_heap;
-	do {
-		last_heap = atomic_load_ptr(&_memory_orphan_heaps);
-		heap->next_orphan = (void*)((uintptr_t)last_heap & ~(uintptr_t)0x1FF);
-		orphan_counter = (uintptr_t)atomic_incr32(&_memory_orphan_counter);
-		raw_heap = (void*)((uintptr_t)heap | (orphan_counter & (uintptr_t)0x1FF));
-	} while (!atomic_cas_ptr(&_memory_orphan_heaps, raw_heap, last_heap));
-
-	set_thread_heap(0);
-
-#if ENABLE_STATISTICS
-	atomic_add32(&_memory_active_heaps, -1);
-	assert(atomic_load32(&_memory_active_heaps) >= 0);
-#endif
+	if (heap)
+		_memory_heap_finalize(heap);
 }
 
 int
@@ -2427,8 +2442,8 @@ rpmalloc_dump_statistics(void* file) {
 					atomic_load32(&heap->size_class_use[iclass].free_total),
 					_memory_size_class[iclass].block_size,
 					_memory_size_class[iclass].block_count,
-					atomic_load32(&heap->size_class_use[iclass].spans_current),
-					atomic_load32(&heap->size_class_use[iclass].spans_peak),
+					heap->size_class_use[iclass].spans_current,
+					heap->size_class_use[iclass].spans_peak,
 					((size_t)heap->size_class_use[iclass].alloc_peak * (size_t)_memory_size_class[iclass].block_size) / (size_t)(1024 * 1024),
 					((size_t)heap->size_class_use[iclass].spans_to_cache * _memory_span_size) / (size_t)(1024 * 1024),
 					((size_t)heap->size_class_use[iclass].spans_from_cache * _memory_span_size) / (size_t)(1024 * 1024),
