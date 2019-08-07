@@ -30,21 +30,21 @@ test_alloc(void) {
 	if (!p)
 		return test_fail("malloc failed");
 	if ((rpmalloc_usable_size(p) < 371) || (rpmalloc_usable_size(p) > (371 + 16)))
-		return test_fail("usable size invalid");
+		return test_fail("usable size invalid (1)");
 	rpfree(p);
 
 	p = new int;
 	if (!p)
 		return test_fail("new failed");
 	if (rpmalloc_usable_size(p) != 16)
-		return test_fail("usable size invalid");
+		return test_fail("usable size invalid (2)");
 	delete static_cast<int*>(p);
 
 	p = new int[16];
 	if (!p)
 		return test_fail("new[] failed");
 	if (rpmalloc_usable_size(p) != 16*sizeof(int))
-		return test_fail("usable size invalid");
+		return test_fail("usable size invalid (3)");
 	delete[] static_cast<int*>(p);
 
 	printf("Allocation tests passed\n");
