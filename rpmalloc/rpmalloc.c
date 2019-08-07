@@ -1563,7 +1563,7 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 				assert(current_spans == ((span->size_class - SIZE_CLASS_COUNT) + 1));
 				void* block = pointer_offset(span, SPAN_HEADER_SIZE);
 				if (!oldsize)
-					oldsize = (current_spans * _memory_span_size) - (size_t)pointer_diff(p, block);
+					oldsize = (current_spans * _memory_span_size) - (size_t)pointer_diff(p, block) - SPAN_HEADER_SIZE;
 				if ((current_spans >= num_spans) && (num_spans >= (current_spans / 2))) {
 					//Still fits in block, never mind trying to save memory, but preserve data if alignment changed
 					if ((p != block) && !(flags & RPMALLOC_NO_PRESERVE))
@@ -1581,7 +1581,7 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 			size_t current_pages = span->span_count;
 			void* block = pointer_offset(span, SPAN_HEADER_SIZE);
 			if (!oldsize)
-				oldsize = (current_pages * _memory_page_size) - (size_t)pointer_diff(p, block);
+				oldsize = (current_pages * _memory_page_size) - (size_t)pointer_diff(p, block) - SPAN_HEADER_SIZE;
 			if ((current_pages >= num_pages) && (num_pages >= (current_pages / 2))) {
 				//Still fits in block, never mind trying to save memory, but preserve data if alignment changed
 				if ((p != block) && !(flags & RPMALLOC_NO_PRESERVE))
@@ -1599,7 +1599,7 @@ _memory_reallocate(void* p, size_t size, size_t oldsize, unsigned int flags) {
 	size_t lower_bound = oldsize + (oldsize >> 2) + (oldsize >> 3);
 	size_t new_size = (size > lower_bound) ? size : ((size > oldsize) ? lower_bound : size);
 	void* block = _memory_allocate(heap, new_size);
-	if (p) {
+	if (p && block) {
 		if (!(flags & RPMALLOC_NO_PRESERVE))
 			memcpy(block, p, oldsize < new_size ? oldsize : new_size);
 		_memory_deallocate(p);

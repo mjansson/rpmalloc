@@ -311,6 +311,14 @@ test_realloc(void) {
 		rpfree(pointers[iptr]);
 	rpfree(pointers);
 
+	size_t bigsize = 1024 * 1024;
+	void* bigptr = rpmalloc(bigsize);
+	while (bigsize < 3 * 1024 * 1024) {
+		++bigsize;
+		bigptr = rprealloc(bigptr, bigsize);
+	}
+	rpfree(bigptr);
+
 	rpmalloc_finalize();
 
 	printf("Memory reallocation tests passed\n");
