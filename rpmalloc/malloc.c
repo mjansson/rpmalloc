@@ -32,11 +32,30 @@ _Static_assert(sizeof(void*) == 4, "Data type size mismatch");
 
 #if ENABLE_OVERRIDE
 
+#define USE_IMPLEMENT 1
+#define USE_INTERPOSE 0
+#define USE_ALIAS 0
+
+#if defined(__APPLE__) && ENABLE_PRELOAD
+#undef USE_INTERPOSE
+#define USE_INTERPOSE 1
+#endif
+
+#if !defined(_WIN32) && !USE_INTERPOSE
+#undef USE_IMPLEMENT
+#undef USE_ALIAS
+#define USE_IMPLEMENT 0
+#define USE_ALIAS 1
+#endif
+
 #ifdef _MSC_VER
 #pragma warning (disable : 4100)
 #undef malloc
 #undef free
 #undef calloc
+#endif
+
+#if USE_IMPLEMENT
 
 extern inline void* RPMALLOC_CDECL malloc(size_t size) { return rpmalloc(size); }
 extern inline void* RPMALLOC_CDECL calloc(size_t count, size_t size) { return rpcalloc(count, size); }
@@ -52,23 +71,25 @@ extern inline size_t RPMALLOC_CDECL malloc_size(void* ptr) { return rpmalloc_usa
 
 // Overload the C++ operators using the mangled names (https://itanium-cxx-abi.github.io/cxx-abi/abi.html#mangling)
 // operators delete and delete[]
-extern void _ZdlPv(void* p) { rpfree(p); }
-extern void _ZdaPv(void* p) { rpfree(p); }
+extern void _ZdlPv(void* p); void _ZdlPv(void* p) { rpfree(p); }
+extern void _ZdaPv(void* p); void _ZdaPv(void* p) { rpfree(p); }
 #if ARCH_64BIT
 // 64-bit operators new and new[], normal and aligned
-extern void* _Znwm(uint64_t size) { return rpmalloc(size); }
-extern void* _Znam(uint64_t size) { return rpmalloc(size); }
-extern void* _Znwmm(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
-extern void* _Znamm(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
+extern void* _Znwm(uint64_t size); void* _Znwm(uint64_t size) { return rpmalloc(size); }
+extern void* _Znam(uint64_t size); void* _Znam(uint64_t size) { return rpmalloc(size); }
+extern void* _Znwmm(uint64_t size, uint64_t align); void* _Znwmm(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
+extern void* _Znamm(uint64_t size, uint64_t align); void* _Znamm(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
 #else
 // 32-bit operators new and new[], normal and aligned
-extern void* _Znwj(uint32_t size) { return rpmalloc(size); }
-extern void* _Znaj(uint32_t size) { return rpmalloc(size); }
-extern inline void* _Znwjj(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
-extern inline void* _Znajj(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
+extern void* _Znwj(uint32_t size); void* _Znwj(uint32_t size) { return rpmalloc(size); }
+extern void* _Znaj(uint32_t size); void* _Znaj(uint32_t size) { return rpmalloc(size); }
+extern void* _Znwjj(uint64_t size, uint64_t align); void* _Znwjj(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
+extern void* _Znajj(uint64_t size, uint64_t align); void* _Znajj(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
 #endif
 
-#elif defined(__APPLE__)
+#endif
+
+#if USE_INTERPOSE
 
 typedef struct interpose_t {
 	void* new_func;
@@ -79,18 +100,6 @@ typedef struct interpose_t {
 #define MAC_INTERPOSE_SINGLE(newf, oldf) \
 __attribute__((used)) static const interpose_t macinterpose##newf##oldf \
 __attribute__ ((section("__DATA, __interpose"))) = MAC_INTERPOSE_PAIR(newf, oldf)
-
-extern void _ZdlPv(void*);
-extern void _ZdaPv(void*);
-extern void* _Znwm(uint64_t);
-extern void* _Znam(uint64_t);
-extern void* _Znwmm(uint64_t, uint64_t);
-extern void* _Znamm(uint64_t, uint64_t);
-extern void* aligned_alloc(size_t, size_t);
-extern void* memalign(size_t, size_t);
-extern void cfree(void*);
-extern size_t malloc_usable_size(void*);
-extern size_t malloc_size(void*);
 
 __attribute__((used)) static const interpose_t macinterpose_malloc[]
 __attribute__ ((section("__DATA, __interpose"))) = {
@@ -113,21 +122,9 @@ __attribute__ ((section("__DATA, __interpose"))) = {
 	MAC_INTERPOSE_PAIR(rpmalloc_usable_size, malloc_size)
 };
 
-//aligned new and new[]
-extern inline void* _Znwmm(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
-extern inline void* _Znamm(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
+#endif
 
-extern void _ZdlPv(void* p) { rpfree(p); }
-extern void _ZdaPv(void* p) { rpfree(p); }
-extern void* _Znwm(uint64_t size) { return rpmalloc(size); }
-extern void* _Znam(uint64_t size) { return rpmalloc(size); }
-
-extern void* aligned_alloc(size_t alignment, size_t size) { return rpaligned_alloc(alignment, size); }
-extern void* memalign(size_t alignment, size_t size) { return rpmemalign(alignment, size); }
-extern void cfree(void* p) { rpfree(p); }
-extern size_t malloc_usable_size(void* p) { return rpmalloc_usable_size(p); }
-
-#else
+#if USE_ALIAS
 
 #define RPALIAS(fn) __attribute__((alias(#fn), used, visibility("default")));
 
@@ -221,7 +218,7 @@ pvalloc(size_t size) {
 	return valloc(size);
 }
 
-#endif
+#endif // ENABLE_OVERRIDE
 
 #if ENABLE_PRELOAD
 
