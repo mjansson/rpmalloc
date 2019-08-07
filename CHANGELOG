@@ -21,6 +21,8 @@ More detailed statistics
 
 Disabled adaptive thread cache by default
 
+Fixed an issue where reallocations of large blocks could read outsize of memory page boundaries
+
 
 1.3.2
 
