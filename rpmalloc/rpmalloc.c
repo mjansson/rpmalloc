@@ -124,6 +124,7 @@
 #  include <stdlib.h>
 #  if defined(__APPLE__)
 #    include <mach/mach_vm.h>
+#    include <mach/vm_statistics.h>
 #    include <pthread.h>
 #  endif
 #  if defined(__HAIKU__)
@@ -2064,7 +2065,10 @@ _memory_map_os(size_t size, size_t* offset) {
 #else
 	int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED;
 #  if defined(__APPLE__)
-	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, flags, (_memory_huge_pages ? VM_FLAGS_SUPERPAGE_SIZE_2MB : -1), 0);
+	int fd = (int)VM_MAKE_TAG(240U);
+	if (_memory_huge_pages)
+		fd |= VM_FLAGS_SUPERPAGE_SIZE_2MB;
+	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, flags, fd, 0);
 #  elif defined(MAP_HUGETLB)
 	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, (_memory_huge_pages ? MAP_HUGETLB : 0) | flags, -1, 0);
 #  else
