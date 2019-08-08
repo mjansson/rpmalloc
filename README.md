@@ -113,6 +113,8 @@ Memory mapping requests are always done in multiples of the memory page size. Yo
 
 To reduce system call overhead, memory spans are mapped in batches controlled by the `span_map_count` configuration variable (which defaults to the `DEFAULT_SPAN_MAP_COUNT` value if 0, which in turn is sized according to the cache configuration define, defaulting to 64). If the memory page size is larger than the span size, the number of spans to map in a single call will be adjusted to guarantee a multiple of the page size, and the spans will be kept mapped until the entire span range can be unmapped in one call (to avoid trying to unmap partial pages).
 
+On macOS and iOS mmap requests are tagged with tag 240 for easy identification with the vmmap tool.
+
 # Span breaking
 Super spans (spans a multiple > 1 of the span size) can be subdivided into smaller spans to fulfull a need to map a new span of memory. By default the allocator will greedily grab and break any larger span from the available caches before mapping new virtual memory. However, spans can currently not be glued together to form larger super spans again. Subspans can traverse the cache and be used by different threads individually.
 
