@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>
 
 #define pointer_offset(ptr, ofs) (void*)((char*)(ptr) + (ptrdiff_t)(ofs))
 #define pointer_diff(first, second) (ptrdiff_t)((const char*)(first) - (const char*)(second))
@@ -20,6 +21,12 @@ static size_t _hardware_threads;
 
 static void
 test_initialize(void);
+
+static int
+test_fail(const char* reason) {
+	fprintf(stderr, "FAIL: %s\n", reason);
+	return -1;
+}
 
 static int
 test_alloc(void) {
@@ -36,61 +43,88 @@ test_alloc(void) {
 	for (id = 0; id < 20000; ++id)
 		data[id] = (char)(id % 139 + id % 17);
 
-	void* testptr = rpmalloc(253000);
-	testptr = rprealloc(testptr, 154);
-	//Verify that blocks are 32 byte size aligned
+	//Verify that blocks are 16 byte size aligned
+	void* testptr = rpmalloc(16);
+	if (rpmalloc_usable_size(testptr) != 16)
+		return test_fail("Bad base alloc usable size");
+	rpfree(testptr);
+	testptr = rpmalloc(32);
+	if (rpmalloc_usable_size(testptr) != 32)
+		return test_fail("Bad base alloc usable size");
+	rpfree(testptr);
+	testptr = rpmalloc(128);
+	if (rpmalloc_usable_size(testptr) != 128)
+		return test_fail("Bad base alloc usable size");
+	rpfree(testptr);
+	for (iloop = 0; iloop <= 1024; ++iloop) {
+		testptr = rpmalloc(iloop);
+		size_t wanted_usable_size = 16 * ((iloop / 16) + ((!iloop || (iloop % 16)) ? 1 : 0));
+		if (rpmalloc_usable_size(testptr) != wanted_usable_size)
+			return test_fail("Bad base alloc usable size");
+		rpfree(testptr);
+	}
+
+	//Verify medium block sizes (until class merging kicks in)
+	for (iloop = 1025; iloop <= 6000; ++iloop) {
+		testptr = rpmalloc(iloop);
+		size_t wanted_usable_size = 512 * ((iloop / 512) + ((iloop % 512) ? 1 : 0));
+		if (rpmalloc_usable_size(testptr) != wanted_usable_size)
+			return test_fail("Bad medium alloc usable size");
+		rpfree(testptr);
+	}
+
+	//Large reallocation test
+	testptr = rpmalloc(253000);
+	testptr = rprealloc(testptr, 151);
 	if (rpmalloc_usable_size(testptr) != 160)
-		return -1;
+		return test_fail("Bad usable size");
 	if (rpmalloc_usable_size(pointer_offset(testptr, 16)) != 144)
-		return -1;
+		return test_fail("Bad offset usable size");
 	rpfree(testptr);
 
 	//Reallocation tests
-	for (iloop = 1; iloop < 32; ++iloop) {
+	for (iloop = 1; iloop < 24; ++iloop) {
 		size_t size = 37 * iloop;
 		testptr = rpmalloc(size);
 		*((uintptr_t*)testptr) = 0x12345678;
-		if (rpmalloc_usable_size(testptr) < size)
-			return -1;
-		if (rpmalloc_usable_size(testptr) >= (size + 32))
-			return -1;
-		testptr = rprealloc(testptr, size + 32);
-		if (rpmalloc_usable_size(testptr) < (size + 32))
-			return -1;
-		if (rpmalloc_usable_size(testptr) >= ((size + 32) * 2))
-			return -1;
+		size_t wanted_usable_size = 16 * ((size / 16) + ((size % 16) ? 1 : 0));
+		if (rpmalloc_usable_size(testptr) != wanted_usable_size)
+			return test_fail("Bad usable size (alloc)");
+		testptr = rprealloc(testptr, size + 16);
+		if (rpmalloc_usable_size(testptr) < (wanted_usable_size + 16))
+			return test_fail("Bad usable size (realloc)");
 		if (*((uintptr_t*)testptr) != 0x12345678)
-			return -1;
+			return test_fail("Data not preserved on realloc");
 		rpfree(testptr);
 
 		testptr = rpaligned_alloc(128, size);
 		*((uintptr_t*)testptr) = 0x12345678;
-		if (rpmalloc_usable_size(testptr) < size)
-			return -1;
-		if (rpmalloc_usable_size(testptr) >= (size + 128 + 32))
-			return -1;
+		wanted_usable_size = 16 * ((size / 16) + ((size % 16) ? 1 : 0));
+		if (rpmalloc_usable_size(testptr) < wanted_usable_size)
+			return test_fail("Bad usable size (aligned alloc)");
+		if (rpmalloc_usable_size(testptr) > (wanted_usable_size + 128))
+			return test_fail("Bad usable size (aligned alloc)");
 		testptr = rpaligned_realloc(testptr, 128, size + 32, 0, 0);
-		if (rpmalloc_usable_size(testptr) < (size + 32))
-			return -1;
-		if (rpmalloc_usable_size(testptr) >= (((size + 32) * 2) + 128))
-			return -1;
+		if (rpmalloc_usable_size(testptr) < (wanted_usable_size + 32))
+			return test_fail("Bad usable size (aligned realloc)");
 		if (*((uintptr_t*)testptr) != 0x12345678)
-			return -1;
+			return test_fail("Data not preserved on realloc");
 		void* unaligned = rprealloc(testptr, size);
 		if (unaligned != testptr) {
 			ptrdiff_t diff = pointer_diff(testptr, unaligned);
 			if (diff < 0)
-				return -1;
+				return test_fail("Bad realloc behaviour");
 			if (diff >= 128)
-				return -1;
+				return test_fail("Bad realloc behaviour");
 		}
 		rpfree(testptr);
 	}
 
+	static size_t alignment[3] = { 0, 64, 256 };
 	for (iloop = 0; iloop < 64; ++iloop) {
 		for (ipass = 0; ipass < 8142; ++ipass) {
 			size_t size = iloop + ipass + datasize[(iloop + ipass) % 7];
-			char* baseptr = rpmalloc(size);
+			char* baseptr = rpaligned_alloc(alignment[ipass % 3], size);
 			for (size_t ibyte = 0; ibyte < size; ++ibyte)
 				baseptr[ibyte] = (char)(ibyte & 0xFF);
 
@@ -99,7 +133,7 @@ test_alloc(void) {
 			baseptr = rprealloc(baseptr, resize);
 			for (size_t ibyte = 0; ibyte < capsize; ++ibyte) {
 				if (baseptr[ibyte] != (char)(ibyte & 0xFF))
-					return -1;
+					return test_fail("Data not preserved on realloc");
 			}
 
 			size_t alignsize = (iloop * ipass + datasize[(iloop + ipass * 3) % 7]) & 0x2FF;
@@ -107,7 +141,7 @@ test_alloc(void) {
 			baseptr = rpaligned_realloc(baseptr, 128, alignsize, resize, 0);
 			for (size_t ibyte = 0; ibyte < capsize; ++ibyte) {
 				if (baseptr[ibyte] != (char)(ibyte & 0xFF))
-					return -1;
+					return test_fail("Data not preserved on realloc");
 			}
 
 			rpfree(baseptr);
@@ -118,27 +152,27 @@ test_alloc(void) {
 		for (ipass = 0; ipass < 8142; ++ipass) {
 			addr[ipass] = rpmalloc(500);
 			if (addr[ipass] == 0)
-				return -1;
+				return test_fail("Allocation failed");
 
 			memcpy(addr[ipass], data + ipass, 500);
 
 			for (icheck = 0; icheck < ipass; ++icheck) {
 				if (addr[icheck] == addr[ipass])
-					return -1;
+					return test_fail("Bad allocation result");
 				if (addr[icheck] < addr[ipass]) {
 					if (pointer_offset(addr[icheck], 500) > addr[ipass])
-						return -1;
+						return test_fail("Bad allocation result");
 				}
 				else if (addr[icheck] > addr[ipass]) {
 					if (pointer_offset(addr[ipass], 500) > addr[icheck])
-						return -1;
+						return test_fail("Bad allocation result");
 				}
 			}
 		}
 
 		for (ipass = 0; ipass < 8142; ++ipass) {
 			if (memcmp(addr[ipass], data + ipass, 500))
-				return -1;
+				return test_fail("Data corruption");
 		}
 
 		for (ipass = 0; ipass < 8142; ++ipass)
@@ -151,20 +185,20 @@ test_alloc(void) {
 
 			addr[ipass] = rpmalloc(cursize);
 			if (addr[ipass] == 0)
-				return -1;
+				return test_fail("Allocation failed");
 
 			memcpy(addr[ipass], data + ipass, cursize);
 
 			for (icheck = 0; icheck < ipass; ++icheck) {
 				if (addr[icheck] == addr[ipass])
-					return -1;
+					return test_fail("Identical pointer returned from allocation");
 				if (addr[icheck] < addr[ipass]) {
 					if (pointer_offset(addr[icheck], rpmalloc_usable_size(addr[icheck])) > addr[ipass])
-						return -1;
+						return test_fail("Invalid pointer inside another block returned from allocation");
 				}
 				else if (addr[icheck] > addr[ipass]) {
 					if (pointer_offset(addr[ipass], rpmalloc_usable_size(addr[ipass])) > addr[icheck])
-						return -1;
+						return test_fail("Invalid pointer inside another block returned from allocation");
 				}
 			}
 		}
@@ -172,7 +206,7 @@ test_alloc(void) {
 		for (ipass = 0; ipass < 1024; ++ipass) {
 			unsigned int cursize = datasize[ipass%7] + ipass;
 			if (memcmp(addr[ipass], data + ipass, cursize))
-				return -1;
+				return test_fail("Data corruption");
 		}
 
 		for (ipass = 0; ipass < 1024; ++ipass)
@@ -183,27 +217,27 @@ test_alloc(void) {
 		for (ipass = 0; ipass < 1024; ++ipass) {
 			addr[ipass] = rpmalloc(500);
 			if (addr[ipass] == 0)
-				return -1;
+				return test_fail("Allocation failed");
 
 			memcpy(addr[ipass], data + ipass, 500);
 
 			for (icheck = 0; icheck < ipass; ++icheck) {
 				if (addr[icheck] == addr[ipass])
-					return -1;
+					return test_fail("Identical pointer returned from allocation");
 				if (addr[icheck] < addr[ipass]) {
 					if (pointer_offset(addr[icheck], 500) > addr[ipass])
-						return -1;
+						return test_fail("Invalid pointer inside another block returned from allocation");
 				}
 				else if (addr[icheck] > addr[ipass]) {
 					if (pointer_offset(addr[ipass], 500) > addr[icheck])
-						return -1;
+						return test_fail("Invalid pointer inside another block returned from allocation");
 				}
 			}
 		}
 
 		for (ipass = 0; ipass < 1024; ++ipass) {
 			if (memcmp(addr[ipass], data + ipass, 500))
-				return -1;
+				return test_fail("Data corruption");
 		}
 
 		for (ipass = 0; ipass < 1024; ++ipass)
@@ -216,7 +250,7 @@ test_alloc(void) {
 		rpmalloc_initialize();
 		addr[0] = rpmalloc(iloop);
 		if (!addr[0])
-			return -1;
+			return test_fail("Allocation failed");
 		rpfree(addr[0]);
 		rpmalloc_finalize();
 	}
@@ -225,7 +259,7 @@ test_alloc(void) {
 		rpmalloc_initialize();
 		addr[0] = rpmalloc(iloop);
 		if (!addr[0])
-			return -1;
+			return test_fail("Allocation failed");
 		rpfree(addr[0]);
 		rpmalloc_finalize();
 	}
@@ -234,7 +268,7 @@ test_alloc(void) {
 		rpmalloc_initialize();
 		addr[0] = rpmalloc(iloop);
 		if (!addr[0])
-			return -1;
+			return test_fail("Allocation failed");
 		rpfree(addr[0]);
 		rpmalloc_finalize();
 	}
@@ -243,12 +277,51 @@ test_alloc(void) {
 	for (iloop = 0; iloop < (2 * 1024 * 1024); iloop += 16) {
 		addr[0] = rpmalloc(iloop);
 		if (!addr[0])
-			return -1;
+			return test_fail("Allocation failed");
 		rpfree(addr[0]);
 	}
 	rpmalloc_finalize();
 
 	printf("Memory allocation tests passed\n");
+
+	return 0;
+}
+
+static int
+test_realloc(void) {
+	srand((unsigned int)time(0));
+
+	rpmalloc_initialize();
+
+	size_t pointer_count = 4096;
+	void** pointers = rpmalloc(sizeof(void*) * pointer_count);
+	memset(pointers, 0, sizeof(void*) * pointer_count);
+
+	size_t alignments[5] = {0, 16, 32, 64, 128};
+
+	for (size_t iloop = 0; iloop < 8000; ++iloop) {
+		for (size_t iptr = 0; iptr < pointer_count; ++iptr) {
+			if (iloop)
+				rpfree(rprealloc(pointers[iptr], rand() % 4096));
+			pointers[iptr] = rpaligned_alloc(alignments[(iptr + iloop) % 5], iloop + iptr);
+		}
+	}
+
+	for (size_t iptr = 0; iptr < pointer_count; ++iptr)
+		rpfree(pointers[iptr]);
+	rpfree(pointers);
+
+	size_t bigsize = 1024 * 1024;
+	void* bigptr = rpmalloc(bigsize);
+	while (bigsize < 3 * 1024 * 1024) {
+		++bigsize;
+		bigptr = rprealloc(bigptr, bigsize);
+	}
+	rpfree(bigptr);
+
+	rpmalloc_finalize();
+
+	printf("Memory reallocation tests passed\n");
 
 	return 0;
 }
@@ -268,7 +341,7 @@ test_superalign(void) {
 					size_t alloc_size = sizes[isize] + iloop + ipass;
 					uint8_t* ptr = rpaligned_alloc(alignment[ialign], alloc_size);
 					if (!ptr || ((uintptr_t)ptr & (alignment[ialign] - 1)))
-						return -1;
+						return test_fail("Super alignment allocation failed");
 					ptr[0] = 1;
 					ptr[alloc_size - 1] = 1;
 					rpfree(ptr);
@@ -290,6 +363,7 @@ typedef struct _allocator_thread_arg {
 	unsigned int        datasize[32];
 	unsigned int        num_datasize; //max 32
 	void**              pointers;
+	void**              crossthread_pointers;
 } allocator_thread_arg_t;
 
 static void
@@ -320,7 +394,7 @@ allocator_thread(void* argp) {
 
 			addr[ipass] = rpmalloc(4 + cursize);
 			if (addr[ipass] == 0) {
-				ret = -1;
+				ret = test_fail("Allocation failed");
 				goto end;
 			}
 
@@ -329,23 +403,19 @@ allocator_thread(void* argp) {
 
 			for (icheck = 0; icheck < ipass; ++icheck) {
 				if (addr[icheck] == addr[ipass]) {
-					ret = -1;
+					ret = test_fail("Identical pointer returned from allocation");
 					goto end;
 				}
 				if (addr[icheck] < addr[ipass]) {
-					if (pointer_offset(addr[icheck], *(uint32_t*)addr[icheck]) > addr[ipass]) {
-						if (pointer_offset(addr[icheck], *(uint32_t*)addr[icheck]) > addr[ipass]) {
-							ret = -1;
-							goto end;
-						}
+					if (pointer_offset(addr[icheck], *(uint32_t*)addr[icheck] + 4) > addr[ipass]) {
+						ret = test_fail("Invalid pointer inside another block returned from allocation");
+						goto end;
 					}
 				}
 				else if (addr[icheck] > addr[ipass]) {
-					if (pointer_offset(addr[ipass], *(uint32_t*)addr[ipass]) > addr[ipass]) {
-						if (pointer_offset(addr[ipass], *(uint32_t*)addr[ipass]) > addr[icheck]) {
-							ret = -1;
-							goto end;
-						}
+					if (pointer_offset(addr[ipass], *(uint32_t*)addr[ipass] + 4) > addr[icheck]) {
+						ret = test_fail("Invalid pointer inside another block returned from allocation");
+						goto end;
 					}
 				}
 			}
@@ -355,7 +425,7 @@ allocator_thread(void* argp) {
 			cursize = *(uint32_t*)addr[ipass];
 
 			if (memcmp(pointer_offset(addr[ipass], 4), data, cursize)) {
-				ret = -1;
+				ret = test_fail("Data corrupted");
 				goto end;
 			}
 
@@ -378,24 +448,72 @@ crossallocator_thread(void* argp) {
 	unsigned int iloop = 0;
 	unsigned int ipass = 0;
 	unsigned int cursize;
-	unsigned int iwait = 0;
+	unsigned int iextra = 0;
 	int ret = 0;
 
 	rpmalloc_thread_initialize();
 
 	thread_sleep(10);
 
+	size_t next_crossthread = 0;
+	size_t end_crossthread = arg.loops * arg.passes;
+
+	void** extra_pointers = rpmalloc(sizeof(void*) * arg.loops * arg.passes);
+
 	for (iloop = 0; iloop < arg.loops; ++iloop) {
 		for (ipass = 0; ipass < arg.passes; ++ipass) {
-			cursize = arg.datasize[(iloop + ipass + iwait) % arg.num_datasize ] + ((iloop + ipass) % 1024);
-
-			void* addr = rpmalloc(cursize);
-			if (addr == 0) {
-				ret = -1;
+			size_t iarg = (iloop + ipass + iextra++) % arg.num_datasize;
+			cursize = arg.datasize[iarg] + ((iloop + ipass) % 21);
+			void* first_addr = rpmalloc(cursize);
+			if (first_addr == 0) {
+				ret = test_fail("Allocation failed");
 				goto end;
 			}
 
-			arg.pointers[iloop * arg.passes + ipass] = addr;
+			iarg = (iloop + ipass + iextra++) % arg.num_datasize;
+			cursize = arg.datasize[iarg] + ((iloop + ipass) % 71);
+			void* second_addr = rpmalloc(cursize);
+			if (second_addr == 0) {
+				ret = test_fail("Allocation failed");
+				goto end;
+			}
+
+			iarg = (iloop + ipass + iextra++) % arg.num_datasize;
+			cursize = arg.datasize[iarg] + ((iloop + ipass) % 17);
+			void* third_addr = rpmalloc(cursize);
+			if (third_addr == 0) {
+				ret = test_fail("Allocation failed");
+				goto end;
+			}
+
+			rpfree(first_addr);
+			arg.pointers[iloop * arg.passes + ipass] = second_addr;
+			extra_pointers[iloop * arg.passes + ipass] = third_addr;
+
+			while ((next_crossthread < end_crossthread) &&
+			        arg.crossthread_pointers[next_crossthread]) {
+				rpfree(arg.crossthread_pointers[next_crossthread]);
+				arg.crossthread_pointers[next_crossthread] = 0;
+				++next_crossthread;
+			}
+		}
+	}
+
+	for (iloop = 0; iloop < arg.loops; ++iloop) {
+		for (ipass = 0; ipass < arg.passes; ++ipass) {
+			rpfree(extra_pointers[(iloop * arg.passes) + ipass]);
+		}
+	}
+
+	rpfree(extra_pointers);
+
+	while (next_crossthread < end_crossthread) {
+		if (arg.crossthread_pointers[next_crossthread]) {
+			rpfree(arg.crossthread_pointers[next_crossthread]);
+			arg.crossthread_pointers[next_crossthread] = 0;
+			++next_crossthread;
+		} else {
+			thread_yield();
 		}
 	}
 
@@ -426,12 +544,15 @@ initfini_thread(void* argp) {
 	for (iloop = 0; iloop < arg.loops; ++iloop) {
 		rpmalloc_thread_initialize();
 
+		unsigned int max_datasize = 0;
 		for (ipass = 0; ipass < arg.passes; ++ipass) {
-			cursize = 4 + arg.datasize[(iloop + ipass + iwait) % arg.num_datasize] + ((iloop + ipass) % 1024);
+			cursize = arg.datasize[(iloop + ipass + iwait) % arg.num_datasize] + ((iloop + ipass) % 1024);
+			if (cursize > max_datasize)
+				max_datasize = cursize;
 
 			addr[ipass] = rpmalloc(4 + cursize);
 			if (addr[ipass] == 0) {
-				ret = -1;
+				ret = test_fail("Allocation failed");
 				goto end;
 			}
 
@@ -439,24 +560,30 @@ initfini_thread(void* argp) {
 			memcpy(pointer_offset(addr[ipass], 4), data, cursize);
 
 			for (icheck = 0; icheck < ipass; ++icheck) {
+				size_t this_size = *(uint32_t*)addr[ipass];
+				size_t check_size = *(uint32_t*)addr[icheck];
+				if (this_size != cursize) {
+					ret = test_fail("Data corrupted in this block (size)");
+					goto end;
+				}
+				if (check_size > max_datasize) {
+					ret = test_fail("Data corrupted in previous block (size)");
+					goto end;
+				}
 				if (addr[icheck] == addr[ipass]) {
-					ret = -1;
+					ret = test_fail("Identical pointer returned from allocation");
 					goto end;
 				}
 				if (addr[icheck] < addr[ipass]) {
-					if (pointer_offset(addr[icheck], *(uint32_t*)addr[icheck]) > addr[ipass]) {
-						if (pointer_offset(addr[icheck], *(uint32_t*)addr[icheck]) > addr[ipass]) {
-							ret = -1;
-							goto end;
-						}
+					if (pointer_offset(addr[icheck], check_size + 4) > addr[ipass]) {
+						ret = test_fail("Invalid pointer inside another block returned from allocation");
+						goto end;
 					}
 				}
 				else if (addr[icheck] > addr[ipass]) {
-					if (pointer_offset(addr[ipass], *(uint32_t*)addr[ipass]) > addr[ipass]) {
-						if (pointer_offset(addr[ipass], *(uint32_t*)addr[ipass]) > addr[icheck]) {
-							ret = -1;
-							goto end;
-						}
+					if (pointer_offset(addr[ipass], cursize + 4) > addr[icheck]) {
+						ret = test_fail("Invalid pointer inside another block returned from allocation");
+						goto end;
 					}
 				}
 			}
@@ -464,9 +591,13 @@ initfini_thread(void* argp) {
 
 		for (ipass = 0; ipass < arg.passes; ++ipass) {
 			cursize = *(uint32_t*)addr[ipass];
+			if (cursize > max_datasize) {
+				ret = test_fail("Data corrupted (size)");
+				goto end;
+			}
 
 			if (memcmp(pointer_offset(addr[ipass], 4), data, cursize)) {
-				ret = -1;
+				ret = test_fail("Data corrupted");
 				goto end;
 			}
 			
@@ -474,6 +605,7 @@ initfini_thread(void* argp) {
 		}
 
 		rpmalloc_thread_finalize();
+		thread_yield();
 	}
 
 end:
@@ -555,10 +687,11 @@ test_crossthread(void) {
 		num_alloc_threads = 4;
 
 	for (unsigned int ithread = 0; ithread < num_alloc_threads; ++ithread) {
-		unsigned int iadd = ithread * (16 + ithread);
+		unsigned int iadd = (ithread * (16 + ithread) + ithread) % 128;
 		arg[ithread].loops = 50;
 		arg[ithread].passes = 1024;
 		arg[ithread].pointers = rpmalloc(sizeof(void*) * arg[ithread].loops * arg[ithread].passes);
+		memset(arg[ithread].pointers, 0, sizeof(void*) * arg[ithread].loops * arg[ithread].passes);
 		arg[ithread].datasize[0] = 19 + iadd;
 		arg[ithread].datasize[1] = 249 + iadd;
 		arg[ithread].datasize[2] = 797 + iadd;
@@ -567,18 +700,22 @@ test_crossthread(void) {
 		arg[ithread].datasize[5] = 344 + iadd;
 		arg[ithread].datasize[6] = 3892 + iadd;
 		arg[ithread].datasize[7] = 19 + iadd;
-		arg[ithread].datasize[8] = 14954 + iadd;
+		arg[ithread].datasize[8] = 154 + iadd;
 		arg[ithread].datasize[9] = 39723 + iadd;
 		arg[ithread].datasize[10] = 15 + iadd;
 		arg[ithread].datasize[11] = 493 + iadd;
 		arg[ithread].datasize[12] = 34 + iadd;
 		arg[ithread].datasize[13] = 894 + iadd;
-		arg[ithread].datasize[14] = 6893 + iadd;
+		arg[ithread].datasize[14] = 193 + iadd;
 		arg[ithread].datasize[15] = 2893 + iadd;
 		arg[ithread].num_datasize = 16;
 
 		targ[ithread].fn = crossallocator_thread;
 		targ[ithread].arg = &arg[ithread];
+	}
+
+	for (unsigned int ithread = 0; ithread < num_alloc_threads; ++ithread) {
+		arg[ithread].crossthread_pointers = arg[(ithread + 1) % num_alloc_threads].pointers;
 	}
 
 	for (int iloop = 0; iloop < 32; ++iloop) {
@@ -590,10 +727,6 @@ test_crossthread(void) {
 		for (unsigned int ithread = 0; ithread < num_alloc_threads; ++ithread) {
 			if (thread_join(thread[ithread]) != 0)
 				return -1;
-
-			//Off-thread deallocation
-			for (size_t iptr = 0; iptr < arg[ithread].loops * arg[ithread].passes; ++iptr)
-				rpfree(arg[ithread].pointers[iptr]);
 		}
 	}
 
@@ -677,6 +810,8 @@ test_run(int argc, char** argv) {
 	test_initialize();
 	if (test_alloc())
 		return -1;
+	if (test_realloc())
+		return -1;
 	if (test_superalign())
 		return -1;
 	if (test_crossthread())
@@ -685,6 +820,7 @@ test_run(int argc, char** argv) {
 		return -1;
 	if (test_threaded())
 		return -1;
+	printf("All tests passed\n");
 	return 0;
 }
 

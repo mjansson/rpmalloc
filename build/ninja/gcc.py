@@ -52,7 +52,6 @@ class GCCToolchain(toolchain.Toolchain):
     if self.target.is_linux() or self.target.is_bsd() or self.target.is_raspberrypi():
       self.cflags += ['-D_GNU_SOURCE=1']
       self.linkflags += ['-pthread']
-      self.oslibs += ['m']
     if self.target.is_linux() or self.target.is_raspberrypi():
       self.oslibs += ['dl']
     if self.target.is_bsd():
@@ -183,7 +182,7 @@ class GCCToolchain(toolchain.Toolchain):
     flags = []
     if targettype == 'sharedlib':
       flags += ['-DBUILD_DYNAMIC_LINK=1']
-      if self.target.is_linux():
+      if self.target.is_linux() or self.target.is_bsd():
         flags += ['-fPIC']
     flags += self.make_targetarchflags(arch, targettype)
     return flags

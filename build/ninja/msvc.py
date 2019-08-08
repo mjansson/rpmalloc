@@ -22,7 +22,7 @@ class MSVCToolchain(toolchain.Toolchain):
     self.linker = 'link'
     self.dller = 'dll'
 
-    #Command definitions
+    #Command definitions (to generate assembly, add "/FAs /Fa$out.asm")
     self.cccmd = '$toolchain$cc /showIncludes /I. $includepaths $moreincludepaths $cflags $carchflags $cconfigflags $cmoreflags /c $in /Fo$out /Fd$pdbpath /FS /nologo'
     self.cxxcmd = '$toolchain$cxx /showIncludes /I. $includepaths $moreincludepaths $cxxflags $carchflags $cconfigflags $cmoreflags /c $in /Fo$out /Fd$pdbpath /FS /nologo'
     self.ccdepfile = None

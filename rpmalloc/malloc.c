@@ -9,16 +9,43 @@
  *
  */
 
-#include "rpmalloc.h"
+//
+// This file provides overrides for the standard library malloc entry points for C and new/delete operators for C++
+// It also provides automatic initialization/finalization of process and threads
+//
 
-#ifndef ENABLE_VALIDATE_ARGS
-//! Enable validation of args to public entry points
-#define ENABLE_VALIDATE_ARGS      0
+#ifndef ARCH_64BIT
+#  if defined(__LLP64__) || defined(__LP64__) || defined(_WIN64)
+#    define ARCH_64BIT 1
+_Static_assert(sizeof(size_t) == 8, "Data type size mismatch");
+_Static_assert(sizeof(void*) == 8, "Data type size mismatch");
+#  else
+#    define ARCH_64BIT 0
+_Static_assert(sizeof(size_t) == 4, "Data type size mismatch");
+_Static_assert(sizeof(void*) == 4, "Data type size mismatch");
+#  endif
 #endif
 
-#if ENABLE_VALIDATE_ARGS
-//! Maximum allocation size to avoid integer overflow
-#define MAX_ALLOC_SIZE            (((size_t)-1) - 4096)
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__MACH__)
+#pragma GCC visibility push(default)
+#endif
+
+#if ENABLE_OVERRIDE
+
+#define USE_IMPLEMENT 1
+#define USE_INTERPOSE 0
+#define USE_ALIAS 0
+
+#if defined(__APPLE__) && ENABLE_PRELOAD
+#undef USE_INTERPOSE
+#define USE_INTERPOSE 1
+#endif
+
+#if !defined(_WIN32) && !USE_INTERPOSE
+#undef USE_IMPLEMENT
+#undef USE_ALIAS
+#define USE_IMPLEMENT 0
+#define USE_ALIAS 1
 #endif
 
 #ifdef _MSC_VER
@@ -28,84 +55,193 @@
 #undef calloc
 #endif
 
-//This file provides overrides for the standard library malloc style entry points
+#if USE_IMPLEMENT
 
-extern RPMALLOC_RESTRICT void* RPMALLOC_CDECL
-malloc(size_t size);
+extern inline void* RPMALLOC_CDECL malloc(size_t size) { return rpmalloc(size); }
+extern inline void* RPMALLOC_CDECL calloc(size_t count, size_t size) { return rpcalloc(count, size); }
+extern inline void* RPMALLOC_CDECL realloc(void* ptr, size_t size) { return rprealloc(ptr, size); }
+extern inline void* RPMALLOC_CDECL reallocf(void* ptr, size_t size) { return rprealloc(ptr, size); }
+extern inline void* RPMALLOC_CDECL aligned_alloc(size_t alignment, size_t size) { return rpaligned_alloc(alignment, size); }
+extern inline void* RPMALLOC_CDECL memalign(size_t alignment, size_t size) { return rpmemalign(alignment, size); }
+extern inline int RPMALLOC_CDECL posix_memalign(void** memptr, size_t alignment, size_t size) { return rpposix_memalign(memptr, alignment, size); }
+extern inline void RPMALLOC_CDECL free(void* ptr) { rpfree(ptr); }
+extern inline void RPMALLOC_CDECL cfree(void* ptr) { rpfree(ptr); }
+extern inline size_t RPMALLOC_CDECL malloc_usable_size(void* ptr) { return rpmalloc_usable_size(ptr); }
+extern inline size_t RPMALLOC_CDECL malloc_size(void* ptr) { return rpmalloc_usable_size(ptr); }
 
-extern RPMALLOC_RESTRICT void* RPMALLOC_CDECL
-calloc(size_t count, size_t size);
-
-extern void* RPMALLOC_CDECL
-realloc(void* ptr, size_t size);
-
-extern void* RPMALLOC_CDECL
-reallocf(void* ptr, size_t size);
-
-extern void*
-reallocarray(void* ptr, size_t count, size_t size);
-
-extern RPMALLOC_RESTRICT void* RPMALLOC_CDECL
-valloc(size_t size);
-
-extern RPMALLOC_RESTRICT void* RPMALLOC_CDECL
-pvalloc(size_t size);
-
-extern RPMALLOC_RESTRICT void* RPMALLOC_CDECL
-aligned_alloc(size_t alignment, size_t size);
-
-extern RPMALLOC_RESTRICT void* RPMALLOC_CDECL
-memalign(size_t alignment, size_t size);
-
-extern int RPMALLOC_CDECL
-posix_memalign(void** memptr, size_t alignment, size_t size);
-
-extern void RPMALLOC_CDECL
-free(void* ptr);
-
-extern void RPMALLOC_CDECL
-cfree(void* ptr);
-
-extern size_t RPMALLOC_CDECL
-malloc_usable_size(
-#if defined(__ANDROID__)
-	const void* ptr
+// Overload the C++ operators using the mangled names (https://itanium-cxx-abi.github.io/cxx-abi/abi.html#mangling)
+// operators delete and delete[]
+extern void _ZdlPv(void* p); void _ZdlPv(void* p) { rpfree(p); }
+extern void _ZdaPv(void* p); void _ZdaPv(void* p) { rpfree(p); }
+#if ARCH_64BIT
+// 64-bit operators new and new[], normal and aligned
+extern void* _Znwm(uint64_t size); void* _Znwm(uint64_t size) { return rpmalloc(size); }
+extern void* _Znam(uint64_t size); void* _Znam(uint64_t size) { return rpmalloc(size); }
+extern void* _Znwmm(uint64_t size, uint64_t align); void* _Znwmm(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
+extern void* _Znamm(uint64_t size, uint64_t align); void* _Znamm(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
 #else
-	void* ptr
+// 32-bit operators new and new[], normal and aligned
+extern void* _Znwj(uint32_t size); void* _Znwj(uint32_t size) { return rpmalloc(size); }
+extern void* _Znaj(uint32_t size); void* _Znaj(uint32_t size) { return rpmalloc(size); }
+extern void* _Znwjj(uint64_t size, uint64_t align); void* _Znwjj(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
+extern void* _Znajj(uint64_t size, uint64_t align); void* _Znajj(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
 #endif
-	);
 
-extern size_t RPMALLOC_CDECL
-malloc_size(void* ptr);
+#endif
+
+#if USE_INTERPOSE
+
+typedef struct interpose_t {
+	void* new_func;
+	void* orig_func;
+} interpose_t;
+
+#define MAC_INTERPOSE_PAIR(newf, oldf) 	{ (void*)newf, (void*)oldf }
+#define MAC_INTERPOSE_SINGLE(newf, oldf) \
+__attribute__((used)) static const interpose_t macinterpose##newf##oldf \
+__attribute__ ((section("__DATA, __interpose"))) = MAC_INTERPOSE_PAIR(newf, oldf)
+
+__attribute__((used)) static const interpose_t macinterpose_malloc[]
+__attribute__ ((section("__DATA, __interpose"))) = {
+	//new and new[]
+	MAC_INTERPOSE_PAIR(rpmalloc, _Znwm),
+	MAC_INTERPOSE_PAIR(rpmalloc, _Znam),
+	//delete and delete[]
+	MAC_INTERPOSE_PAIR(rpfree, _ZdlPv),
+	MAC_INTERPOSE_PAIR(rpfree, _ZdaPv),
+	MAC_INTERPOSE_PAIR(rpmalloc, malloc),
+	MAC_INTERPOSE_PAIR(rpmalloc, calloc),
+	MAC_INTERPOSE_PAIR(rprealloc, realloc),
+	MAC_INTERPOSE_PAIR(rprealloc, reallocf),
+	MAC_INTERPOSE_PAIR(rpaligned_alloc, aligned_alloc),
+	MAC_INTERPOSE_PAIR(rpmemalign, memalign),
+	MAC_INTERPOSE_PAIR(rpposix_memalign, posix_memalign),
+	MAC_INTERPOSE_PAIR(rpfree, free),
+	MAC_INTERPOSE_PAIR(rpfree, cfree),
+	MAC_INTERPOSE_PAIR(rpmalloc_usable_size, malloc_usable_size),
+	MAC_INTERPOSE_PAIR(rpmalloc_usable_size, malloc_size)
+};
+
+#endif
+
+#if USE_ALIAS
+
+#define RPALIAS(fn) __attribute__((alias(#fn), used, visibility("default")));
+
+// Alias the C++ operators using the mangled names (https://itanium-cxx-abi.github.io/cxx-abi/abi.html#mangling)
+
+// operators delete and delete[]
+void _ZdlPv(void* p) RPALIAS(rpfree)
+void _ZdaPv(void* p) RPALIAS(rpfree)
+
+#if ARCH_64BIT
+// 64-bit operators new and new[], normal and aligned
+void* _Znwm(uint64_t size) RPALIAS(rpmalloc)
+void* _Znam(uint64_t size) RPALIAS(rpmalloc)
+extern inline void* _Znwmm(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
+extern inline void* _Znamm(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
+#else
+// 32-bit operators new and new[], normal and aligned
+void* _Znwj(uint32_t size) RPALIAS(rpmalloc)
+void* _Znaj(uint32_t size) RPALIAS(rpmalloc)
+extern inline void* _Znwjj(uint32_t size, uint32_t align) { return rpaligned_alloc(align, size); }
+extern inline void* _Znajj(uint32_t size, uint32_t align) { return rpaligned_alloc(align, size); }
+#endif
+
+void* malloc(size_t size) RPALIAS(rpmalloc)
+void* calloc(size_t count, size_t size) RPALIAS(rpcalloc)
+void* realloc(void* ptr, size_t size) RPALIAS(rprealloc)
+void* reallocf(void* ptr, size_t size) RPALIAS(rprealloc)
+void* aligned_alloc(size_t alignment, size_t size) RPALIAS(rpaligned_alloc)
+void* memalign(size_t alignment, size_t size) RPALIAS(rpmemalign)
+int posix_memalign(void** memptr, size_t alignment, size_t size) RPALIAS(rpposix_memalign)
+void free(void* ptr) RPALIAS(rpfree)
+void cfree(void* ptr) RPALIAS(rpfree)
+size_t malloc_usable_size(void* ptr) RPALIAS(rpmalloc_usable_size)
+size_t malloc_size(void* ptr) RPALIAS(rpmalloc_usable_size)
+
+#endif
+
+extern inline void* RPMALLOC_CDECL
+reallocarray(void* ptr, size_t count, size_t size) {
+	size_t total;
+#if ENABLE_VALIDATE_ARGS
+#ifdef _MSC_VER
+	int err = SizeTMult(count, size, &total);
+	if ((err != S_OK) || (total >= MAX_ALLOC_SIZE)) {
+		errno = EINVAL;
+		return 0;
+	}
+#else
+	int err = __builtin_umull_overflow(count, size, &total);
+	if (err || (total >= MAX_ALLOC_SIZE)) {
+		errno = EINVAL;
+		return 0;
+	}
+#endif
+#else
+	total = count * size;
+#endif
+	return realloc(ptr, total);
+}
+
+extern inline void* RPMALLOC_CDECL
+valloc(size_t size) {
+	get_thread_heap();
+	if (!size)
+		size = _memory_page_size;
+	size_t total_size = size + _memory_page_size;
+#if ENABLE_VALIDATE_ARGS
+	if (total_size < size) {
+		errno = EINVAL;
+		return 0;
+	}
+#endif
+	void* buffer = rpmalloc(total_size);
+	if ((uintptr_t)buffer & (_memory_page_size - 1))
+		return (void*)(((uintptr_t)buffer & ~(_memory_page_size - 1)) + _memory_page_size);
+	return buffer;
+}
+
+extern inline void* RPMALLOC_CDECL
+pvalloc(size_t size) {
+	get_thread_heap();
+	size_t aligned_size = size;
+	if (aligned_size % _memory_page_size)
+		aligned_size = (1 + (aligned_size / _memory_page_size)) * _memory_page_size;
+#if ENABLE_VALIDATE_ARGS
+	if (aligned_size < size) {
+		errno = EINVAL;
+		return 0;
+	}
+#endif
+	return valloc(size);
+}
+
+#endif // ENABLE_OVERRIDE
+
+#if ENABLE_PRELOAD
 
 #ifdef _WIN32
 
-#include <Windows.h>
+#if defined(BUILD_DYNAMIC_LINK) && BUILD_DYNAMIC_LINK
 
-static size_t page_size;
-static int is_initialized;
-
-static void
-initializer(void) {
-	if (!is_initialized) {
-		is_initialized = 1;
-		SYSTEM_INFO system_info;
-		memset(&system_info, 0, sizeof(system_info));
-		GetSystemInfo(&system_info);
-		page_size = system_info.dwPageSize;
+__declspec(dllexport) BOOL WINAPI
+DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
+	(void)sizeof(reserved);
+	(void)sizeof(instance);
+	if (reason == DLL_PROCESS_ATTACH)
 		rpmalloc_initialize();
-	}
-	rpmalloc_thread_initialize();
+	else if (reason == DLL_PROCESS_DETACH)
+		rpmalloc_finalize();
+	else if (reason == DLL_THREAD_ATTACH)
+		rpmalloc_thread_initialize();
+	else if (reason == DLL_THREAD_DETACH)
+		rpmalloc_thread_finalize();
+	return TRUE;
 }
 
-static void
-finalizer(void) {
-	rpmalloc_thread_finalize();
-	if (is_initialized) {
-		is_initialized = 0;
-		rpmalloc_finalize();
-	}
-}
+#endif
 
 #else
 
@@ -114,32 +250,20 @@ finalizer(void) {
 #include <stdint.h>
 #include <unistd.h>
 
-static size_t page_size;
 static pthread_key_t destructor_key;
-static int is_initialized;
 
 static void
 thread_destructor(void*);
 
 static void __attribute__((constructor))
 initializer(void) {
-	if (!is_initialized) {
-		is_initialized = 1;
-		page_size = (size_t)sysconf(_SC_PAGESIZE);
-		pthread_key_create(&destructor_key, thread_destructor);
-		if (rpmalloc_initialize())
-			abort();
-	}
-	rpmalloc_thread_initialize();
+	rpmalloc_initialize();
+	pthread_key_create(&destructor_key, thread_destructor);
 }
 
 static void __attribute__((destructor))
 finalizer(void) {
-	rpmalloc_thread_finalize();
-	if (is_initialized) {
-		is_initialized = 0;
-		rpmalloc_finalize();
-	}
+	rpmalloc_finalize();
 }
 
 typedef struct {
@@ -171,24 +295,14 @@ pthread_create_proxy(pthread_t* thread,
                      const pthread_attr_t* attr,
                      void* (*start_routine)(void*),
                      void* arg) {
-	rpmalloc_thread_initialize();
+	rpmalloc_initialize();
 	thread_starter_arg* starter_arg = rpmalloc(sizeof(thread_starter_arg));
 	starter_arg->real_start = start_routine;
 	starter_arg->real_arg = arg;
 	return pthread_create(thread, attr, thread_starter, starter_arg);
 }
 
-typedef struct interpose_s {
-	void* new_func;
-	void* orig_func;
-} interpose_t;
-
-#define MAC_INTERPOSE(newf, oldf) __attribute__((used)) \
-static const interpose_t macinterpose##newf##oldf \
-__attribute__ ((section("__DATA, __interpose"))) = \
-	{ (void*)newf, (void*)oldf }
-
-MAC_INTERPOSE(pthread_create_proxy, pthread_create);
+MAC_INTERPOSE_SINGLE(pthread_create_proxy, pthread_create);
 
 #else
 
@@ -199,7 +313,7 @@ pthread_create(pthread_t* thread,
                const pthread_attr_t* attr,
                void* (*start_routine)(void*),
                void* arg) {
-#if defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__APPLE__)
+#if defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__APPLE__) || defined(__HAIKU__)
 	char fname[] = "pthread_create";
 #else
 	char fname[] = "_pthread_create";
@@ -216,306 +330,37 @@ pthread_create(pthread_t* thread,
 
 #endif
 
-RPMALLOC_RESTRICT void* RPMALLOC_CDECL
-malloc(size_t size) {
-	initializer();
-	return rpmalloc(size);
-}
-
-void* RPMALLOC_CDECL
-realloc(void* ptr, size_t size) {
-	initializer();
-	return rprealloc(ptr, size);
-}
-
-void* RPMALLOC_CDECL
-reallocf(void* ptr, size_t size) {
-	initializer();
-	return rprealloc(ptr, size);
-}
-
-void* RPMALLOC_CDECL
-reallocarray(void* ptr, size_t count, size_t size) {
-	size_t total;
-#if ENABLE_VALIDATE_ARGS
-#ifdef _MSC_VER
-	int err = SizeTMult(count, size, &total);
-	if ((err != S_OK) || (total >= MAX_ALLOC_SIZE)) {
-		errno = EINVAL;
-		return 0;
-	}
-#else
-	int err = __builtin_umull_overflow(count, size, &total);
-	if (err || (total >= MAX_ALLOC_SIZE)) {
-		errno = EINVAL;
-		return 0;
-	}
 #endif
-#else
-	total = count * size;
-#endif
-	return realloc(ptr, total);
-}
 
-RPMALLOC_RESTRICT void* RPMALLOC_CDECL
-calloc(size_t count, size_t size) {
-	initializer();
-	return rpcalloc(count, size);
-}
+#if ENABLE_OVERRIDE
 
-RPMALLOC_RESTRICT void* RPMALLOC_CDECL
-valloc(size_t size) {
-	initializer();
-	if (!size)
-		size = page_size;
-	size_t total_size = size + page_size;
-#if ENABLE_VALIDATE_ARGS
-	if (total_size < size) {
-		errno = EINVAL;
-		return 0;
-	}
-#endif
-	void* buffer = rpmalloc(total_size);
-	if ((uintptr_t)buffer & (page_size - 1))
-		return (void*)(((uintptr_t)buffer & ~(page_size - 1)) + page_size);
-	return buffer;
-}
+#if defined(__GLIBC__) && defined(__linux__)
 
-RPMALLOC_RESTRICT void* RPMALLOC_CDECL
-pvalloc(size_t size) {
-	size_t aligned_size = size;
-	if (aligned_size % page_size)
-		aligned_size = (1 + (aligned_size / page_size)) * page_size;
-#if ENABLE_VALIDATE_ARGS
-	if (aligned_size < size) {
-		errno = EINVAL;
-		return 0;
-	}
-#endif
+void* __libc_malloc(size_t size) RPALIAS(rpmalloc)
+void* __libc_calloc(size_t count, size_t size) RPALIAS(rpcalloc)
+void* __libc_realloc(void* p, size_t size) RPALIAS(rprealloc)
+void __libc_free(void* p) RPALIAS(rpfree)
+void __libc_cfree(void* p) RPALIAS(rpfree)
+void* __libc_memalign(size_t align, size_t size) RPALIAS(rpmemalign)
+int __posix_memalign(void** p, size_t align, size_t size) RPALIAS(rpposix_memalign)
+
+extern void* __libc_valloc(size_t size);
+extern void* __libc_pvalloc(size_t size);
+
+void*
+__libc_valloc(size_t size) {
 	return valloc(size);
 }
 
-RPMALLOC_RESTRICT void* RPMALLOC_CDECL
-aligned_alloc(size_t alignment, size_t size) {
-	initializer();
-	return rpaligned_alloc(alignment, size);
+void*
+__libc_pvalloc(size_t size) {
+	return pvalloc(size);
 }
 
-RPMALLOC_RESTRICT void* RPMALLOC_CDECL
-memalign(size_t alignment, size_t size) {
-	initializer();
-	return rpmemalign(alignment, size);
-}
-
-int RPMALLOC_CDECL
-posix_memalign(void** memptr, size_t alignment, size_t size) {
-	initializer();
-	return rpposix_memalign(memptr, alignment, size);
-}
-
-void RPMALLOC_CDECL
-free(void* ptr) {
-	if (!is_initialized || !rpmalloc_is_thread_initialized())
-		return;
-	rpfree(ptr);
-}
-
-void RPMALLOC_CDECL
-cfree(void* ptr) {
-	free(ptr);
-}
-
-size_t RPMALLOC_CDECL
-malloc_usable_size(
-#if defined(__ANDROID__)
-	const void* ptr
-#else
-	void* ptr
 #endif
-	) {
-	if (!rpmalloc_is_thread_initialized())
-		return 0;
-	return rpmalloc_usable_size((void*)(uintptr_t)ptr);
-}
 
-size_t RPMALLOC_CDECL
-malloc_size(void* ptr) {
-	return malloc_usable_size(ptr);
-}
+#endif
 
-#ifdef _MSC_VER
-
-extern void* RPMALLOC_CDECL
-_expand(void* block, size_t size) {
-	return realloc(block, size);
-}
-
-extern RPMALLOC_RESTRICT void* RPMALLOC_CDECL
-_recalloc(void* block, size_t count, size_t size) {
-	initializer();
-	if (!block)
-		return rpcalloc(count, size);
-	size_t newsize = count * size;
-	size_t oldsize = rpmalloc_usable_size(block);
-	void* newblock = rprealloc(block, newsize);
-	if (newsize > oldsize)
-		memset((char*)newblock + oldsize, 0, newsize - oldsize);
-	return newblock;
-}
-
-extern RPMALLOC_RESTRICT void* RPMALLOC_CDECL
-_aligned_malloc(size_t size, size_t alignment) {
-	return aligned_alloc(alignment, size);
-}
-
-extern RPMALLOC_RESTRICT void* RPMALLOC_CDECL
-_aligned_realloc(void* block, size_t size, size_t alignment) {
-	initializer();
-	size_t oldsize = rpmalloc_usable_size(block);
-	return rpaligned_realloc(block, alignment, size, oldsize, 0);
-}
-
-extern RPMALLOC_RESTRICT void* RPMALLOC_CDECL
-_aligned_recalloc(void* block, size_t count, size_t size, size_t alignment) {
-	initializer();
-	size_t newsize = count * size;
-	if (!block) {
-		block = rpaligned_alloc(count, newsize);
-		memset(block, 0, newsize);
-		return block;
-	}
-	size_t oldsize = rpmalloc_usable_size(block);
-	void* newblock = rpaligned_realloc(block, alignment, newsize, oldsize, 0);
-	if (newsize > oldsize)
-		memset((char*)newblock + oldsize, 0, newsize - oldsize);
-	return newblock;
-}
-
-void RPMALLOC_CDECL
-_aligned_free(void* block) {
-	free(block);
-}
-
-extern size_t RPMALLOC_CDECL
-_msize(void* ptr) {
-	return malloc_usable_size(ptr);
-}
-
-extern size_t RPMALLOC_CDECL
-_aligned_msize(void* block, size_t alignment, size_t offset) {
-	return malloc_usable_size(block);
-}
-
-extern intptr_t RPMALLOC_CDECL
-_get_heap_handle(void) {
-	return 0;
-}
-
-extern int RPMALLOC_CDECL
-_heap_init(void) {
-	initializer();
-	return 1;
-}
-
-extern void RPMALLOC_CDECL
-_heap_term() {
-}
-
-extern int RPMALLOC_CDECL
-_set_new_mode(int flag) {
-	(void)sizeof(flag);
-	return 0;
-}
-
-#ifndef NDEBUG
-
-extern int RPMALLOC_CDECL
-_CrtDbgReport(int reportType, char const* fileName, int linenumber, char const* moduleName, char const* format, ...) {
-	return 0;
-}
-
-extern int RPMALLOC_CDECL
-_CrtDbgReportW(int reportType, wchar_t const* fileName, int lineNumber, wchar_t const* moduleName, wchar_t const* format, ...) {
-	return 0;
-}
-
-extern int RPMALLOC_CDECL
-_VCrtDbgReport(int reportType, char const* fileName, int linenumber, char const* moduleName, char const* format, va_list arglist) {
-	return 0;
-}
-
-extern int RPMALLOC_CDECL
-_VCrtDbgReportW(int reportType, wchar_t const* fileName, int lineNumber, wchar_t const* moduleName, wchar_t const* format, va_list arglist) {
-	return 0;
-}
-
-extern int RPMALLOC_CDECL
-_CrtSetReportMode(int reportType, int reportMode) {
-	return 0;
-}
-
-extern RPMALLOC_RESTRICT void* RPMALLOC_CDECL
-_malloc_dbg(size_t size, int blockUse, char const* fileName, int lineNumber) {
-	return malloc(size);
-}
-
-extern RPMALLOC_RESTRICT void* RPMALLOC_CDECL
-_expand_dbg(void* block, size_t size, int blockUse, char const* fileName, int lineNumber) {
-	return _expand(block, size);
-}
-
-extern RPMALLOC_RESTRICT void* RPMALLOC_CDECL
-_calloc_dbg(size_t count, size_t size, int blockUse, char const* fileName, int lineNumber) {
-	return calloc(count, size);
-}
-
-extern RPMALLOC_RESTRICT void* RPMALLOC_CDECL
-_realloc_dbg(void* block, size_t size, int blockUse, char const* fileName, int lineNumber) {
-	return realloc(block, size);
-}
-
-extern RPMALLOC_RESTRICT void* RPMALLOC_CDECL
-_recalloc_dbg(void* block, size_t count, size_t size, int blockUse, char const* fileName, int lineNumber) {
-	return _recalloc(block, count, size);
-}
-
-extern RPMALLOC_RESTRICT void* RPMALLOC_CDECL
-_aligned_malloc_dbg(size_t size, size_t alignment, char const* fileName, int lineNumber) {
-	return aligned_alloc(alignment, size);
-}
-
-extern RPMALLOC_RESTRICT void* RPMALLOC_CDECL
-_aligned_realloc_dbg(void* block, size_t size, size_t alignment, char const* fileName, int lineNumber) {
-	return _aligned_realloc(block, size, alignment);
-}
-
-extern RPMALLOC_RESTRICT void* RPMALLOC_CDECL
-_aligned_recalloc_dbg(void* block, size_t count, size_t size, size_t alignment, char const* fileName, int lineNumber) {
-	return _aligned_recalloc(block, count, size, alignment);
-}
-
-extern void RPMALLOC_CDECL
-_free_dbg(void* block, int blockUse) {
-	free(block);
-}
-
-extern void RPMALLOC_CDECL
-_aligned_free_dbg(void* block) {
-	free(block);
-}
-
-extern size_t RPMALLOC_CDECL
-_msize_dbg(void* ptr) {
-	return malloc_usable_size(ptr);
-}
-
-extern size_t RPMALLOC_CDECL
-_aligned_msize_dbg(void* block, size_t alignment, size_t offset) {
-	return malloc_usable_size(block);
-}
-
-#endif  // NDEBUG
-
-extern void* _crtheap = (void*)1;
-
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__MACH__)
+#pragma GCC visibility pop
 #endif
