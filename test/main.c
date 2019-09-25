@@ -23,10 +23,12 @@ static void
 test_initialize(void);
 
 static int
-test_fail(const char* reason) {
-	fprintf(stderr, "FAIL: %s\n", reason);
+test_fail_cb(const char* reason, const char* file, int line) {
+	fprintf(stderr, "FAIL: %s @ %s:%d\n", reason, file, line);
 	return -1;
 }
+
+#define test_fail(msg) test_fail_cb(msg, __FILE__, __LINE__)
 
 static int
 test_alloc(void) {
@@ -754,8 +756,8 @@ test_threadspam(void) {
 	num_alloc_threads = _hardware_threads;
 	if (num_alloc_threads < 2)
 		num_alloc_threads = 2;
-	if (num_alloc_threads > 64)
-		num_alloc_threads = 64;
+	if (num_alloc_threads > 16)
+		num_alloc_threads = 16;
 
 	arg.loops = 500;
 	arg.passes = 10;
