@@ -1,3 +1,12 @@
+1.4.1
+
+Allow up to 4GiB page sizes
+
+Added a missing null check in the non-hot allocation code paths
+
+Fixed compilation issue on macOS when ENABLE_PRELOAD is set but not ENABLE_OVERRIDE
+
+
 1.4.0
 
 Improved cross thread deallocations by using per-span atomic free list to minimize thread
