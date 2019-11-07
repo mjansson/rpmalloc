@@ -2522,7 +2522,6 @@ rpmalloc_dump_statistics(void* file) {
 #if ENABLE_STATISTICS
 	//If you hit this assert, you still have active threads or forgot to finalize some thread(s)
 	assert(atomic_load32(&_memory_active_heaps) == 0);
-#if 0
 	for (size_t list_idx = 0; list_idx < HEAP_ARRAY_SIZE; ++list_idx) {
 		heap_t* heap = atomic_load_ptr(&_memory_heaps[list_idx]);
 		while (heap) {
@@ -2545,7 +2544,6 @@ rpmalloc_dump_statistics(void* file) {
 			heap = heap->next_heap;
 		}
 	}
-#endif
 	fprintf(file, "Global stats:\n");
 	size_t huge_current = (size_t)atomic_load32(&_huge_pages_current) * _memory_page_size;
 	size_t huge_peak = (size_t)_huge_pages_peak * _memory_page_size;
