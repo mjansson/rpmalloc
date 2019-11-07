@@ -1,6 +1,8 @@
 # rpmalloc - Rampant Pixels Memory Allocator
 This library provides a public domain cross platform lock free thread caching 16-byte aligned memory allocator implemented in C. The latest source code is always available at https://github.com/mjansson/rpmalloc
 
+Created by Mattias Jansson ([@maniccoder](https://twitter.com/maniccoder))  -  Support development through my [GitHub Sponsors page](https://github.com/sponsors/mjansson)
+
 Platforms currently supported:
 
 - Windows
@@ -13,8 +15,6 @@ Platforms currently supported:
 The code should be easily portable to any platform with atomic operations and an mmap-style virtual memory management API. The API used to map/unmap memory pages can be configured in runtime to a custom implementation and mapping granularity/size.
 
 This library is put in the public domain; you can redistribute it and/or modify it without any restrictions. Or, if you choose, you can use it under the MIT license.
-
-Created by Mattias Jansson ([@maniccoder](https://twitter.com/maniccoder))  -  Support development through my [GitHub Sponsors page](https://github.com/sponsors/mjansson)
 
 # Performance
 We believe rpmalloc is faster than most popular memory allocators like tcmalloc, hoard, ptmalloc3 and others without causing extra allocated memory overhead in the thread caches compared to these allocators. We also believe the implementation to be easier to read and modify compared to these allocators, as it is a single source file of ~2500 lines of C code. All allocations have a natural 16-byte alignment.
@@ -153,6 +153,10 @@ Cross-thread deallocations could leave dangling spans in the owning thread heap 
 VirtualAlloc has an internal granularity of 64KiB. However, mmap lacks this granularity control, and the implementation instead oversizes the memory mapping with configured span size to be able to always return a memory area with the required alignment. Since the extra memory pages are never touched this will not result in extra committed physical memory pages, but rather only increase virtual memory address space.
 
 All entry points assume the passed values are valid, for example passing an invalid pointer to free would most likely result in a segmentation fault. __The library does not try to guard against errors!__.
+
+# Other languages
+
+[Johan Andersson](https://github.com/repi) at Embark has created a Rust wrapper available at [rpmalloc-rs](https://github.com/EmbarkStudios/rpmalloc-rs)
 
 # License
 

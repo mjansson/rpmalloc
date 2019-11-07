@@ -2,6 +2,9 @@
 
 Allow up to 4GiB page sizes
 
+Fix an issue where large page sizes in conjunction with many threads waste a lot of memory (previously
+each heap occupied an entire memory page, now heaps can now share a memory page)
+
 Added a missing null check in the non-hot allocation code paths
 
 Fixed compilation issue on macOS when ENABLE_PRELOAD is set but not ENABLE_OVERRIDE

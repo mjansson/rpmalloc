@@ -30,11 +30,11 @@
 #endif
 #ifndef ENABLE_STATISTICS
 //! Enable statistics collection
-#define ENABLE_STATISTICS         0
+#define ENABLE_STATISTICS         1
 #endif
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            0
+#define ENABLE_ASSERTS            1
 #endif
 #ifndef ENABLE_OVERRIDE
 //! Override standard library malloc/free and new/delete entry points
@@ -230,6 +230,8 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 #define LARGE_SIZE_LIMIT          ((LARGE_CLASS_COUNT * _memory_span_size) - SPAN_HEADER_SIZE)
 //! Size of a span header (must be a multiple of SMALL_GRANULARITY)
 #define SPAN_HEADER_SIZE          96
+//! ABA protection size in orhpan heap list (also becomes limit of smallest page size)
+#define HEAP_ORPHAN_ABA_SIZE      512
 
 #if ENABLE_VALIDATE_ARGS
 //! Maximum allocation size to avoid integer overflow
@@ -412,6 +414,8 @@ struct heap_t {
 	//! Allocation stats per size class
 	size_class_use_t size_class_use[SIZE_CLASS_COUNT + 1];
 #endif
+	//! Master heap owning the memory pages
+	heap_t*      master_heap;
 };
 
 struct size_class_t {
@@ -1369,6 +1373,37 @@ _memory_allocate(heap_t* heap, size_t size) {
 	return _memory_allocate_oversized(heap, size);
 }
 
+static void
+_memory_heap_initialize(heap_t* heap) {
+	memset(heap, 0, sizeof(heap_t));
+
+	//Get a new heap ID
+	heap->id = atomic_incr32(&_memory_heap_id);
+	assert(heap->id != 0);
+	//assert(!_memory_heap_lookup(heap->id));
+
+	//Link in heap in heap ID map
+	heap_t* next_heap;
+	size_t list_idx = heap->id % HEAP_ARRAY_SIZE;
+	do {
+		next_heap = atomic_load_ptr(&_memory_heaps[list_idx]);
+		heap->next_heap = next_heap;
+	} while (!atomic_cas_ptr(&_memory_heaps[list_idx], heap, next_heap));
+}
+
+static void
+_memory_heap_orphan(heap_t* heap) {
+	void* raw_heap;
+	uintptr_t orphan_counter;
+	heap_t* last_heap;
+	do {
+		last_heap = atomic_load_ptr(&_memory_orphan_heaps);
+		heap->next_orphan = (void*)((uintptr_t)last_heap & ~(uintptr_t)(HEAP_ORPHAN_ABA_SIZE - 1));
+		orphan_counter = (uintptr_t)atomic_incr32(&_memory_orphan_counter);
+		raw_heap = (void*)((uintptr_t)heap | (orphan_counter & (uintptr_t)(HEAP_ORPHAN_ABA_SIZE - 1)));
+	} while (!atomic_cas_ptr(&_memory_orphan_heaps, raw_heap, last_heap));
+}
+
 //! Allocate a new heap
 static heap_t*
 _memory_allocate_heap(void) {
@@ -1381,36 +1416,38 @@ _memory_allocate_heap(void) {
 	atomic_thread_fence_acquire();
 	do {
 		raw_heap = atomic_load_ptr(&_memory_orphan_heaps);
-		heap = (void*)((uintptr_t)raw_heap & ~(uintptr_t)0x1FF);
+		heap = (void*)((uintptr_t)raw_heap & ~(uintptr_t)(HEAP_ORPHAN_ABA_SIZE - 1));
 		if (!heap)
 			break;
 		next_heap = heap->next_orphan;
 		orphan_counter = (uintptr_t)atomic_incr32(&_memory_orphan_counter);
-		next_raw_heap = (void*)((uintptr_t)next_heap | (orphan_counter & (uintptr_t)0x1FF));
+		next_raw_heap = (void*)((uintptr_t)next_heap | (orphan_counter & (uintptr_t)(HEAP_ORPHAN_ABA_SIZE - 1)));
 	} while (!atomic_cas_ptr(&_memory_orphan_heaps, next_raw_heap, raw_heap));
 
 	if (!heap) {
 		//Map in pages for a new heap
 		size_t align_offset = 0;
-		heap = _memory_map((1 + (sizeof(heap_t) >> _memory_page_size_shift)) * _memory_page_size, &align_offset);
+		size_t block_size = (1 + (sizeof(heap_t) >> _memory_page_size_shift)) * _memory_page_size;
+		heap = _memory_map(block_size, &align_offset);
 		if (!heap)
 			return heap;
-		memset(heap, 0, sizeof(heap_t));
+
+		_memory_heap_initialize(heap);
 		heap->align_offset = align_offset;
 
-		//Get a new heap ID
-		do {
-			heap->id = atomic_incr32(&_memory_heap_id);
-			if (_memory_heap_lookup(heap->id))
-				heap->id = 0;
-		} while (!heap->id);
-
-		//Link in heap in heap ID map
-		size_t list_idx = heap->id % HEAP_ARRAY_SIZE;
-		do {
-			next_heap = atomic_load_ptr(&_memory_heaps[list_idx]);
-			heap->next_heap = next_heap;
-		} while (!atomic_cas_ptr(&_memory_heaps[list_idx], heap, next_heap));
+		//Put extra heaps as orphans, aligning to make sure ABA protection bits fit in pointer low bits
+		size_t aligned_heap_size = sizeof(heap_t);
+		if (aligned_heap_size % HEAP_ORPHAN_ABA_SIZE)
+			aligned_heap_size += HEAP_ORPHAN_ABA_SIZE - (aligned_heap_size % HEAP_ORPHAN_ABA_SIZE);
+		size_t num_heaps = block_size / aligned_heap_size;
+		heap_t* extra_heap = pointer_offset(heap, aligned_heap_size);
+		while (num_heaps > 1) {
+			_memory_heap_initialize(extra_heap);
+			extra_heap->master_heap = heap;
+			_memory_heap_orphan(extra_heap);
+			extra_heap = pointer_offset(extra_heap, aligned_heap_size);
+			--num_heaps;
+		}
 	}
 
 	return heap;
@@ -1689,15 +1726,7 @@ _memory_heap_finalize(void* heapptr) {
 #endif
 
 	//Orphan the heap
-	void* raw_heap;
-	uintptr_t orphan_counter;
-	heap_t* last_heap;
-	do {
-		last_heap = atomic_load_ptr(&_memory_orphan_heaps);
-		heap->next_orphan = (void*)((uintptr_t)last_heap & ~(uintptr_t)0x1FF);
-		orphan_counter = (uintptr_t)atomic_incr32(&_memory_orphan_counter);
-		raw_heap = (void*)((uintptr_t)heap | (orphan_counter & (uintptr_t)0x1FF));
-	} while (!atomic_cas_ptr(&_memory_orphan_heaps, raw_heap, last_heap));
+	_memory_heap_orphan(heap);
 
 	set_thread_heap(0);
 
@@ -1760,7 +1789,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 #if RPMALLOC_CONFIGURABLE
 	_memory_page_size = _memory_config.page_size;
 #else
-	_memory_page_size = 0;
+	_memory_page_size = 1024ULL * 1024ULL * 1024ULL;
 #endif
 	_memory_huge_pages = 0;
 	_memory_map_granularity = _memory_page_size;
@@ -1838,8 +1867,8 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 			_memory_huge_pages = 1;
 	}
 
-	//The ABA counter in heap orphan list is tied to using 512 (bitmask 0x1FF)
-	size_t min_span_size = 512;
+	//The ABA counter in heap orphan list is tied to using HEAP_ORPHAN_ABA_SIZE
+	size_t min_span_size = HEAP_ORPHAN_ABA_SIZE;
 	size_t max_page_size = 4 * 1024 * 1024;
 	const size_t ptrbits = sizeof(void*);
 	if (ptrbits > 4)
@@ -1893,7 +1922,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
     fls_key = FlsAlloc(&rp_thread_destructor);
 #endif
 
-	atomic_store32(&_memory_heap_id, 0);
+	atomic_store32(&_memory_heap_id, 1);
 	atomic_store32(&_memory_orphan_counter, 0);
 #if ENABLE_STATISTICS
 	atomic_store32(&_memory_active_heaps, 0);
@@ -1942,9 +1971,10 @@ rpmalloc_finalize(void) {
 	atomic_thread_fence_acquire();
 
 	rpmalloc_thread_finalize();
-	//rpmalloc_dump_statistics(stderr);
+	rpmalloc_dump_statistics(stderr);
 
 	//Free all thread caches
+	heap_t* master_heaps = 0;
 	for (size_t list_idx = 0; list_idx < HEAP_ARRAY_SIZE; ++list_idx) {
 		heap_t* heap = atomic_load_ptr(&_memory_heaps[list_idx]);
 		while (heap) {
@@ -1992,10 +2022,21 @@ rpmalloc_finalize(void) {
 			}
 #endif
 			heap_t* next_heap = heap->next_heap;
-			size_t heap_size = (1 + (sizeof(heap_t) >> _memory_page_size_shift)) * _memory_page_size;
-			_memory_unmap(heap, heap_size, heap->align_offset, heap_size);
+			if (!heap->master_heap) {
+				heap->next_heap = master_heaps;
+				master_heaps = heap;
+			}
 			heap = next_heap;
 		}
+	}
+
+	//Finally free all master heaps pages
+	heap_t* master_heap = master_heaps;
+	while (master_heap) {
+		heap_t* next_heap = master_heap->next_heap;
+		size_t block_size = (1 + (sizeof(heap_t) >> _memory_page_size_shift)) * _memory_page_size;
+		_memory_unmap(master_heap, block_size, master_heap->align_offset, block_size);
+		master_heap = next_heap;
 	}
 
 #if ENABLE_GLOBAL_CACHE
@@ -2433,61 +2474,78 @@ rpmalloc_global_statistics(rpmalloc_global_statistics_t* stats) {
 #endif
 }
 
+static void
+_memory_heap_dump_statistics(heap_t* heap, void* file) {
+	fprintf(file, "Heap %d stats:\n", heap->id);
+	fprintf(file, "Class   CurAlloc  PeakAlloc   TotAlloc    TotFree  BlkSize BlkCount SpansCur SpansPeak  PeakAllocMiB  ToCacheMiB FromCacheMiB FromReserveMiB MmapCalls\n");
+	for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
+		if (!heap->size_class_use[iclass].alloc_total)
+			continue;
+		fprintf(file, "%3u:  %10u %10u %10u %10u %8u %8u %8d %9d %13zu %11zu %12zu %14zu %9u\n", (uint32_t)iclass,
+			atomic_load32(&heap->size_class_use[iclass].alloc_current),
+			heap->size_class_use[iclass].alloc_peak,
+			heap->size_class_use[iclass].alloc_total,
+			atomic_load32(&heap->size_class_use[iclass].free_total),
+			_memory_size_class[iclass].block_size,
+			_memory_size_class[iclass].block_count,
+			heap->size_class_use[iclass].spans_current,
+			heap->size_class_use[iclass].spans_peak,
+			((size_t)heap->size_class_use[iclass].alloc_peak * (size_t)_memory_size_class[iclass].block_size) / (size_t)(1024 * 1024),
+			((size_t)heap->size_class_use[iclass].spans_to_cache * _memory_span_size) / (size_t)(1024 * 1024),
+			((size_t)heap->size_class_use[iclass].spans_from_cache * _memory_span_size) / (size_t)(1024 * 1024),
+			((size_t)heap->size_class_use[iclass].spans_from_reserved * _memory_span_size) / (size_t)(1024 * 1024),
+			heap->size_class_use[iclass].spans_map_calls);
+	}
+	fprintf(file, "Spans  Current     Peak  PeakMiB  Cached  ToCacheMiB FromCacheMiB ToReserveMiB FromReserveMiB ToGlobalMiB FromGlobalMiB  MmapCalls\n");
+	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
+		if (!heap->span_use[iclass].high && !heap->span_use[iclass].spans_map_calls)
+			continue;
+		fprintf(file, "%4u: %8d %8u %8zu %7u %11zu %12zu %12zu %14zu %11zu %13zu %10u\n", (uint32_t)(iclass + 1),
+			atomic_load32(&heap->span_use[iclass].current),
+			heap->span_use[iclass].high,
+			((size_t)heap->span_use[iclass].high * (size_t)_memory_span_size * (iclass + 1)) / (size_t)(1024 * 1024),
+			heap->span_cache[iclass] ? heap->span_cache[iclass]->list_size : 0,
+			((size_t)heap->span_use[iclass].spans_to_cache * (iclass + 1) * _memory_span_size) / (size_t)(1024 * 1024),
+			((size_t)heap->span_use[iclass].spans_from_cache * (iclass + 1) * _memory_span_size) / (size_t)(1024 * 1024),
+			((size_t)heap->span_use[iclass].spans_to_reserved * (iclass + 1) * _memory_span_size) / (size_t)(1024 * 1024),
+			((size_t)heap->span_use[iclass].spans_from_reserved * (iclass + 1) * _memory_span_size) / (size_t)(1024 * 1024),
+			((size_t)heap->span_use[iclass].spans_to_global * (size_t)_memory_span_size * (iclass + 1)) / (size_t)(1024 * 1024),
+			((size_t)heap->span_use[iclass].spans_from_global * (size_t)_memory_span_size * (iclass + 1)) / (size_t)(1024 * 1024),
+			heap->span_use[iclass].spans_map_calls);
+	}
+	fprintf(file, "ThreadToGlobalMiB GlobalToThreadMiB\n");
+	fprintf(file, "%17zu %17zu\n", (size_t)heap->thread_to_global / (size_t)(1024 * 1024), (size_t)heap->global_to_thread / (size_t)(1024 * 1024));
+}
+
 void
 rpmalloc_dump_statistics(void* file) {
 #if ENABLE_STATISTICS
 	//If you hit this assert, you still have active threads or forgot to finalize some thread(s)
 	assert(atomic_load32(&_memory_active_heaps) == 0);
-
+#if 0
 	for (size_t list_idx = 0; list_idx < HEAP_ARRAY_SIZE; ++list_idx) {
 		heap_t* heap = atomic_load_ptr(&_memory_heaps[list_idx]);
 		while (heap) {
-			fprintf(file, "Heap %d stats:\n", heap->id);
-			fprintf(file, "Class   CurAlloc  PeakAlloc   TotAlloc    TotFree  BlkSize BlkCount SpansCur SpansPeak  PeakAllocMiB  ToCacheMiB FromCacheMiB FromReserveMiB MmapCalls\n");
-			for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
+			int need_dump = 0;
+			for (size_t iclass = 0; !need_dump && (iclass < SIZE_CLASS_COUNT); ++iclass) {
 				if (!heap->size_class_use[iclass].alloc_total) {
 					assert(!atomic_load32(&heap->size_class_use[iclass].free_total));
 					assert(!heap->size_class_use[iclass].spans_map_calls);
 					continue;
 				}
-				fprintf(file, "%3u:  %10u %10u %10u %10u %8u %8u %8d %9d %13zu %11zu %12zu %14zu %9u\n", (uint32_t)iclass,
-					atomic_load32(&heap->size_class_use[iclass].alloc_current),
-					heap->size_class_use[iclass].alloc_peak,
-					heap->size_class_use[iclass].alloc_total,
-					atomic_load32(&heap->size_class_use[iclass].free_total),
-					_memory_size_class[iclass].block_size,
-					_memory_size_class[iclass].block_count,
-					heap->size_class_use[iclass].spans_current,
-					heap->size_class_use[iclass].spans_peak,
-					((size_t)heap->size_class_use[iclass].alloc_peak * (size_t)_memory_size_class[iclass].block_size) / (size_t)(1024 * 1024),
-					((size_t)heap->size_class_use[iclass].spans_to_cache * _memory_span_size) / (size_t)(1024 * 1024),
-					((size_t)heap->size_class_use[iclass].spans_from_cache * _memory_span_size) / (size_t)(1024 * 1024),
-					((size_t)heap->size_class_use[iclass].spans_from_reserved * _memory_span_size) / (size_t)(1024 * 1024),
-					heap->size_class_use[iclass].spans_map_calls);
+				need_dump = 1;
 			}
-			fprintf(file, "Spans  Current     Peak  PeakMiB  Cached  ToCacheMiB FromCacheMiB ToReserveMiB FromReserveMiB ToGlobalMiB FromGlobalMiB  MmapCalls\n");
-			for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
+			for (size_t iclass = 0; !need_dump && (iclass < LARGE_CLASS_COUNT); ++iclass) {
 				if (!heap->span_use[iclass].high && !heap->span_use[iclass].spans_map_calls)
 					continue;
-				fprintf(file, "%4u: %8d %8u %8zu %7u %11zu %12zu %12zu %14zu %11zu %13zu %10u\n", (uint32_t)(iclass + 1),
-					atomic_load32(&heap->span_use[iclass].current),
-					heap->span_use[iclass].high,
-					((size_t)heap->span_use[iclass].high * (size_t)_memory_span_size * (iclass + 1)) / (size_t)(1024 * 1024),
-					heap->span_cache[iclass] ? heap->span_cache[iclass]->list_size : 0,
-					((size_t)heap->span_use[iclass].spans_to_cache * (iclass + 1) * _memory_span_size) / (size_t)(1024 * 1024),
-					((size_t)heap->span_use[iclass].spans_from_cache * (iclass + 1) * _memory_span_size) / (size_t)(1024 * 1024),
-					((size_t)heap->span_use[iclass].spans_to_reserved * (iclass + 1) * _memory_span_size) / (size_t)(1024 * 1024),
-					((size_t)heap->span_use[iclass].spans_from_reserved * (iclass + 1) * _memory_span_size) / (size_t)(1024 * 1024),
-					((size_t)heap->span_use[iclass].spans_to_global * (size_t)_memory_span_size * (iclass + 1)) / (size_t)(1024 * 1024),
-					((size_t)heap->span_use[iclass].spans_from_global * (size_t)_memory_span_size * (iclass + 1)) / (size_t)(1024 * 1024),
-					heap->span_use[iclass].spans_map_calls);
+				need_dump = 1;
 			}
-			fprintf(file, "ThreadToGlobalMiB GlobalToThreadMiB\n");
-			fprintf(file, "%17zu %17zu\n", (size_t)heap->thread_to_global / (size_t)(1024 * 1024), (size_t)heap->global_to_thread / (size_t)(1024 * 1024));
+			if (need_dump)
+				_memory_heap_dump_statistics(heap, file);
 			heap = heap->next_heap;
 		}
 	}
-
+#endif
 	fprintf(file, "Global stats:\n");
 	size_t huge_current = (size_t)atomic_load32(&_huge_pages_current) * _memory_page_size;
 	size_t huge_peak = (size_t)_huge_pages_peak * _memory_page_size;
