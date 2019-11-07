@@ -1789,7 +1789,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 #if RPMALLOC_CONFIGURABLE
 	_memory_page_size = _memory_config.page_size;
 #else
-	_memory_page_size = 1024ULL * 1024ULL * 1024ULL;
+	_memory_page_size = 0;
 #endif
 	_memory_huge_pages = 0;
 	_memory_map_granularity = _memory_page_size;
@@ -1971,7 +1971,7 @@ rpmalloc_finalize(void) {
 	atomic_thread_fence_acquire();
 
 	rpmalloc_thread_finalize();
-	rpmalloc_dump_statistics(stderr);
+	//rpmalloc_dump_statistics(stderr);
 
 	//Free all thread caches
 	heap_t* master_heaps = 0;
