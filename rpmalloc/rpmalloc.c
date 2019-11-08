@@ -113,7 +113,9 @@
 #  define FORCEINLINE inline __attribute__((__always_inline__))
 #endif
 #if PLATFORM_WINDOWS
-#  define WIN32_LEAN_AND_MEAN
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
 #  include <windows.h>
 #  if ENABLE_VALIDATE_ARGS
 #    include <Intsafe.h>
