@@ -2476,6 +2476,7 @@ rpmalloc_global_statistics(rpmalloc_global_statistics_t* stats) {
 
 static void
 _memory_heap_dump_statistics(heap_t* heap, void* file) {
+#if ENABLE_STATISTICS
 	fprintf(file, "Heap %d stats:\n", heap->id);
 	fprintf(file, "Class   CurAlloc  PeakAlloc   TotAlloc    TotFree  BlkSize BlkCount SpansCur SpansPeak  PeakAllocMiB  ToCacheMiB FromCacheMiB FromReserveMiB MmapCalls\n");
 	for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
@@ -2515,6 +2516,10 @@ _memory_heap_dump_statistics(heap_t* heap, void* file) {
 	}
 	fprintf(file, "ThreadToGlobalMiB GlobalToThreadMiB\n");
 	fprintf(file, "%17zu %17zu\n", (size_t)heap->thread_to_global / (size_t)(1024 * 1024), (size_t)heap->global_to_thread / (size_t)(1024 * 1024));
+#else
+	(void)sizeof(heap);
+	(void)sizeof(file);
+#endif
 }
 
 void
