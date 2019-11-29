@@ -15,13 +15,14 @@ class ClangToolchain(toolchain.Toolchain):
     self.sdkpath = ''
     self.includepaths = []
     self.libpaths = libpaths
-    self.ccompiler = 'clang'
-    self.cxxcompiler = 'clang++'
-    self.archiver = 'ar'
-    self.linker = 'clang'
-    self.cxxlinker = 'clang++'
+    self.ccompiler = os.environ.get('CC') or 'clang'
+    self.cxxcompiler = os.environ.get('CXX') or 'clang++'
     if self.target.is_windows():
-      self.archiver = 'llvm-ar'
+      self.archiver = os.environ.get('AR') or 'llvm-ar'
+    else:
+      self.archiver = os.environ.get('AR') or 'ar'
+    self.linker = os.environ.get('CC') or 'clang'
+    self.cxxlinker = os.environ.get('CXX') or 'clang++'
 
     #Default variables
     self.sysroot = ''
@@ -31,12 +32,12 @@ class ClangToolchain(toolchain.Toolchain):
       self.deploymenttarget = '10.7'
 
     #Command definitions
-    self.cccmd = '$toolchain$cc -MMD -MT $out -MF $out.d $includepaths $moreincludepaths $cflags $carchflags $cconfigflags $cmoreflags -c $in -o $out'
-    self.cxxcmd = '$toolchain$cxx -MMD -MT $out -MF $out.d $includepaths $moreincludepaths $cxxflags $carchflags $cconfigflags $cmoreflags -c $in -o $out'
+    self.cccmd = '$toolchain$cc -MMD -MT $out -MF $out.d $includepaths $moreincludepaths $cflags $carchflags $cconfigflags $cmoreflags $cenvflags -c $in -o $out'
+    self.cxxcmd = '$toolchain$cxx -MMD -MT $out -MF $out.d $includepaths $moreincludepaths $cxxflags $carchflags $cconfigflags $cmoreflags $cxxenvflags -c $in -o $out'
     self.ccdeps = 'gcc'
     self.ccdepfile = '$out.d'
-    self.arcmd = self.rmcmd('$out') + ' && $toolchain$ar crsD $ararchflags $arflags $out $in'
-    self.linkcmd = '$toolchain$link $libpaths $configlibpaths $linkflags $linkarchflags $linkconfigflags -o $out $in $libs $archlibs $oslibs $frameworks'
+    self.arcmd = self.rmcmd('$out') + ' && $toolchain$ar crsD $ararchflags $arflags $arenvflags $out $in'
+    self.linkcmd = '$toolchain$link $libpaths $configlibpaths $linkflags $linkarchflags $linkconfigflags $linkenvflags -o $out $in $libs $archlibs $oslibs $frameworks'
 
     #Base flags
     self.cflags = ['-D' + project.upper() + '_COMPILE=1',
@@ -155,12 +156,16 @@ class ClangToolchain(toolchain.Toolchain):
     writer.variable('carchflags', '')
     writer.variable('cconfigflags', '')
     writer.variable('cmoreflags', self.cmoreflags)
+    writer.variable('cenvflags', (os.environ.get('CFLAGS') or '').split())
+    writer.variable('cxxenvflags', (os.environ.get('CXXFLAGS') or '').split())
     writer.variable('arflags', self.arflags)
     writer.variable('ararchflags', '')
     writer.variable('arconfigflags', '')
+    writer.variable('arenvflags', (os.environ.get('ARFLAGS') or '').split())
     writer.variable('linkflags', self.linkflags)
     writer.variable('linkarchflags', '')
     writer.variable('linkconfigflags', '')
+    writer.variable('linkenvflags', (os.environ.get('LDFLAGS') or '').split())
     writer.variable('libs', '')
     writer.variable('libpaths', self.make_libpaths(self.libpaths))
     writer.variable('configlibpaths', '')
