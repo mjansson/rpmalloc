@@ -261,47 +261,36 @@ rpmalloc_usable_size(void* ptr);
 //! Heap type
 typedef struct rpmalloc_heap_t rpmalloc_heap_t;
 
-//! Create a new heap
+//! Acquire a new heap. Will reuse existing released heaps or allocate memory for a new heap
+//  if none available.
 RPMALLOC_EXPORT rpmalloc_heap_t*
-rpmalloc_heap_create(void);
+rpmalloc_heap_acquire(void);
 
-//! Destroy a heap (does NOT free the memory allocated by the heap, use rpmalloc_heap_free_all before destroying the heap)
+//! Release a heap (does NOT free the memory allocated by the heap, use rpmalloc_heap_free_all before destroying the heap).
+//  Releasing a heap will enable it to be reused by other threads. Safe to pass a null pointer.
 RPMALLOC_EXPORT void
-rpmalloc_heap_destroy(rpmalloc_heap_t* heap);
-
-//! Allocate a memory block of at least the given size using the given heap.
-RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
-rpmalloc_heap_alloc(rpmalloc_heap_t* heap, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(2);
+rpmalloc_heap_release(rpmalloc_heap_t* heap);
 
 //! Allocate a memory block of at least the given size using the given heap. The returned
-//  block will have the requested alignment. Alignment must be a power of two and a multiple of sizeof(void*),
+//  block will have the requested alignment. Alignment must either be zero, or a power of two and a multiple of sizeof(void*),
 //  and should ideally be less than memory page size. A caveat of rpmalloc
 //  internals is that this must also be strictly less than the span size (default 64KiB).
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
-rpmalloc_heap_alloc_align(rpmalloc_heap_t* heap, size_t size, size_t alignment) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(2);
-
-//! Allocate a memory block of at least the given size using the given heap and zero initialize it.
-RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
-rpmalloc_heap_calloc(rpmalloc_heap_t* heap, size_t num, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(2, 3);
+rpmalloc_heap_alloc(rpmalloc_heap_t* heap, size_t size, size_t alignment) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(2);
 
 //! Allocate a memory block of at least the given size using the given heap and zero initialize it. The returned
-//  block will have the requested alignment. Alignment must be a power of two and a multiple of sizeof(void*),
+//  block will have the requested alignment. Alignment must either be zero, or a power of two and a multiple of sizeof(void*),
 //  and should ideally be less than memory page size. A caveat of rpmalloc
 //  internals is that this must also be strictly less than the span size (default 64KiB).
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
-rpmalloc_heap_calloc_align(rpmalloc_heap_t* heap, size_t num, size_t size, size_t alignment) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(2, 3);
+rpmalloc_heap_calloc(rpmalloc_heap_t* heap, size_t num, size_t size, size_t alignment) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE2(2, 3);
 
 //! Reallocate the given block to at least the given size. The memory block MUST be allocated
-//  by the same heap.
-RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
-rpmalloc_heap_realloc(rpmalloc_heap_t* heap, void* ptr, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(3);
-
-//! Reallocate the given block to at least the given size. The memory block MUST be allocated
-//  by the same heap. The returned block will have the requested alignment. Alignment must be
+//  by the same heap. The returned block will have the requested alignment. Alignment must be either zero, or
 //  a power of two and a multiple of sizeof(void*), and should ideally be less than memory page size.
 //  A caveat of rpmalloc internals is that this must also be strictly less than the span size (default 64KiB).
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
-rpmalloc_heap_realloc_align(rpmalloc_heap_t* heap, void* ptr, size_t size, size_t alignment) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(3);
+rpmalloc_heap_realloc(rpmalloc_heap_t* heap, void* ptr, size_t size, size_t alignment, unsigned int flags) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(3);
 
 //! Free the given memory block from the given heap. The memory block MUST be allocated
 //  by the same heap.
@@ -313,7 +302,8 @@ RPMALLOC_EXPORT void
 rpmalloc_heap_free_all(rpmalloc_heap_t* heap);
 
 //! Set the given heap as the current heap for the calling thread.
-//  Returns the previous heap used by the thread.
+//  Returns the previous heap used by the thread (which should most likely be releasd for re-use by
+//  a call to rpmalloc_heap_release).
 RPMALLOC_EXPORT rpmalloc_heap_t*
 rpmalloc_thread_set_heap(rpmalloc_heap_t* heap);
 

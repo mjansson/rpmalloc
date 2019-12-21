@@ -2575,6 +2575,60 @@ rpmalloc_dump_statistics(void* file) {
 #endif
 }
 
+rpmalloc_heap_t*
+rpmalloc_heap_acquire(void) {
+	return 0;
+}
+
+void
+rpmalloc_heap_release(rpmalloc_heap_t* heap) {
+	(void)sizeof(heap);
+}
+
+extern inline RPMALLOC_ALLOCATOR void*
+rpmalloc_heap_alloc(rpmalloc_heap_t* heap, size_t size, size_t alignment) {
+	(void)sizeof(heap);
+	(void)sizeof(size);
+	(void)sizeof(alignment);
+	return 0;
+}
+
+extern inline RPMALLOC_ALLOCATOR void*
+rpmalloc_heap_calloc(rpmalloc_heap_t* heap, size_t num, size_t size, size_t alignment) {
+	(void)sizeof(heap);
+	(void)sizeof(num);
+	(void)sizeof(size);
+	(void)sizeof(alignment);
+	return 0;
+}
+
+extern inline RPMALLOC_ALLOCATOR void*
+rpmalloc_heap_realloc(rpmalloc_heap_t* heap, void* ptr, size_t size, size_t alignment, unsigned int flags) {
+	(void)sizeof(heap);
+	(void)sizeof(ptr);
+	(void)sizeof(size);
+	(void)sizeof(alignment);
+	(void)sizeof(flags);
+	return 0;
+}
+
+void
+rpmalloc_heap_free(rpmalloc_heap_t* heap, void* ptr) {
+	(void)sizeof(heap);
+	(void)sizeof(ptr);
+}
+
+void
+rpmalloc_heap_free_all(rpmalloc_heap_t* heap) {
+	(void)sizeof(heap);
+}
+
+rpmalloc_heap_t*
+rpmalloc_thread_set_heap(rpmalloc_heap_t* heap) {
+	(void)sizeof(heap);
+	return 0;
+}
+
 #if ENABLE_PRELOAD || ENABLE_OVERRIDE
 
 #include "malloc.c"
