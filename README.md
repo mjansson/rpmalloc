@@ -1,4 +1,4 @@
-# rpmalloc - Rampant Pixels Memory Allocator
+# rpmalloc - RP Memory Allocator
 This library provides a public domain cross platform lock free thread caching 16-byte aligned memory allocator implemented in C. The latest source code is always available at https://github.com/mjansson/rpmalloc
 
 Created by Mattias Jansson ([@maniccoder](https://twitter.com/maniccoder))  -  Support development through my [GitHub Sponsors page](https://github.com/sponsors/mjansson)
@@ -192,7 +192,7 @@ not recognized in your country
 
 The MIT License (MIT)
 
-Copyright (c) 2017 Rampant Pixels AB
+Copyright (c) 2017 Mattias Jansson
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
