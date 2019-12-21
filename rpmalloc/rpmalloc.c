@@ -2615,6 +2615,8 @@ rpmalloc_dump_statistics(void* file) {
 #endif
 }
 
+#if RPMALLOC_FIRST_CLASS_HEAPS
+
 extern inline rpmalloc_heap_t*
 rpmalloc_heap_acquire(void) {
 	return (rpmalloc_heap_t*)_memory_allocate_heap();
@@ -2721,6 +2723,8 @@ rpmalloc_heap_thread_set_current(rpmalloc_heap_t* heap) {
 			rpmalloc_heap_release(prev_heap);
 	}
 }
+
+#endif
 
 #if ENABLE_PRELOAD || ENABLE_OVERRIDE
 

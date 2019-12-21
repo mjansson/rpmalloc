@@ -45,9 +45,16 @@ extern "C" {
 # define RPMALLOC_CDECL
 #endif
 
-//! Define RPMALLOC_CONFIGURABLE to enable configuring sizes
+//! Define RPMALLOC_CONFIGURABLE to enable configuring sizes. Will introduce
+//  a very small overhead due to some size calculations not being compile time constants
 #ifndef RPMALLOC_CONFIGURABLE
 #define RPMALLOC_CONFIGURABLE 0
+#endif
+
+//! Define RPMALLOC_FIRST_CLASS_HEAPS to enable heap based API (rpmalloc_heap_* functions).
+//  Will introduce a very small overhead to track fully allocated spans in heaps
+#ifndef RPMALLOC_FIRST_CLASS_HEAPS
+#define RPMALLOC_FIRST_CLASS_HEAPS 1
 #endif
 
 //! Flag to rpaligned_realloc to not preserve content in reallocation
@@ -265,6 +272,8 @@ rpposix_memalign(void** memptr, size_t alignment, size_t size);
 RPMALLOC_EXPORT size_t
 rpmalloc_usable_size(void* ptr);
 
+#if RPMALLOC_FIRST_CLASS_HEAPS
+
 //! Heap type
 typedef void* rpmalloc_heap_t;
 
@@ -328,6 +337,8 @@ rpmalloc_heap_free_all(rpmalloc_heap_t* heap);
 //  current heap for the calling thread is released to be reused by other threads.
 RPMALLOC_EXPORT void
 rpmalloc_heap_thread_set_current(rpmalloc_heap_t* heap);
+
+#endif
 
 #ifdef __cplusplus
 }
