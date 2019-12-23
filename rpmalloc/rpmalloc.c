@@ -30,11 +30,11 @@
 #endif
 #ifndef ENABLE_STATISTICS
 //! Enable statistics collection
-#define ENABLE_STATISTICS         0
+#define ENABLE_STATISTICS         1
 #endif
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            0
+#define ENABLE_ASSERTS            1
 #endif
 #ifndef ENABLE_OVERRIDE
 //! Override standard library malloc/free and new/delete entry points
@@ -234,10 +234,16 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 #define MEDIUM_SIZE_LIMIT         (SMALL_SIZE_LIMIT + (MEDIUM_GRANULARITY * MEDIUM_CLASS_COUNT))
 //! Maximum size of a large block
 #define LARGE_SIZE_LIMIT          ((LARGE_CLASS_COUNT * _memory_span_size) - SPAN_HEADER_SIZE)
-//! Size of a span header (must be a multiple of SMALL_GRANULARITY)
-#define SPAN_HEADER_SIZE          96
 //! ABA protection size in orhpan heap list (also becomes limit of smallest page size)
 #define HEAP_ORPHAN_ABA_SIZE      512
+
+#if RPMALLOC_FIRST_CLASS_HEAPS
+//! Size of a span header (must be a multiple of SMALL_GRANULARITY)
+#define SPAN_HEADER_SIZE          128
+#else
+//! Size of a span header (must be a multiple of SMALL_GRANULARITY)
+#define SPAN_HEADER_SIZE          96
+#endif
 
 #if ENABLE_VALIDATE_ARGS
 //! Maximum allocation size to avoid integer overflow
@@ -374,6 +380,12 @@ struct span_t {
 	span_t*     next;
 	//! Previous span
 	span_t*     prev;
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	//! Next span
+	span_t*     next_in_heap;
+	//! Previous span
+	span_t*     prev_in_heap;
+#endif
 };
 _Static_assert(sizeof(span_t) <= SPAN_HEADER_SIZE, "span size mismatch");
 
@@ -397,6 +409,10 @@ struct heap_t {
 #if ENABLE_ADAPTIVE_THREAD_CACHE || ENABLE_STATISTICS
 	//! Current and high water mark of spans used per span count
 	span_use_t   span_use[LARGE_CLASS_COUNT];
+#endif
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	//! Double linked list of large and huge spans allocated by this heap
+	span_t*      heap_span;
 #endif
 	//! Mapped but unused spans
 	span_t*      span_reserve;
@@ -815,9 +831,9 @@ _memory_span_list_split(span_t* span, size_t limit) {
 
 #endif
 
-//! Add a span to partial span double linked list at the head
+//! Add a span to double linked list at the head
 static void
-_memory_span_partial_list_add(span_t** head, span_t* span) {
+_memory_span_double_link_list_add(span_t** head, span_t* span) {
 	if (*head) {
 		span->next = *head;
 		//Maintain pointer to tail span
@@ -830,9 +846,9 @@ _memory_span_partial_list_add(span_t** head, span_t* span) {
 	*head = span;
 }
 
-//! Add a span to partial span double linked list at the tail
+//! Add a span to double linked list at the tail
 static void
-_memory_span_partial_list_add_tail(span_t** head, span_t* span) {
+_memory_span_double_link_list_add_tail(span_t** head, span_t* span) {
 	span->next = 0;
 	if (*head) {
 		span_t* tail = (*head)->prev;
@@ -846,9 +862,9 @@ _memory_span_partial_list_add_tail(span_t** head, span_t* span) {
 	}
 }
 
-//! Pop head span from partial span double linked list
+//! Pop head span from double linked list
 static void
-_memory_span_partial_list_pop_head(span_t** head) {
+_memory_span_double_link_list_pop_head(span_t** head) {
 	span_t* span = *head;
 	*head = span->next;
 	if (*head) {
@@ -857,11 +873,12 @@ _memory_span_partial_list_pop_head(span_t** head) {
 	}
 }
 
-//! Remove a span from partial span double linked list
+//! Remove a span from double linked list
 static void
-_memory_span_partial_list_remove(span_t** head, span_t* span) {
+_memory_span_double_link_list_remove(span_t** head, span_t* span) {
+	assert(*head);
 	if (UNEXPECTED(*head == span)) {
-		_memory_span_partial_list_pop_head(head);
+		_memory_span_double_link_list_pop_head(head);
 	} else {
 		span_t* next_span = span->next;
 		span_t* prev_span = span->prev;
@@ -874,6 +891,31 @@ _memory_span_partial_list_remove(span_t** head, span_t* span) {
 		}
 	}
 }
+
+#if RPMALLOC_FIRST_CLASS_HEAPS
+
+static void
+_memory_heap_track_span(heap_t* heap, span_t* span) {
+	// Track span
+	span->next_in_heap = heap->heap_span;
+	span->prev_in_heap = 0;
+	if (heap->heap_span)
+		heap->heap_span->prev_in_heap = span;
+	heap->heap_span = span;
+}
+
+static void
+_memory_heap_untrack_span(heap_t* heap, span_t* span) {
+	// Untrack span
+	if (span->prev_in_heap)
+		span->prev_in_heap->next_in_heap = span->next_in_heap;
+	if (span->next_in_heap)
+		span->next_in_heap->prev_in_heap = span->prev_in_heap;
+	if (heap->heap_span == span)
+		heap->heap_span = span->next_in_heap;
+}
+
+#endif
 
 #if ENABLE_GLOBAL_CACHE
 
@@ -970,7 +1012,10 @@ _memory_heap_cache_adopt_deferred(heap_t* heap) {
 	} while (!atomic_cas_ptr(&heap->span_cache_deferred, 0, span));
 	while (span) {
 		span_t* next_span = span->next;
-		_memory_span_list_push(&heap->span_cache[0], span);
+#if RPMALLOC_FIRST_CLASS_HEAPS
+		_memory_heap_untrack_span(heap, span);
+#endif
+		_memory_span_list_push(&heap->span_cache[span->span_count - 1], span);
 #if ENABLE_STATISTICS
 		atomic_decr32(&heap->span_use[span->span_count - 1].current);
 		++heap->size_class_use[span->size_class].spans_to_cache;
@@ -1109,8 +1154,12 @@ static void
 _memory_span_release_to_cache(heap_t* heap, span_t* span) {
 	heap_class_t* heap_class = heap->span_class + span->size_class;
 	assert(heap_class->partial_span != span);
+	assert(heap == span->heap);
 	if (span->state == SPAN_STATE_PARTIAL)
-		_memory_span_partial_list_remove(&heap_class->partial_span, span);
+		_memory_span_double_link_list_remove(&heap_class->partial_span, span);
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	_memory_heap_untrack_span(heap, span);
+#endif
 #if ENABLE_ADAPTIVE_THREAD_CACHE || ENABLE_STATISTICS
 	atomic_decr32(&heap->span_use[0].current);
 #endif
@@ -1173,7 +1222,7 @@ _memory_span_set_new_active(heap_t* heap, heap_class_t* heap_class, span_t* span
 	span->list_size = 0;
 	atomic_thread_fence_release();
 
-	_memory_span_partial_list_add(&heap_class->partial_span, span);
+	_memory_span_double_link_list_add(&heap_class->partial_span, span);
 	return block;
 }
 
@@ -1194,7 +1243,7 @@ static void
 _memory_span_set_active_full(heap_class_t* heap_class, span_t* span) {
 	assert(span->state == SPAN_STATE_ACTIVE);
 	assert(span == heap_class->partial_span);
-	_memory_span_partial_list_pop_head(&heap_class->partial_span);
+	_memory_span_double_link_list_pop_head(&heap_class->partial_span);
 	span->used_count = span->block_count;
 	span->state = SPAN_STATE_FULL;
 	span->free_list = 0;
@@ -1206,7 +1255,7 @@ _memory_span_set_full_partial(heap_t* heap, span_t* span) {
 	assert(span->state == SPAN_STATE_FULL);
 	heap_class_t* heap_class = &heap->span_class[span->size_class];
 	span->state = SPAN_STATE_PARTIAL;
-	_memory_span_partial_list_add_tail(&heap_class->partial_span, span);
+	_memory_span_double_link_list_add_tail(&heap_class->partial_span, span);
 }
 
 static void*
@@ -1278,9 +1327,12 @@ _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 
 	//Find a span in one of the cache levels
 	active_span = _memory_heap_extract_new_span(heap, 1, class_idx);
-	
 	if (!active_span)
 		return active_span;
+
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	_memory_heap_track_span(heap, active_span);
+#endif
 
 	//Mark span as owned by this heap and set base data, return first block
 	return _memory_span_set_new_active(heap, heap_class, active_span, class_idx);
@@ -1323,7 +1375,6 @@ _memory_allocate_large(heap_t* heap, size_t size) {
 
 	//Find a span in one of the cache levels
 	span_t* span = _memory_heap_extract_new_span(heap, span_count, SIZE_CLASS_COUNT);
-	
 	if (!span)
 		return span;
 
@@ -1333,12 +1384,16 @@ _memory_allocate_large(heap_t* heap, size_t size) {
 	span->heap = heap;
 	atomic_thread_fence_release();
 
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	_memory_heap_track_span(heap, span);
+#endif
+
 	return pointer_offset(span, SPAN_HEADER_SIZE);
 }
 
 //! Allocate a huge block by mapping memory pages directly
 static void*
-_memory_allocate_huge(size_t size) {
+_memory_allocate_huge(heap_t* heap, size_t size) {
 	size += SPAN_HEADER_SIZE;
 	size_t num_pages = size >> _memory_page_size_shift;
 	if (size & (_memory_page_size - 1))
@@ -1347,11 +1402,17 @@ _memory_allocate_huge(size_t size) {
 	span_t* span = (span_t*)_memory_map(num_pages * _memory_page_size, &align_offset);
 	if (!span)
 		return span;
+
 	//Store page count in span_count
 	span->size_class = (uint32_t)-1;
 	span->span_count = (uint32_t)num_pages;
 	span->align_offset = (uint32_t)align_offset;
 	_memory_statistics_add_peak(&_huge_pages_current, num_pages, _huge_pages_peak);
+
+	(void)sizeof(heap);
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	//_memory_heap_track_span(heap, span);
+#endif
 
 	return pointer_offset(span, SPAN_HEADER_SIZE);
 }
@@ -1361,7 +1422,7 @@ static void*
 _memory_allocate_oversized(heap_t* heap, size_t size) {
 	if (size <= LARGE_SIZE_LIMIT)
 		return _memory_allocate_large(heap, size);
-	return _memory_allocate_huge(size);
+	return _memory_allocate_huge(heap, size);
 }
 
 //! Allocate a block of the given size
@@ -1503,7 +1564,36 @@ _memory_heap_orphan(heap_t* heap) {
 	} while (!atomic_cas_ptr(&_memory_orphan_heaps, raw_heap, last_heap));
 }
 
-//! Allocate a new heap
+//! Allocate a new heap from newly mapped memory pages
+static heap_t*
+_memory_allocate_heap_new(void) {
+	//Map in pages for a new heap
+	size_t align_offset = 0;
+	size_t block_size = (1 + (sizeof(heap_t) >> _memory_page_size_shift)) * _memory_page_size;
+	heap_t* heap = (heap_t*)_memory_map(block_size, &align_offset);
+	if (!heap)
+		return heap;
+
+	_memory_heap_initialize(heap);
+	heap->align_offset = align_offset;
+
+	//Put extra heaps as orphans, aligning to make sure ABA protection bits fit in pointer low bits
+	size_t aligned_heap_size = sizeof(heap_t);
+	if (aligned_heap_size % HEAP_ORPHAN_ABA_SIZE)
+		aligned_heap_size += HEAP_ORPHAN_ABA_SIZE - (aligned_heap_size % HEAP_ORPHAN_ABA_SIZE);
+	size_t num_heaps = block_size / aligned_heap_size;
+	heap_t* extra_heap = (heap_t*)pointer_offset(heap, aligned_heap_size);
+	while (num_heaps > 1) {
+		_memory_heap_initialize(extra_heap);
+		extra_heap->master_heap = heap;
+		_memory_heap_orphan(extra_heap);
+		extra_heap = (heap_t*)pointer_offset(extra_heap, aligned_heap_size);
+		--num_heaps;
+	}
+	return heap;
+}
+
+//! Allocate a new heap, potentially reusing a previously orphaned heap
 static heap_t*
 _memory_allocate_heap(void) {
 	void* raw_heap;
@@ -1523,31 +1613,8 @@ _memory_allocate_heap(void) {
 		next_raw_heap = (void*)((uintptr_t)next_heap | (orphan_counter & (uintptr_t)(HEAP_ORPHAN_ABA_SIZE - 1)));
 	} while (!atomic_cas_ptr(&_memory_orphan_heaps, next_raw_heap, raw_heap));
 
-	if (!heap) {
-		//Map in pages for a new heap
-		size_t align_offset = 0;
-		size_t block_size = (1 + (sizeof(heap_t) >> _memory_page_size_shift)) * _memory_page_size;
-		heap = (heap_t*)_memory_map(block_size, &align_offset);
-		if (!heap)
-			return heap;
-
-		_memory_heap_initialize(heap);
-		heap->align_offset = align_offset;
-
-		//Put extra heaps as orphans, aligning to make sure ABA protection bits fit in pointer low bits
-		size_t aligned_heap_size = sizeof(heap_t);
-		if (aligned_heap_size % HEAP_ORPHAN_ABA_SIZE)
-			aligned_heap_size += HEAP_ORPHAN_ABA_SIZE - (aligned_heap_size % HEAP_ORPHAN_ABA_SIZE);
-		size_t num_heaps = block_size / aligned_heap_size;
-		heap_t* extra_heap = (heap_t*)pointer_offset(heap, aligned_heap_size);
-		while (num_heaps > 1) {
-			_memory_heap_initialize(extra_heap);
-			extra_heap->master_heap = heap;
-			_memory_heap_orphan(extra_heap);
-			extra_heap = (heap_t*)pointer_offset(extra_heap, aligned_heap_size);
-			--num_heaps;
-		}
-	}
+	if (!heap)
+		heap = _memory_allocate_heap_new();
 
 	return heap;
 }
@@ -1570,20 +1637,24 @@ _memory_deallocate_direct(span_t* span, void* block) {
 		_memory_span_set_full_partial(span->heap, span);
 }
 
+static void
+_memory_deallocate_defer_to_span_cache(heap_t* heap, span_t* span) {
+	span_t* last_head;
+	do {
+		last_head = (span_t*)atomic_load_ptr(&heap->span_cache_deferred);
+		span->next = last_head;
+	} while (!atomic_cas_ptr(&heap->span_cache_deferred, span, last_head));
+}
+
 //! Put the block in the deferred free list of the owning span
 static void
-_memory_deallocate_defer(span_t* span, void* block) {
+_memory_deallocate_defer_small_or_medium(span_t* span, void* block) {
 	atomic_thread_fence_acquire();
 	if (span->state == SPAN_STATE_FULL) {
-		if ((span->list_size + 1) == span->block_count) {
-			//Span will be completely freed by deferred deallocations, no other thread can
-			//currently touch it. Safe to move to owner heap deferred cache
-			span_t* last_head;
-			heap_t* heap = span->heap;
-			do {
-				last_head = (span_t*)atomic_load_ptr(&heap->span_cache_deferred);
-				span->next = last_head;
-			} while (!atomic_cas_ptr(&heap->span_cache_deferred, span, last_head));
+		if ((span->list_size + 1) == span->block_count) {  
+			// Span will be completely freed by deferred deallocations, no other thread can
+			// currently touch it. Safe to move to owner heap deferred cache
+			_memory_deallocate_defer_to_span_cache(span->heap, span);
 			return;
 		}
 	}
@@ -1611,23 +1682,35 @@ _memory_deallocate_small_or_medium(span_t* span, void* p) {
 	if (span->heap == get_thread_heap_raw())
 		_memory_deallocate_direct(span, p);
 	else
-		_memory_deallocate_defer(span, p);
+		_memory_deallocate_defer_small_or_medium(span, p);
 }
 
 //! Deallocate the given large memory block to the current heap
 static void
 _memory_deallocate_large(span_t* span) {
-	//Decrease counter
 	assert(span->span_count == ((size_t)span->size_class - SIZE_CLASS_COUNT + 1));
 	assert(span->size_class >= SIZE_CLASS_COUNT);
 	assert(span->size_class - SIZE_CLASS_COUNT < LARGE_CLASS_COUNT);
 	assert(!(span->flags & SPAN_FLAG_MASTER) || !(span->flags & SPAN_FLAG_SUBSPAN));
 	assert((span->flags & SPAN_FLAG_MASTER) || (span->flags & SPAN_FLAG_SUBSPAN));
-	//Large blocks can always be deallocated and transferred between heaps
-	//Investigate if it is better to defer large spans as well through span_cache_deferred,
-	//possibly with some heuristics to pick either scheme at runtime per deallocation
-	heap_t* heap = get_thread_heap();
+	heap_t* heap = get_thread_heap_raw();
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	//If using first class heaps and tracking spans in heap double linked list we must
+	//always defer if from another heap since we cannot touch the list of another heap
+	int defer = (heap != span->heap);
+#else
+	//Otherwise defer if different heap and span count is 1
+	int defer = ((heap != span->heap) && (span->span_count == 1));
+#endif
+	if (defer) {
+		_memory_deallocate_defer_to_span_cache(span->heap, span);
+		return;
+	}
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	_memory_heap_untrack_span(heap, span);
+#endif
 #if ENABLE_ADAPTIVE_THREAD_CACHE || ENABLE_STATISTICS
+	//Decrease counter
 	size_t idx = span->span_count - 1;
 	atomic_decr32(&span->heap->span_use[idx].current);
 #endif
@@ -2619,7 +2702,10 @@ rpmalloc_dump_statistics(void* file) {
 
 extern inline rpmalloc_heap_t*
 rpmalloc_heap_acquire(void) {
-	return (rpmalloc_heap_t*)_memory_allocate_heap();
+	// Must be a pristine heap from newly mapped memory pages, or else memory blocks
+	// could already be allocated from the heap which would (wrongly) be release when
+	// heap is cleared with rpmalloc_heap_free_all()
+	return (rpmalloc_heap_t*)_memory_allocate_heap_new();
 }
 
 extern inline void
