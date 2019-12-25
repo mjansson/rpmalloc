@@ -54,7 +54,7 @@ extern "C" {
 //! Define RPMALLOC_FIRST_CLASS_HEAPS to enable heap based API (rpmalloc_heap_* functions).
 //  Will introduce a very small overhead to track fully allocated spans in heaps
 #ifndef RPMALLOC_FIRST_CLASS_HEAPS
-#define RPMALLOC_FIRST_CLASS_HEAPS 1
+#define RPMALLOC_FIRST_CLASS_HEAPS 0
 #endif
 
 //! Flag to rpaligned_realloc to not preserve content in reallocation
