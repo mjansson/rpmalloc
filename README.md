@@ -156,6 +156,8 @@ All entry points assume the passed values are valid, for example passing an inva
 
 [Johan Andersson](https://github.com/repi) at Embark has created a Rust wrapper available at [rpmalloc-rs](https://github.com/EmbarkStudios/rpmalloc-rs)
 
+[Stas Denisov](https://github.com/nxrighthere) has created a C# wrapper available at [Rpmalloc-CSharp](https://github.com/nxrighthere/Rpmalloc-CSharp)
+
 # License
 
 This is free and unencumbered software released into the public domain.
