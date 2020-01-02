@@ -977,13 +977,11 @@ _memory_global_cache_extract(size_t span_count) {
 
 #endif
 
-#if ENABLE_THREAD_CACHE
-
 static void _memory_deallocate_huge(span_t*);
 
-//! Adopt the deferred span cache list
+//! Adopt the deferred span cache list, returning the first
 static void
-_memory_heap_cache_adopt_deferred(heap_t* heap) {
+_memory_heap_cache_adopt_deferred(heap_t* heap, span_t** single_span) {
 	atomic_thread_fence_acquire();
 	span_t* span = (span_t*)atomic_load_ptr(&heap->span_free_deferred);
 	if (!span)
@@ -1003,16 +1001,22 @@ _memory_heap_cache_adopt_deferred(heap_t* heap) {
 			_memory_span_double_link_list_remove(&heap->full_span, span);
 #endif
 			span->state = SPAN_STATE_FREE;
-			_memory_span_list_push(&heap->span_cache[idx], span);
-			_memory_statistics_dec(&heap->span_use[idx].current);
-			_memory_statistics_inc(&heap->size_class_use[span->size_class].spans_to_cache);
-			_memory_statistics_dec(&heap->size_class_use[span->size_class].spans_current);
+			if (!idx && single_span && !*single_span) {
+				*single_span = span;
+			} else {
+				_memory_statistics_dec(&heap->span_use[idx].current);
+				_memory_statistics_dec(&heap->size_class_use[span->size_class].spans_current);
+#if ENABLE_THREAD_CACHE
+				_memory_statistics_inc(&heap->size_class_use[span->size_class].spans_to_cache);
+				_memory_span_list_push(&heap->span_cache[idx], span);
+#else
+				_memory_unmap_span(span);
+#endif
+			}
 		}
 		span = next_span;
 	}
 }
-
-#endif
 
 //! Insert a single span into thread heap cache, releasing to global cache if overflow
 static void
@@ -1021,8 +1025,6 @@ _memory_heap_cache_insert(heap_t* heap, span_t* span) {
 	size_t span_count = span->span_count;
 	size_t idx = span_count - 1;
 	_memory_statistics_inc(&heap->span_use[idx].spans_to_cache);
-	if (!idx)
-		_memory_heap_cache_adopt_deferred(heap);
 #if ENABLE_UNLIMITED_THREAD_CACHE
 	_memory_span_list_push(&heap->span_cache[idx], span);
 #else
@@ -1061,16 +1063,17 @@ _memory_heap_cache_insert(heap_t* heap, span_t* span) {
 //! Extract the given number of spans from the different cache levels
 static span_t*
 _memory_heap_thread_cache_extract(heap_t* heap, size_t span_count) {
-#if ENABLE_THREAD_CACHE
+	span_t* span = 0;
 	size_t idx = span_count - 1;
 	if (!idx)
-		_memory_heap_cache_adopt_deferred(heap);
-	if (heap->span_cache[idx]) {
+		_memory_heap_cache_adopt_deferred(heap, &span);
+#if ENABLE_THREAD_CACHE
+	if (!span && heap->span_cache[idx]) {
 		_memory_statistics_inc(&heap->span_use[idx].spans_from_cache);
-		return _memory_span_list_pop(&heap->span_cache[idx]);
+		span = _memory_span_list_pop(&heap->span_cache[idx]);
 	}
 #endif
-	return 0;
+	return span;
 }
 
 static span_t*
@@ -1092,6 +1095,8 @@ _memory_heap_global_cache_extract(heap_t* heap, size_t span_count) {
 		return _memory_span_list_pop(&heap->span_cache[idx]);
 	}
 #endif
+	(void)sizeof(heap);
+	(void)sizeof(span_count);
 	return 0;
 }
 
@@ -1910,8 +1915,8 @@ _memory_heap_finalize(void* heapptr) {
 	if (!heap)
 		return;
 	//Release thread cache spans back to global cache
+	_memory_heap_cache_adopt_deferred(heap, 0);
 #if ENABLE_THREAD_CACHE
-	_memory_heap_cache_adopt_deferred(heap);
 	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
 		span_t* span = heap->span_cache[iclass];
 #if ENABLE_GLOBAL_CACHE
@@ -2226,9 +2231,9 @@ rpmalloc_finalize(void) {
 				}
 			}
 
-#if ENABLE_THREAD_CACHE
 			//Free span caches (other thread might have deferred after the thread using this heap finalized)
-			_memory_heap_cache_adopt_deferred(heap);
+			_memory_heap_cache_adopt_deferred(heap, 0);
+#if ENABLE_THREAD_CACHE
 			for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
 				if (heap->span_cache[iclass]) {
 					_memory_unmap_span_list(heap->span_cache[iclass]);
@@ -2631,9 +2636,13 @@ _memory_heap_dump_statistics(heap_t* heap, void* file) {
 			atomic_load32(&heap->span_use[iclass].current),
 			heap->span_use[iclass].high,
 			((size_t)heap->span_use[iclass].high * (size_t)_memory_span_size * (iclass + 1)) / (size_t)(1024 * 1024),
+#if ENABLE_THREAD_CACHE
 			heap->span_cache[iclass] ? heap->span_cache[iclass]->list_size : 0,
 			((size_t)heap->span_use[iclass].spans_to_cache * (iclass + 1) * _memory_span_size) / (size_t)(1024 * 1024),
 			((size_t)heap->span_use[iclass].spans_from_cache * (iclass + 1) * _memory_span_size) / (size_t)(1024 * 1024),
+#else
+			0, 0ULL, 0ULL,
+#endif
 			((size_t)heap->span_use[iclass].spans_to_reserved * (iclass + 1) * _memory_span_size) / (size_t)(1024 * 1024),
 			((size_t)heap->span_use[iclass].spans_from_reserved * (iclass + 1) * _memory_span_size) / (size_t)(1024 * 1024),
 			((size_t)heap->span_use[iclass].spans_to_global * (size_t)_memory_span_size * (iclass + 1)) / (size_t)(1024 * 1024),
@@ -2814,16 +2823,6 @@ rpmalloc_heap_free_all(rpmalloc_heap_t* heapptr) {
 	}
 	memset(heap->span_class, 0, sizeof(heap->span_class));
 
-#if ENABLE_THREAD_CACHE
-	span = (span_t*)atomic_load_ptr(&heap->span_free_deferred);
-	while (span) {
-		next_span = (span_t*)span->free_list;
-		_memory_heap_cache_insert(heap, span);
-		span = next_span;
-	}
-	atomic_store_ptr(&heap->span_free_deferred, 0);
-#endif
-
 	span = heap->full_span;
 	while (span) {
 		next_span = span->next;
@@ -2831,6 +2830,7 @@ rpmalloc_heap_free_all(rpmalloc_heap_t* heapptr) {
 		span = next_span;
 	}
 
+	_memory_heap_cache_adopt_deferred(heap, 0);
 #if ENABLE_THREAD_CACHE
 	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
 		span = heap->span_cache[iclass];
