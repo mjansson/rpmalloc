@@ -111,6 +111,8 @@ test_alloc(void) {
 			return test_fail("Bad usable size (aligned realloc)");
 		if (*((uintptr_t*)testptr) != 0x12345678)
 			return test_fail("Data not preserved on realloc");
+		if (rpaligned_realloc(testptr, 128, size * 1024 * 4, 0, RPMALLOC_GROW_OR_FAIL))
+			return test_fail("Realloc with grow-or-fail did not fail as expected");
 		void* unaligned = rprealloc(testptr, size);
 		if (unaligned != testptr) {
 			ptrdiff_t diff = pointer_diff(testptr, unaligned);
@@ -318,6 +320,10 @@ test_realloc(void) {
 	while (bigsize < 3 * 1024 * 1024) {
 		++bigsize;
 		bigptr = rprealloc(bigptr, bigsize);
+		if (rpaligned_realloc(bigptr, 0, bigsize * 32, 0, RPMALLOC_GROW_OR_FAIL))
+			return test_fail("Reallocation with grow-or-fail did not fail as expected");
+		if (rpaligned_realloc(bigptr, 128, bigsize * 32, 0, RPMALLOC_GROW_OR_FAIL))
+			return test_fail("Reallocation with aligned grow-or-fail did not fail as expected");
 	}
 	rpfree(bigptr);
 
