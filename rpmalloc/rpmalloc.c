@@ -1879,7 +1879,7 @@ _memory_aligned_reallocate(heap_t* heap, void* ptr, size_t alignment, size_t siz
 			return ptr;
 	}
 	// Aligned alloc marks span as having aligned blocks
-	void* block = (!no_alloc ? rpaligned_alloc(alignment, size) : 0);
+	void* block = (!no_alloc ? _memory_aligned_allocate(heap, alignment, size) : 0);
 	if (EXPECTED(block)) {
 		if (!(flags & RPMALLOC_NO_PRESERVE) && ptr) {
 			if (!oldsize)
