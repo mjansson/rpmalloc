@@ -172,7 +172,7 @@ static FORCEINLINE int32_t atomic_incr32(atomic32_t* val) { return (int32_t)_Int
 #if ENABLE_STATISTICS || ENABLE_ADAPTIVE_THREAD_CACHE
 static FORCEINLINE int32_t atomic_decr32(atomic32_t* val) { return (int32_t)_InterlockedExchangeAdd(val, -1) - 1; }
 static FORCEINLINE int64_t atomic_load64(atomic64_t* src) { return *src; }
-static FORCEINLINE int64_t atomic_add64(atomic64_t* val, int64_t add) { return (int64_t)_InterlockedExchangeAdd64(val, -1) - 1; }
+static FORCEINLINE int64_t atomic_add64(atomic64_t* val, int64_t add) { return (int64_t)_InterlockedExchangeAdd64(val, add) - add; }
 #endif
 static FORCEINLINE int32_t atomic_add32(atomic32_t* val, int32_t add) { return (int32_t)_InterlockedExchangeAdd(val, add) + add; }
 static FORCEINLINE void*   atomic_load_ptr(atomicptr_t* src) { return (void*)*src; }
@@ -1102,8 +1102,8 @@ _memory_heap_extract_new_span(heap_t* heap, size_t span_count, uint32_t class_id
 #if ENABLE_ADAPTIVE_THREAD_CACHE || ENABLE_STATISTICS
 	uint32_t idx = (uint32_t)span_count - 1;
 	uint32_t current_count = (uint32_t)atomic_incr32(&heap->span_use[idx].current);
-	if (current_count > heap->span_use[idx].high)
-		heap->span_use[idx].high = current_count;
+	if (current_count > (uint32_t)atomic_load32(&heap->span_use[idx].high))
+		atomic_store32(&heap->span_use[idx].high, (int32_t)current_count);
 	_memory_statistics_add_peak(&heap->size_class_use[class_idx].spans_current, 1, heap->size_class_use[class_idx].spans_peak);
 #endif
 	span_t* span = _memory_heap_thread_cache_extract(heap, span_count);
