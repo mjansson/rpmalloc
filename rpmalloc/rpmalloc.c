@@ -398,9 +398,9 @@ struct heap_t {
 #if ENABLE_THREAD_CACHE
 	//! List of free spans (single linked list)
 	span_t*      span_cache[LARGE_CLASS_COUNT];
-	//! List of deferred free spans (single linked list)
-	atomicptr_t  span_cache_deferred;
 #endif
+	//! List of deferred free spans (single linked list)
+	atomicptr_t  span_free_deferred;
 #if ENABLE_ADAPTIVE_THREAD_CACHE || ENABLE_STATISTICS
 	//! Current and high water mark of spans used per span count
 	span_use_t   span_use[LARGE_CLASS_COUNT];
@@ -985,12 +985,12 @@ static void _memory_deallocate_huge(span_t*);
 static void
 _memory_heap_cache_adopt_deferred(heap_t* heap) {
 	atomic_thread_fence_acquire();
-	span_t* span = (span_t*)atomic_load_ptr(&heap->span_cache_deferred);
+	span_t* span = (span_t*)atomic_load_ptr(&heap->span_free_deferred);
 	if (!span)
 		return;
 	do {
-		span = (span_t*)atomic_load_ptr(&heap->span_cache_deferred);
-	} while (!atomic_cas_ptr(&heap->span_cache_deferred, 0, span));
+		span = (span_t*)atomic_load_ptr(&heap->span_free_deferred);
+	} while (!atomic_cas_ptr(&heap->span_free_deferred, 0, span));
 	while (span) {
 		span_t* next_span = (span_t*)span->free_list;
 		assert(span->heap == heap);
@@ -1628,19 +1628,13 @@ _memory_deallocate_direct_small_or_medium(span_t* span, void* block) {
 }
 
 static void
-_memory_deallocate_defer_to_span_cache(heap_t* heap, span_t* span) {
-/*#if ENABLE_THREAD_CACHE
+_memory_deallocate_defer_free_span(heap_t* heap, span_t* span) {
 	//This list does not need ABA protection, no mutable side state
 	void* last_head;
 	do {
-		last_head = atomic_load_ptr(&heap->span_cache_deferred);
+		last_head = atomic_load_ptr(&heap->span_free_deferred);
 		span->free_list = last_head;
-	} while (!atomic_cas_ptr(&heap->span_cache_deferred, span, last_head));
-#else*/
-	atomic_decr32(&heap->span_use[0].current);
-	_memory_statistics_dec(&heap->size_class_use[span->size_class].spans_current);
-	_memory_unmap_span(span);
-//#endif
+	} while (!atomic_cas_ptr(&heap->span_free_deferred, span, last_head));
 }
 
 //! Put the block in the deferred free list of the owning span
@@ -1657,7 +1651,7 @@ _memory_deallocate_defer_small_or_medium(span_t* span, void* block) {
 		// Span was completely freed by this block. Due to the INVALID_POINTER spin lock
 		// no other thread can reach this state simultaneously on this span.
 		// Safe to move to owner heap deferred cache
-		_memory_deallocate_defer_to_span_cache(span->heap, span);
+		_memory_deallocate_defer_free_span(span->heap, span);
 		return;
 	}
 	atomic_store_ptr(&span->free_list_deferred, block);
@@ -1697,7 +1691,7 @@ _memory_deallocate_large(span_t* span) {
 	int defer = ((heap != span->heap) && (span->span_count == 1));
 #endif
 	if (defer) {
-		_memory_deallocate_defer_to_span_cache(span->heap, span);
+		_memory_deallocate_defer_free_span(span->heap, span);
 		return;
 	}
 #if RPMALLOC_FIRST_CLASS_HEAPS
@@ -1736,7 +1730,7 @@ _memory_deallocate_huge(span_t* span) {
 	//always defer if from another heap since we cannot touch the list of another heap
 	assert(span->heap);
 	if (span->heap != get_thread_heap_raw()) {
-		_memory_deallocate_defer_to_span_cache(span->heap, span);
+		_memory_deallocate_defer_free_span(span->heap, span);
 		return;
 	}
 
@@ -2552,7 +2546,7 @@ rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats) {
 	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
 		if (heap->span_cache[iclass])
 			stats->spancache = (size_t)heap->span_cache[iclass]->list_size * (iclass + 1) * _memory_span_size;
-		span_t* deferred_list = !iclass ? (span_t*)atomic_load_ptr(&heap->span_cache_deferred) : 0;
+		span_t* deferred_list = !iclass ? (span_t*)atomic_load_ptr(&heap->span_free_deferred) : 0;
 		//TODO: Incorrect, for deferred lists the size is NOT stored in list_size
 		if (deferred_list)
 			stats->spancache = (size_t)deferred_list->list_size * (iclass + 1) * _memory_span_size;
@@ -2820,13 +2814,13 @@ rpmalloc_heap_free_all(rpmalloc_heap_t* heapptr) {
 	memset(heap->span_class, 0, sizeof(heap->span_class));
 
 #if ENABLE_THREAD_CACHE
-	span = (span_t*)atomic_load_ptr(&heap->span_cache_deferred);
+	span = (span_t*)atomic_load_ptr(&heap->span_free_deferred);
 	while (span) {
 		next_span = (span_t*)span->free_list;
 		_memory_heap_cache_insert(heap, span);
 		span = next_span;
 	}
-	atomic_store_ptr(&heap->span_cache_deferred, 0);
+	atomic_store_ptr(&heap->span_free_deferred, 0);
 #endif
 
 	span = heap->full_span;
