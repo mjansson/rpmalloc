@@ -9,6 +9,12 @@ Added a missing null check in the non-hot allocation code paths
 
 Fixed compilation issue on macOS when ENABLE_PRELOAD is set but not ENABLE_OVERRIDE
 
+New first class heap API allowing explicit heap control and release of entire heap in a single call
+
+Added rpaligned_calloc function for aligned and zero intialized allocations
+
+Fixed natural alignment check in rpaligned_realloc to 16 bytes (check was 32, which is wrong)
+
 
 1.4.0
 
