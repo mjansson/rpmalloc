@@ -952,8 +952,6 @@ test_run(int argc, char** argv) {
 	(void)sizeof(argc);
 	(void)sizeof(argv);
 	test_initialize();
-	if (test_first_class_heaps())
-		return -1;
 	if (test_alloc())
 		return -1;
 	if (test_realloc())
@@ -966,6 +964,8 @@ test_run(int argc, char** argv) {
 		return -1;
 	if (test_threaded())
 		return -1;
+	//if (test_first_class_heaps())
+	//	return -1;
 	printf("All tests passed\n");
 	return 0;
 }
