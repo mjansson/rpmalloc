@@ -75,6 +75,10 @@
 #endif
 
 #if ENABLE_GLOBAL_CACHE && ENABLE_THREAD_CACHE
+#if DISABLE_UNMAP
+#undef ENABLE_UNLIMITED_GLOBAL_CACHE
+#define ENABLE_UNLIMITED_GLOBAL_CACHE 1
+#endif
 #ifndef ENABLE_UNLIMITED_GLOBAL_CACHE
 //! Unlimited cache disables any global cache limitations
 #define ENABLE_UNLIMITED_GLOBAL_CACHE ENABLE_UNLIMITED_CACHE
@@ -1710,8 +1714,6 @@ _memory_deallocate_defer_free_span(heap_t* heap, span_t* span) {
 		last_head = atomic_load_ptr(&heap->span_free_deferred);
 		span->free_list = last_head;
 	} while (!atomic_cas_ptr(&heap->span_free_deferred, span, last_head));
-	//_memory_unmap_span(span);
-	//(void)sizeof(heap);
 }
 
 //! Put the block in the deferred free list of the owning span
@@ -1724,7 +1726,8 @@ _memory_deallocate_defer_small_or_medium(span_t* span, void* block) {
 		*((void**)block) = free_list;
 	} while ((free_list == INVALID_POINTER) || !atomic_cas_ptr(&span->free_list_deferred, INVALID_POINTER, free_list));
 	uint32_t list_size = atomic_incr32(&span->free_list_deferred_size);
-	if ((span->state == SPAN_STATE_FULL) && (list_size == span->block_count)) {
+	if (list_size == span->block_count) {
+		assert(span->state == SPAN_STATE_FULL);
 		// Span was completely freed by this block. Due to the INVALID_POINTER spin lock
 		// no other thread can reach this state simultaneously on this span.
 		// Safe to move to owner heap deferred cache
@@ -2462,7 +2465,6 @@ _memory_unmap_os(void* address, size_t size, size_t offset, size_t release) {
 		release += _memory_span_size;
 #endif
 	}
-	/*
 #if !DISABLE_UNMAP
 #if PLATFORM_WINDOWS
 	if (!VirtualFree(address, release ? 0 : size, release ? MEM_RELEASE : MEM_DECOMMIT)) {
@@ -2484,7 +2486,6 @@ _memory_unmap_os(void* address, size_t size, size_t offset, size_t release) {
 	}
 #endif
 #endif
-	*/
 	if (release)
 		_memory_statistics_sub(&_mapped_pages_os, release >> _memory_page_size_shift);
 }
