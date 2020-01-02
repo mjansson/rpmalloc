@@ -1442,11 +1442,12 @@ _memory_aligned_allocate(heap_t* heap, size_t alignment, size_t size) {
 	size_t align_mask = alignment - 1;
 	if (alignment <= _memory_page_size) {
 		ptr = _memory_allocate(heap, size + alignment);
-		if ((uintptr_t)ptr & align_mask)
+		if ((uintptr_t)ptr & align_mask) {
 			ptr = (void*)(((uintptr_t)ptr & ~(uintptr_t)align_mask) + alignment);
-		//Mark as having aligned blocks
-		span_t* span = (span_t*)((uintptr_t)ptr & _memory_span_mask);
-		span->flags |= SPAN_FLAG_ALIGNED_BLOCKS;
+			//Mark as having aligned blocks
+			span_t* span = (span_t*)((uintptr_t)ptr & _memory_span_mask);
+			span->flags |= SPAN_FLAG_ALIGNED_BLOCKS;
+		}
 		return ptr;
 	}
 
@@ -1848,6 +1849,9 @@ _memory_reallocate(heap_t* heap, void* p, size_t size, size_t oldsize, unsigned 
 		oldsize = 0;
 	}
 
+	if (!!(flags & RPMALLOC_GROW_OR_FAIL))
+		return 0;
+
 	//Size is greater than block size, need to allocate a new block and deallocate the old
 	//Avoid hysteresis by overallocating if increase is small (below 37%)
 	size_t lower_bound = oldsize + (oldsize >> 2) + (oldsize >> 3);
@@ -1863,27 +1867,26 @@ _memory_reallocate(heap_t* heap, void* p, size_t size, size_t oldsize, unsigned 
 }
 
 static void*
-_memory_aligned_reallocate(heap_t* heap, void* p, size_t alignment, size_t size, size_t oldsize,
+_memory_aligned_reallocate(heap_t* heap, void* ptr, size_t alignment, size_t size, size_t oldsize,
                            unsigned int flags) {
 	if (alignment <= SMALL_GRANULARITY)
-		return _memory_reallocate(heap, p, size, oldsize, flags);
+		return _memory_reallocate(heap, ptr, size, oldsize, flags);
 
-	size_t usablesize = _memory_usable_size(p);
-	if ((usablesize >= size) && (size >= (usablesize / 2)) && !((uintptr_t)p & (alignment - 1)))
-		return p;
-
-	void* block = _memory_aligned_allocate(heap, alignment, size);
-	if (p) {
-		if (!oldsize)
-			oldsize = usablesize;
-		if (!(flags & RPMALLOC_NO_PRESERVE))
-			memcpy(block, p, oldsize < size ? oldsize : size);
-		_memory_deallocate(p);
+	int no_alloc = !!(flags & RPMALLOC_GROW_OR_FAIL);
+	size_t usablesize = _memory_usable_size(ptr);
+	if ((usablesize >= size) && !((uintptr_t)ptr & (alignment - 1))) {
+		if (no_alloc || (size >= (usablesize / 2)))
+			return ptr;
 	}
-	if (block) {
-		//Mark as having aligned blocks
-		span_t* span = (span_t*)((uintptr_t)block & _memory_span_mask);
-		span->flags |= SPAN_FLAG_ALIGNED_BLOCKS;
+	// Aligned alloc marks span as having aligned blocks
+	void* block = (!no_alloc ? _memory_aligned_allocate(heap, alignment, size) : 0);
+	if (EXPECTED(block)) {
+		if (!(flags & RPMALLOC_NO_PRESERVE) && ptr) {
+			if (!oldsize)
+				oldsize = usablesize;
+			memcpy(block, ptr, oldsize < size ? oldsize : size);
+		}
+		rpfree(ptr);
 	}
 	return block;
 }
