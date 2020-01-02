@@ -30,11 +30,11 @@
 #endif
 #ifndef ENABLE_STATISTICS
 //! Enable statistics collection
-#define ENABLE_STATISTICS         1
+#define ENABLE_STATISTICS         0
 #endif
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            1
+#define ENABLE_ASSERTS            0
 #endif
 #ifndef ENABLE_OVERRIDE
 //! Override standard library malloc/free and new/delete entry points
@@ -600,8 +600,8 @@ _memory_unmap_os(void* address, size_t size, size_t offset, size_t release);
 	atomic_incr32(&heap->size_class_use[class_idx].free_total); \
 } while(0)
 #else
-#  define _memory_statistics_inc(counter, value) do {} while(0)
-#  define _memory_statistics_dec(counter, value) do {} while(0)
+#  define _memory_statistics_inc(counter) do {} while(0)
+#  define _memory_statistics_dec(counter) do {} while(0)
 #  define _memory_statistics_add(atomic_counter, value) do {} while(0)
 #  define _memory_statistics_add64(counter, value) do {} while(0)
 #  define _memory_statistics_add_peak(atomic_counter, value, peak) do {} while (0)
@@ -1936,9 +1936,10 @@ _memory_heap_finalize(void* heapptr) {
 	_memory_heap_orphan(heap);
 
 	set_thread_heap(0);
-
+#if ENABLE_STATISTICS
 	atomic_decr32(&_memory_active_heaps);
 	assert(atomic_load32(&_memory_active_heaps) >= 0);
+#endif
 }
 
 #if defined(_MSC_VER) && !defined(__clang__) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
@@ -2211,13 +2212,13 @@ rpmalloc_finalize(void) {
 						}
 						if (used_blocks == (free_blocks + span->list_size)) {
 							_memory_heap_cache_insert(heap, span);
-							atomic_decr32(&heap->span_use[0].current);
+							_memory_statistics_dec(&heap->span_use[0].current);
 							_memory_statistics_dec(&heap->size_class_use[iclass].spans_current);
 						}
 					} else {
 						if (span->used_count == span->list_size) {
 							_memory_heap_cache_insert(heap, span);
-							atomic_decr32(&heap->span_use[0].current);
+							_memory_statistics_dec(&heap->span_use[0].current);
 							_memory_statistics_dec(&heap->size_class_use[iclass].spans_current);
 						}
 					}
