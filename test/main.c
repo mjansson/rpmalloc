@@ -768,8 +768,8 @@ test_crossthread(void) {
 	size_t num_alloc_threads = _hardware_threads;
 	if (num_alloc_threads < 2)
 		num_alloc_threads = 2;
-	if (num_alloc_threads > 4)
-		num_alloc_threads = 4;
+	if (num_alloc_threads > 16)
+		num_alloc_threads = 16;
 
 	for (unsigned int ithread = 0; ithread < num_alloc_threads; ++ithread) {
 		unsigned int iadd = (ithread * (16 + ithread) + ithread) % 128;
@@ -787,10 +787,10 @@ test_crossthread(void) {
 		arg[ithread].datasize[7] = 19 + iadd;
 		arg[ithread].datasize[8] = 154 + iadd;
 		arg[ithread].datasize[9] = 9723 + iadd;
-		arg[ithread].datasize[10] = 15 + iadd;
-		arg[ithread].datasize[11] = 493 + iadd;
+		arg[ithread].datasize[10] = 15543 + iadd;
+		arg[ithread].datasize[11] = 32493 + iadd;
 		arg[ithread].datasize[12] = 34 + iadd;
-		arg[ithread].datasize[13] = 894 + iadd;
+		arg[ithread].datasize[13] = 1894 + iadd;
 		arg[ithread].datasize[14] = 193 + iadd;
 		arg[ithread].datasize[15] = 2893 + iadd;
 		arg[ithread].num_datasize = 16;

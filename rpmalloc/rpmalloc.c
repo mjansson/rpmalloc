@@ -420,16 +420,16 @@ struct heap_t {
 	size_t       align_offset;
 	//! Heap ID
 	int32_t      id;
+	//! Master heap owning the memory pages
+	heap_t*      master_heap;
 #if ENABLE_STATISTICS
 	//! Number of bytes transitioned thread -> global
 	atomic64_t   thread_to_global;
 	//! Number of bytes transitioned global -> thread
 	atomic64_t   global_to_thread;
 	//! Allocation stats per size class
-	size_class_use_t size_class_use[SIZE_CLASS_COUNT];
+	size_class_use_t size_class_use[SIZE_CLASS_COUNT + 1];
 #endif
-	//! Master heap owning the memory pages
-	heap_t*      master_heap;
 };
 
 struct size_class_t {
@@ -1006,6 +1006,7 @@ _memory_heap_cache_adopt_deferred(heap_t* heap, span_t** single_span) {
 			if (span->size_class == SIZE_CLASS_HUGE) {
 				_memory_deallocate_huge(span);
 			} else {
+				assert(span->size_class == SIZE_CLASS_LARGE);
 				uint32_t idx = span->span_count - 1;
 				if (!idx && single_span && !*single_span) {
 					*single_span = span;
