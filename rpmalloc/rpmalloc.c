@@ -30,11 +30,11 @@
 #endif
 #ifndef ENABLE_STATISTICS
 //! Enable statistics collection
-#define ENABLE_STATISTICS         1
+#define ENABLE_STATISTICS         0
 #endif
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            1
+#define ENABLE_ASSERTS            0
 #endif
 #ifndef ENABLE_OVERRIDE
 //! Override standard library malloc/free and new/delete entry points
@@ -1136,8 +1136,6 @@ _memory_heap_extract_new_span(heap_t* heap, size_t span_count, uint32_t class_id
 //! Move the span (used for small or medium allocations) to the heap thread cache
 static void
 _memory_span_release_to_cache(heap_t* heap, span_t* span) {
-	heap_class_t* heap_class = heap->span_class + span->size_class;
-	assert(heap_class->partial_span != span);
 	assert(heap == span->heap);
 	assert(span->size_class < SIZE_CLASS_COUNT);
 #if ENABLE_ADAPTIVE_THREAD_CACHE || ENABLE_STATISTICS
@@ -1642,7 +1640,7 @@ _memory_deallocate_large(span_t* span) {
 	//always defer if from another heap since we cannot touch the list of another heap
 	int defer = (heap != span->heap);
 #else
-	//Otherwise defer if different heap and span count is 1
+	//Otherwise defer if different heap and span count is 1 to avoide too many span transitions
 	int defer = ((heap != span->heap) && (span->span_count == 1));
 #endif
 	if (defer) {
@@ -1657,6 +1655,7 @@ _memory_deallocate_large(span_t* span) {
 	size_t idx = span->span_count - 1;
 	atomic_decr32(&span->heap->span_use[idx].current);
 #endif
+	span->heap = heap;
 	if ((span->span_count > 1) && !heap->spans_reserved) {
 		heap->span_reserve = span;
 		heap->spans_reserved = span->span_count;
@@ -2143,36 +2142,50 @@ rpmalloc_finalize(void) {
 
 			for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
 				heap_class_t* heap_class = heap->span_class + iclass;
+				
+				uint32_t class_free_blocks = 0;
+				void* block = heap_class->free_list;
+				while (block) {
+					++class_free_blocks;
+					block = *((void**)block);
+				}
+
 				span_t* span = heap_class->partial_span;
 				while (span) {
 					span_t* next = span->next;
-#if 0
+					uint32_t free_blocks = span->list_size;
+					if ((heap_class->free_list >= (void*)span) && (heap_class->free_list < (void*)((char*)span + _memory_span_size)))
+						free_blocks += class_free_blocks;
 					uint32_t block_count = span->block_count;
 					if (span->free_list_limit < span->block_count)
 						block_count = span->free_list_limit;
-					uint32_t free_blocks = 0;
-					void* block = heap_class->free_list;
-					while (block) {
-						++free_blocks;
-						block = *((void**)block);
-					}
 					block = span->free_list;
 					while (block) {
 						++free_blocks;
 						block = *((void**)block);
 					}
-#endif
-					_memory_statistics_dec(&heap->span_use[0].current);
-					_memory_statistics_dec(&heap->size_class_use[iclass].spans_current);
-					_memory_unmap_span(span);
+					//If this assert triggers you have memory leaks
+					assert(free_blocks == block_count);
+					if (free_blocks == block_count) {
+						_memory_statistics_dec(&heap->span_use[0].current);
+						_memory_statistics_dec(&heap->size_class_use[iclass].spans_current);
+						_memory_unmap_span(span);
+					}
 					span = next;
 				}
 				span = heap_class->full_span;
 				while (span) {
 					span_t* next = span->next;
-					_memory_statistics_dec(&heap->span_use[0].current);
-					_memory_statistics_dec(&heap->size_class_use[iclass].spans_current);
-					_memory_unmap_span(span);
+					uint32_t free_blocks = span->list_size;
+					if ((heap_class->free_list >= (void*)span) && (heap_class->free_list < (void*)((char*)span + _memory_span_size)))
+						free_blocks += class_free_blocks;
+					//If this assert triggers you have memory leaks
+					assert(free_blocks == span->block_count);
+					if (free_blocks == span->block_count) {
+						_memory_statistics_dec(&heap->span_use[0].current);
+						_memory_statistics_dec(&heap->size_class_use[iclass].spans_current);
+						_memory_unmap_span(span);
+					}
 					span = next;
 				}
 			}
