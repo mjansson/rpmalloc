@@ -30,11 +30,11 @@
 #endif
 #ifndef ENABLE_STATISTICS
 //! Enable statistics collection
-#define ENABLE_STATISTICS         0
+#define ENABLE_STATISTICS         1
 #endif
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            0
+#define ENABLE_ASSERTS            1
 #endif
 #ifndef ENABLE_OVERRIDE
 //! Override standard library malloc/free and new/delete entry points
@@ -829,9 +829,32 @@ _memory_span_list_split(span_t* span, size_t limit) {
 
 #endif
 
+static void
+verify_in_double_link_list(span_t* head, span_t* span) {
+	int found = 0;
+	while (head) {
+		if (span == head)
+			++found;
+		head = head->next;
+	}
+	assert(found == 1);
+}
+
+static void
+verify_not_in_double_link_list(span_t* head, span_t* span) {
+	int found = 0;
+	while (head) {
+		if (span == head)
+			++found;
+		head = head->next;
+	}
+	assert(found == 0);
+}
+
 //! Add a span to double linked list at the head
 static void
 _memory_span_double_link_list_add(span_t** head, span_t* span) {
+	verify_not_in_double_link_list(*head, span);
 	if (*head) {
 		span->next = *head;
 		//Maintain pointer to tail span
@@ -847,6 +870,7 @@ _memory_span_double_link_list_add(span_t** head, span_t* span) {
 //! Add a span to double linked list at the tail
 static void
 _memory_span_double_link_list_add_tail(span_t** head, span_t* span) {
+	verify_not_in_double_link_list(*head, span);
 	span->next = 0;
 	if (*head) {
 		span_t* tail = (*head)->prev;
@@ -862,13 +886,17 @@ _memory_span_double_link_list_add_tail(span_t** head, span_t* span) {
 
 //! Pop head span from double linked list
 static void
-_memory_span_double_link_list_pop_head(span_t** head) {
-	span_t* span = *head;
+_memory_span_double_link_list_pop_head(span_t** head, span_t* span) {
+	assert(*head == span);
+	span = *head;
 	*head = span->next;
 	if (*head) {
 		//Maintain pointer to tail span
+		assert(span->prev != span);
 		assert(span->next->prev == span);
 		(*head)->prev = span->prev;
+	} else {
+		assert(span->prev == span);
 	}
 }
 
@@ -876,8 +904,9 @@ _memory_span_double_link_list_pop_head(span_t** head) {
 static void
 _memory_span_double_link_list_remove(span_t** head, span_t* span) {
 	assert(*head);
+	verify_in_double_link_list(*head, span);
 	if (UNEXPECTED(*head == span)) {
-		_memory_span_double_link_list_pop_head(head);
+		_memory_span_double_link_list_pop_head(head, span);
 	} else {
 		span_t* next_span = span->next;
 		span_t* prev_span = span->prev;
@@ -1264,7 +1293,7 @@ _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 			return block;
 
 		//The span is fully utilized, unlink from partial list and add to fully utilized list
-		_memory_span_double_link_list_pop_head(&heap_class->partial_span);
+		_memory_span_double_link_list_pop_head(&heap_class->partial_span, span);
 		_memory_span_double_link_list_add(&heap_class->full_span, span);
 		return block;
 	}
