@@ -759,9 +759,9 @@ test_threaded(void) {
 
 static int 
 test_crossthread(void) {
-	uintptr_t thread[8];
-	allocator_thread_arg_t arg[8];
-	thread_arg targ[8];
+	uintptr_t thread[32];
+	allocator_thread_arg_t arg[32];
+	thread_arg targ[32];
 
 	rpmalloc_initialize();
 

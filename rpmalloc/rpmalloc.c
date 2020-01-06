@@ -829,32 +829,9 @@ _memory_span_list_split(span_t* span, size_t limit) {
 
 #endif
 
-static void
-verify_in_double_link_list(span_t* head, span_t* span) {
-	int found = 0;
-	while (head) {
-		if (span == head)
-			++found;
-		head = head->next;
-	}
-	assert(found == 1);
-}
-
-static void
-verify_not_in_double_link_list(span_t* head, span_t* span) {
-	int found = 0;
-	while (head) {
-		if (span == head)
-			++found;
-		head = head->next;
-	}
-	assert(found == 0);
-}
-
 //! Add a span to double linked list at the head
 static void
 _memory_span_double_link_list_add(span_t** head, span_t* span) {
-	verify_not_in_double_link_list(*head, span);
 	if (*head) {
 		span->next = *head;
 		//Maintain pointer to tail span
@@ -870,7 +847,6 @@ _memory_span_double_link_list_add(span_t** head, span_t* span) {
 //! Add a span to double linked list at the tail
 static void
 _memory_span_double_link_list_add_tail(span_t** head, span_t* span) {
-	verify_not_in_double_link_list(*head, span);
 	span->next = 0;
 	if (*head) {
 		span_t* tail = (*head)->prev;
@@ -904,7 +880,6 @@ _memory_span_double_link_list_pop_head(span_t** head, span_t* span) {
 static void
 _memory_span_double_link_list_remove(span_t** head, span_t* span) {
 	assert(*head);
-	verify_in_double_link_list(*head, span);
 	if (UNEXPECTED(*head == span)) {
 		_memory_span_double_link_list_pop_head(head, span);
 	} else {
@@ -1632,14 +1607,14 @@ _memory_deallocate_defer_small_or_medium(span_t* span, void* block) {
 		free_list = atomic_load_ptr(&span->free_list_deferred);
 		*((void**)block) = free_list;
 	} while ((free_list == INVALID_POINTER) || !atomic_cas_ptr(&span->free_list_deferred, INVALID_POINTER, free_list));
-	++span->list_size;
-	if (span->list_size == span->block_count) {
+	uint32_t free_count = ++span->list_size;
+	atomic_store_ptr(&span->free_list_deferred, block);
+	if (free_count == span->block_count) {
 		// Span was completely freed by this block. Due to the INVALID_POINTER spin lock
 		// no other thread can reach this state simultaneously on this span.
 		// Safe to move to owner heap deferred cache
 		_memory_deallocate_defer_free_span(span->heap, span);
 	}
-	atomic_store_ptr(&span->free_list_deferred, block);
 }
 
 static void
