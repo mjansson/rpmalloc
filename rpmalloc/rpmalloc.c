@@ -384,9 +384,11 @@ struct heap_class_t {
 	//! Double linked list of partially used spans with free blocks for each size class.
 	//  Previous span pointer in head points to tail span of list.
 	span_t*      partial_span;
+#if RPMALLOC_FIRST_CLASS_HEAPS
 	//! Double linked list of fully utilized spans with free blocks for each size class.
 	//  Previous span pointer in head points to tail span of list.
 	span_t*      full_span;
+#endif
 };
 
 struct heap_t {
@@ -995,7 +997,9 @@ _memory_heap_cache_adopt_deferred(heap_t* heap, span_t** single_span) {
 		assert(span->heap == heap);
 		if (EXPECTED(span->size_class < SIZE_CLASS_COUNT)) {
 			heap_class_t* heap_class = heap->span_class + span->size_class;
+#if RPMALLOC_FIRST_CLASS_HEAPS
 			_memory_span_double_link_list_remove(&heap_class->full_span, span);
+#endif
 			if (single_span && !*single_span) {
 				*single_span = span;
 			} else {
@@ -1207,8 +1211,10 @@ _memory_span_initialize_new(heap_t* heap, heap_class_t* heap_class, span_t* span
 	//Link span as partial if there remains blocks to be initialized as free list, or full if fully initialized
 	if (span->free_list_limit < span->block_count)
 		_memory_span_double_link_list_add(&heap_class->partial_span, span);
+#if RPMALLOC_FIRST_CLASS_HEAPS
 	else
 		_memory_span_double_link_list_add(&heap_class->full_span, span);
+#endif
 	return block;
 }
 
@@ -1269,7 +1275,9 @@ _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 
 		//The span is fully utilized, unlink from partial list and add to fully utilized list
 		_memory_span_double_link_list_pop_head(&heap_class->partial_span, span);
+#if RPMALLOC_FIRST_CLASS_HEAPS
 		_memory_span_double_link_list_add(&heap_class->full_span, span);
+#endif
 		return block;
 	}
 
@@ -1576,7 +1584,9 @@ _memory_deallocate_direct_small_or_medium(span_t* span, void* block) {
 	if (UNEXPECTED(_memory_span_is_fully_utilized(span))) {
 		span->used_count = span->block_count;
 		heap_class_t* heap_class = &heap->span_class[span->size_class];
+#if RPMALLOC_FIRST_CLASS_HEAPS
 		_memory_span_double_link_list_remove(&heap_class->full_span, span);
+#endif
 		_memory_span_double_link_list_add_tail(&heap_class->partial_span, span);
 	}
 	*((void**)block) = span->free_list;
@@ -2125,6 +2135,11 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	return 0;
 }
 
+static void
+_memory_span_finalize(span_t* span) {
+
+}
+
 //! Finalize the allocator
 void
 rpmalloc_finalize(void) {
@@ -2148,6 +2163,7 @@ rpmalloc_finalize(void) {
 			for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
 				heap_class_t* heap_class = heap->span_class + iclass;
 				
+				span_t* class_span = (span_t*)((uintptr_t)heap_class->free_list & _memory_span_mask);
 				uint32_t class_free_blocks = 0;
 				void* block = heap_class->free_list;
 				while (block) {
@@ -2159,8 +2175,11 @@ rpmalloc_finalize(void) {
 				while (span) {
 					span_t* next = span->next;
 					uint32_t free_blocks = span->list_size;
-					if ((heap_class->free_list >= (void*)span) && (heap_class->free_list < (void*)((char*)span + _memory_span_size)))
+					if (span == class_span) {
 						free_blocks += class_free_blocks;
+						class_span = 0;
+						class_free_blocks = 0;
+					}
 					uint32_t block_count = span->block_count;
 					if (span->free_list_limit < span->block_count)
 						block_count = span->free_list_limit;
@@ -2178,12 +2197,16 @@ rpmalloc_finalize(void) {
 					}
 					span = next;
 				}
+#if RPMALLOC_FIRST_CLASS_HEAPS
 				span = heap_class->full_span;
 				while (span) {
 					span_t* next = span->next;
 					uint32_t free_blocks = span->list_size;
-					if ((heap_class->free_list >= (void*)span) && (heap_class->free_list < (void*)((char*)span + _memory_span_size)))
+					if (span == class_span) {
 						free_blocks += class_free_blocks;
+						class_span = 0;
+						class_free_blocks = 0;
+					}
 					//If this assert triggers you have memory leaks
 					assert(free_blocks == span->block_count);
 					if (free_blocks == span->block_count) {
@@ -2192,6 +2215,25 @@ rpmalloc_finalize(void) {
 						_memory_unmap_span(span);
 					}
 					span = next;
+				}
+#endif
+				if (class_span) {
+					uint32_t free_blocks = span->list_size + class_free_blocks;
+					uint32_t block_count = span->block_count;
+					if (span->free_list_limit < span->block_count)
+						block_count = span->free_list_limit;
+					block = span->free_list;
+					while (block) {
+						++free_blocks;
+						block = *((void**)block);
+					}
+					//If this assert triggers you have memory leaks
+					assert(free_blocks == block_count);
+					if (free_blocks == block_count) {
+						_memory_statistics_dec(&heap->span_use[0].current);
+						_memory_statistics_dec(&heap->size_class_use[iclass].spans_current);
+						_memory_unmap_span(span);
+					}
 				}
 			}
 
