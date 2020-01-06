@@ -30,11 +30,11 @@
 #endif
 #ifndef ENABLE_STATISTICS
 //! Enable statistics collection
-#define ENABLE_STATISTICS         1
+#define ENABLE_STATISTICS         0
 #endif
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            1
+#define ENABLE_ASSERTS            0
 #endif
 #ifndef ENABLE_OVERRIDE
 //! Override standard library malloc/free and new/delete entry points
@@ -996,8 +996,8 @@ _memory_heap_cache_adopt_deferred(heap_t* heap, span_t** single_span) {
 		span_t* next_span = (span_t*)span->free_list;
 		assert(span->heap == heap);
 		if (EXPECTED(span->size_class < SIZE_CLASS_COUNT)) {
-			heap_class_t* heap_class = heap->span_class + span->size_class;
 #if RPMALLOC_FIRST_CLASS_HEAPS
+			heap_class_t* heap_class = heap->span_class + span->size_class;
 			_memory_span_double_link_list_remove(&heap_class->full_span, span);
 #endif
 			if (single_span && !*single_span) {
@@ -2135,9 +2135,30 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	return 0;
 }
 
-static void
-_memory_span_finalize(span_t* span) {
-
+static span_t*
+_memory_span_finalize(heap_t* heap, size_t iclass, span_t* span, span_t* class_span, uint32_t class_free_blocks) {
+	uint32_t free_blocks = span->list_size;
+	if (span == class_span) {
+		free_blocks += class_free_blocks;
+		class_span = 0;
+		class_free_blocks = 0;
+	}
+	uint32_t block_count = span->block_count;
+	if (span->free_list_limit < span->block_count)
+		block_count = span->free_list_limit;
+	void* block = span->free_list;
+	while (block) {
+		++free_blocks;
+		block = *((void**)block);
+	}
+	//If this assert triggers you have memory leaks
+	assert(free_blocks == block_count);
+	if (free_blocks == block_count) {
+		_memory_statistics_dec(&heap->span_use[0].current);
+		_memory_statistics_dec(&heap->size_class_use[iclass].spans_current);
+		_memory_unmap_span(span);
+	}
+	return class_span;
 }
 
 //! Finalize the allocator
@@ -2174,67 +2195,19 @@ rpmalloc_finalize(void) {
 				span_t* span = heap_class->partial_span;
 				while (span) {
 					span_t* next = span->next;
-					uint32_t free_blocks = span->list_size;
-					if (span == class_span) {
-						free_blocks += class_free_blocks;
-						class_span = 0;
-						class_free_blocks = 0;
-					}
-					uint32_t block_count = span->block_count;
-					if (span->free_list_limit < span->block_count)
-						block_count = span->free_list_limit;
-					block = span->free_list;
-					while (block) {
-						++free_blocks;
-						block = *((void**)block);
-					}
-					//If this assert triggers you have memory leaks
-					assert(free_blocks == block_count);
-					if (free_blocks == block_count) {
-						_memory_statistics_dec(&heap->span_use[0].current);
-						_memory_statistics_dec(&heap->size_class_use[iclass].spans_current);
-						_memory_unmap_span(span);
-					}
+					class_span = _memory_span_finalize(heap, iclass, span, class_span, class_free_blocks);
 					span = next;
 				}
 #if RPMALLOC_FIRST_CLASS_HEAPS
 				span = heap_class->full_span;
 				while (span) {
 					span_t* next = span->next;
-					uint32_t free_blocks = span->list_size;
-					if (span == class_span) {
-						free_blocks += class_free_blocks;
-						class_span = 0;
-						class_free_blocks = 0;
-					}
-					//If this assert triggers you have memory leaks
-					assert(free_blocks == span->block_count);
-					if (free_blocks == span->block_count) {
-						_memory_statistics_dec(&heap->span_use[0].current);
-						_memory_statistics_dec(&heap->size_class_use[iclass].spans_current);
-						_memory_unmap_span(span);
-					}
+					class_span = _memory_span_finalize(heap, iclass, span, class_span, class_free_blocks);
 					span = next;
 				}
 #endif
-				if (class_span) {
-					uint32_t free_blocks = span->list_size + class_free_blocks;
-					uint32_t block_count = span->block_count;
-					if (span->free_list_limit < span->block_count)
-						block_count = span->free_list_limit;
-					block = span->free_list;
-					while (block) {
-						++free_blocks;
-						block = *((void**)block);
-					}
-					//If this assert triggers you have memory leaks
-					assert(free_blocks == block_count);
-					if (free_blocks == block_count) {
-						_memory_statistics_dec(&heap->span_use[0].current);
-						_memory_statistics_dec(&heap->size_class_use[iclass].spans_current);
-						_memory_unmap_span(span);
-					}
-				}
+				if (class_span)
+					class_span = _memory_span_finalize(heap, iclass, class_span, class_span, class_free_blocks);
 			}
 
 #if RPMALLOC_FIRST_CLASS_HEAPS
