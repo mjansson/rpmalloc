@@ -15,6 +15,9 @@ Added rpaligned_calloc function for aligned and zero intialized allocations
 
 Fixed natural alignment check in rpaligned_realloc to 16 bytes (check was 32, which is wrong)
 
+Minor performance improvements for all code paths by simplified span handling, and for aligned allocations
+with alignment less or equal to 128 bytes by utilizing natural block alignments
+
 
 1.4.0
 

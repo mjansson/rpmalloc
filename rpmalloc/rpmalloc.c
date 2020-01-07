@@ -217,7 +217,7 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 #endif
 
 /// Preconfigured limits and sizes
-//! Granularity of a small allocation block
+//! Granularity of a small allocation block (must be power of two)
 #define SMALL_GRANULARITY         16
 //! Small granularity shift count
 #define SMALL_GRANULARITY_SHIFT   4
@@ -241,8 +241,11 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 #define LARGE_SIZE_LIMIT          ((LARGE_CLASS_COUNT * _memory_span_size) - SPAN_HEADER_SIZE)
 //! ABA protection size in orhpan heap list (also becomes limit of smallest page size)
 #define HEAP_ORPHAN_ABA_SIZE      512
-//! Size of a span header (must be a multiple of SMALL_GRANULARITY)
+//! Size of a span header (must be a multiple of SMALL_GRANULARITY and a power of two)
 #define SPAN_HEADER_SIZE          128
+
+_Static_assert((SMALL_GRANULARITY & (SMALL_GRANULARITY - 1)) == 0, "Small granularity must be power of two");
+_Static_assert((SPAN_HEADER_SIZE & (SPAN_HEADER_SIZE - 1)) == 0, "Span header size must be power of two");
 
 #if ENABLE_VALIDATE_ARGS
 //! Maximum allocation size to avoid integer overflow
@@ -1374,6 +1377,16 @@ _memory_aligned_allocate(heap_t* heap, size_t alignment, size_t size) {
 		return 0;
 	}
 #endif
+
+	if ((alignment <= SPAN_HEADER_SIZE) && (size < _memory_medium_size_limit)) {
+		// If alignment is less or equal to span header size (which is power of two),
+		// and size aligned to span header size multiples is less than size + alignment,
+		// then use natural alignment of blocks to provide alignment
+		size_t multiple_size = size ? (size + (SPAN_HEADER_SIZE - 1)) & ~(SPAN_HEADER_SIZE - 1) : SPAN_HEADER_SIZE;
+		assert(!(multiple_size % SPAN_HEADER_SIZE));
+		if (multiple_size <= (size + alignment))
+			return _memory_allocate(heap, multiple_size);
+	}
 
 	void* ptr = 0;
 	size_t align_mask = alignment - 1;
