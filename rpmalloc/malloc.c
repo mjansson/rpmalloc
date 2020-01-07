@@ -114,7 +114,9 @@ __attribute__ ((section("__DATA, __interpose"))) = {
 	MAC_INTERPOSE_PAIR(rpmalloc, calloc),
 	MAC_INTERPOSE_PAIR(rprealloc, realloc),
 	MAC_INTERPOSE_PAIR(rprealloc, reallocf),
+#if defined(__MAC_10_15) && __MAC_OS_X_VERSION_MIN_REQUIRED >= __MAC_10_15
 	MAC_INTERPOSE_PAIR(rpaligned_alloc, aligned_alloc),
+#endif
 	MAC_INTERPOSE_PAIR(rpmemalign, memalign),
 	MAC_INTERPOSE_PAIR(rpposix_memalign, posix_memalign),
 	MAC_INTERPOSE_PAIR(rpfree, free),
