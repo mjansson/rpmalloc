@@ -1382,7 +1382,7 @@ _memory_aligned_allocate(heap_t* heap, size_t alignment, size_t size) {
 		// If alignment is less or equal to span header size (which is power of two),
 		// and size aligned to span header size multiples is less than size + alignment,
 		// then use natural alignment of blocks to provide alignment
-		size_t multiple_size = size ? (size + (SPAN_HEADER_SIZE - 1)) & ~(SPAN_HEADER_SIZE - 1) : SPAN_HEADER_SIZE;
+		size_t multiple_size = size ? (size + (SPAN_HEADER_SIZE - 1)) & ~(uintptr_t)(SPAN_HEADER_SIZE - 1) : SPAN_HEADER_SIZE;
 		assert(!(multiple_size % SPAN_HEADER_SIZE));
 		if (multiple_size <= (size + alignment))
 			return _memory_allocate(heap, multiple_size);
