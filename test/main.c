@@ -129,11 +129,14 @@ test_alloc(void) {
 		rpfree(testptr);
 	}
 
-	static size_t alignment[3] = { 0, 64, 256 };
+	static size_t alignment[5] = { 0, 32, 64, 128, 256 };
 	for (iloop = 0; iloop < 64; ++iloop) {
 		for (ipass = 0; ipass < 8142; ++ipass) {
+			size_t this_alignment = alignment[ipass % 5];
 			size_t size = iloop + ipass + datasize[(iloop + ipass) % 7];
-			char* baseptr = rpaligned_alloc(alignment[ipass % 3], size);
+			char* baseptr = rpaligned_alloc(this_alignment, size);
+			if (this_alignment && ((uintptr_t)baseptr & (this_alignment - 1)))
+				return test_fail("Alignment failed");
 			for (size_t ibyte = 0; ibyte < size; ++ibyte)
 				baseptr[ibyte] = (char)(ibyte & 0xFF);
 
@@ -146,8 +149,9 @@ test_alloc(void) {
 			}
 
 			size_t alignsize = (iloop * ipass + datasize[(iloop + ipass * 3) % 7]) & 0x2FF;
+			this_alignment = alignment[(ipass + 1) % 5];
 			capsize = (capsize > alignsize ? alignsize : capsize);
-			baseptr = rpaligned_realloc(baseptr, 128, alignsize, resize, 0);
+			baseptr = rpaligned_realloc(baseptr, this_alignment, alignsize, resize, 0);
 			for (size_t ibyte = 0; ibyte < capsize; ++ibyte) {
 				if (baseptr[ibyte] != (char)(ibyte & 0xFF))
 					return test_fail("Data not preserved on realloc");
