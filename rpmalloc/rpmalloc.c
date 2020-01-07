@@ -500,6 +500,10 @@ static global_cache_t _memory_span_cache[LARGE_CLASS_COUNT];
 static atomicptr_t _memory_heaps[HEAP_ARRAY_SIZE];
 //! Orphaned heaps
 static atomicptr_t _memory_orphan_heaps;
+#if RPMALLOC_FIRST_CLASS_HEAPS
+//! Orphaned heaps (first class heaps)
+static atomicptr_t _memory_first_class_orphan_heaps;
+#endif
 //! Running orphan counter to avoid ABA issues in linked list
 static atomic32_t _memory_orphan_counter;
 #if ENABLE_STATISTICS
@@ -837,30 +841,11 @@ static void
 _memory_span_double_link_list_add(span_t** head, span_t* span) {
 	if (*head) {
 		span->next = *head;
-		//Maintain pointer to tail span
-		span->prev = (*head)->prev;
 		(*head)->prev = span;
 	} else {
 		span->next = 0;
-		span->prev = span;
 	}
 	*head = span;
-}
-
-//! Add a span to double linked list at the tail
-static void
-_memory_span_double_link_list_add_tail(span_t** head, span_t* span) {
-	span->next = 0;
-	if (*head) {
-		span_t* tail = (*head)->prev;
-		tail->next = span;
-		span->prev = tail;
-		//Maintain pointer to tail span
-		(*head)->prev = span;
-	} else {
-		span->prev = span;
-		*head = span;
-	}
 }
 
 //! Pop head span from double linked list
@@ -869,32 +854,20 @@ _memory_span_double_link_list_pop_head(span_t** head, span_t* span) {
 	assert(*head == span);
 	span = *head;
 	*head = span->next;
-	if (*head) {
-		//Maintain pointer to tail span
-		assert(span->prev != span);
-		assert(span->next->prev == span);
-		(*head)->prev = span->prev;
-	} else {
-		assert(span->prev == span);
-	}
 }
 
 //! Remove a span from double linked list
 static void
 _memory_span_double_link_list_remove(span_t** head, span_t* span) {
 	assert(*head);
-	if (UNEXPECTED(*head == span)) {
-		_memory_span_double_link_list_pop_head(head, span);
+	if (*head == span) {
+		*head = span->next;
 	} else {
 		span_t* next_span = span->next;
 		span_t* prev_span = span->prev;
 		prev_span->next = next_span;
 		if (EXPECTED(next_span != 0)) {
 			next_span->prev = prev_span;
-		} else {
-			//Update pointer to tail span
-			assert((*head)->prev == span);
-			(*head)->prev = prev_span;
 		}
 	}
 }
@@ -1509,16 +1482,22 @@ _memory_heap_initialize(heap_t* heap) {
 }
 
 static void
-_memory_heap_orphan(heap_t* heap) {
+_memory_heap_orphan(heap_t* heap, int first_class) {
 	void* raw_heap;
 	uintptr_t orphan_counter;
 	heap_t* last_heap;
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	atomicptr_t* heap_list = (first_class ? &_memory_first_class_orphan_heaps : &_memory_orphan_heaps);
+#else
+	(void)sizeof(first_class);
+	atomicptr_t* heap_list = &_memory_orphan_heaps;
+#endif
 	do {
-		last_heap = (heap_t*)atomic_load_ptr(&_memory_orphan_heaps);
+		last_heap = (heap_t*)atomic_load_ptr(heap_list);
 		heap->next_orphan = (heap_t*)((uintptr_t)last_heap & ~(uintptr_t)(HEAP_ORPHAN_ABA_SIZE - 1));
 		orphan_counter = (uintptr_t)atomic_incr32(&_memory_orphan_counter);
 		raw_heap = (void*)((uintptr_t)heap | (orphan_counter & (uintptr_t)(HEAP_ORPHAN_ABA_SIZE - 1)));
-	} while (!atomic_cas_ptr(&_memory_orphan_heaps, raw_heap, last_heap));
+	} while (!atomic_cas_ptr(heap_list, raw_heap, last_heap));
 }
 
 //! Allocate a new heap from newly mapped memory pages
@@ -1543,36 +1522,45 @@ _memory_allocate_heap_new(void) {
 	while (num_heaps > 1) {
 		_memory_heap_initialize(extra_heap);
 		extra_heap->master_heap = heap;
-		_memory_heap_orphan(extra_heap);
+		_memory_heap_orphan(extra_heap, 1);
 		extra_heap = (heap_t*)pointer_offset(extra_heap, aligned_heap_size);
 		--num_heaps;
 	}
 	return heap;
 }
 
-//! Allocate a new heap, potentially reusing a previously orphaned heap
 static heap_t*
-_memory_allocate_heap(void) {
+_memory_heap_extract_orphan(atomicptr_t* heap_list) {
 	void* raw_heap;
 	void* next_raw_heap;
 	uintptr_t orphan_counter;
 	heap_t* heap;
 	heap_t* next_heap;
-	//Try getting an orphaned heap
 	atomic_thread_fence_acquire();
 	do {
-		raw_heap = atomic_load_ptr(&_memory_orphan_heaps);
+		raw_heap = atomic_load_ptr(heap_list);
 		heap = (heap_t*)((uintptr_t)raw_heap & ~(uintptr_t)(HEAP_ORPHAN_ABA_SIZE - 1));
 		if (!heap)
 			break;
 		next_heap = heap->next_orphan;
 		orphan_counter = (uintptr_t)atomic_incr32(&_memory_orphan_counter);
 		next_raw_heap = (void*)((uintptr_t)next_heap | (orphan_counter & (uintptr_t)(HEAP_ORPHAN_ABA_SIZE - 1)));
-	} while (!atomic_cas_ptr(&_memory_orphan_heaps, next_raw_heap, raw_heap));
+	} while (!atomic_cas_ptr(heap_list, next_raw_heap, raw_heap));
+	return heap;
+}
 
+//! Allocate a new heap, potentially reusing a previously orphaned heap
+static heap_t*
+_memory_allocate_heap(int first_class) {
+	heap_t* heap = 0;
+	if (first_class == 0)
+		heap = _memory_heap_extract_orphan(&_memory_orphan_heaps);
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	if (!heap)
+		heap = _memory_heap_extract_orphan(&_memory_first_class_orphan_heaps);
+#endif
 	if (!heap)
 		heap = _memory_allocate_heap_new();
-
 	return heap;
 }
 
@@ -1588,7 +1576,7 @@ _memory_deallocate_direct_small_or_medium(span_t* span, void* block) {
 #if RPMALLOC_FIRST_CLASS_HEAPS
 		_memory_span_double_link_list_remove(&heap_class->full_span, span);
 #endif
-		_memory_span_double_link_list_add_tail(&heap_class->partial_span, span);
+		_memory_span_double_link_list_add(&heap_class->partial_span, span);
 	}
 	*((void**)block) = span->free_list;
 	span->free_list = block;
@@ -1869,7 +1857,7 @@ _memory_adjust_size_class(size_t iclass) {
 }
 
 static void
-_memory_heap_finalize(void* heapptr) {
+_memory_heap_finalize(void* heapptr, int first_class) {
 	heap_t* heap = (heap_t*)heapptr;
 	if (!heap)
 		return;
@@ -1897,13 +1885,18 @@ _memory_heap_finalize(void* heapptr) {
 #endif
 
 	//Orphan the heap
-	_memory_heap_orphan(heap);
+	_memory_heap_orphan(heap, first_class);
 
 	set_thread_heap(0);
 #if ENABLE_STATISTICS
 	atomic_decr32(&_memory_active_heaps);
 	assert(atomic_load32(&_memory_active_heaps) >= 0);
 #endif
+}
+
+static void
+_memory_heap_finalize_raw(void* heapptr) {
+	_memory_heap_finalize(heapptr, 0);
 }
 
 #if defined(_MSC_VER) && !defined(__clang__) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
@@ -2085,7 +2078,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	_memory_span_release_count_large = (_memory_span_release_count > 8 ? (_memory_span_release_count / 4) : 2);
 
 #if (defined(__APPLE__) || defined(__HAIKU__)) && ENABLE_PRELOAD
-	if (pthread_key_create(&_memory_thread_heap, _memory_heap_finalize))
+	if (pthread_key_create(&_memory_thread_heap, _memory_heap_finalize_raw))
 		return -1;
 #endif
 #if defined(_MSC_VER) && !defined(__clang__) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
@@ -2253,6 +2246,9 @@ rpmalloc_finalize(void) {
 #endif
 
 	atomic_store_ptr(&_memory_orphan_heaps, 0);
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	atomic_store_ptr(&_memory_first_class_orphan_heaps, 0);
+#endif
 	atomic_thread_fence_release();
 
 #if (defined(__APPLE__) || defined(__HAIKU__)) && ENABLE_PRELOAD
@@ -2285,7 +2281,7 @@ rpmalloc_finalize(void) {
 extern inline void
 rpmalloc_thread_initialize(void) {
 	if (!get_thread_heap_raw()) {
-		heap_t* heap = _memory_allocate_heap();
+		heap_t* heap = _memory_allocate_heap(0);
 		if (heap) {
 			atomic_thread_fence_acquire();
 			_memory_statistics_inc(&_memory_active_heaps);
@@ -2302,7 +2298,7 @@ void
 rpmalloc_thread_finalize(void) {
 	heap_t* heap = get_thread_heap_raw();
 	if (heap)
-		_memory_heap_finalize(heap);
+		_memory_heap_finalize_raw(heap);
 }
 
 int
@@ -2718,7 +2714,7 @@ rpmalloc_heap_acquire(void) {
 	// Must be a pristine heap from newly mapped memory pages, or else memory blocks
 	// could already be allocated from the heap which would (wrongly) be released when
 	// heap is cleared with rpmalloc_heap_free_all()
-	heap_t* heap = _memory_allocate_heap_new();
+	heap_t* heap = _memory_allocate_heap(1);
 	_memory_statistics_inc(&_memory_active_heaps);
 	return (rpmalloc_heap_t*)heap;
 }
@@ -2726,7 +2722,7 @@ rpmalloc_heap_acquire(void) {
 extern inline void
 rpmalloc_heap_release(rpmalloc_heap_t* heap) {
 	if (heap)
-		_memory_heap_finalize((heap_t*)heap);
+		_memory_heap_finalize((heap_t*)heap, 1);
 }
 
 extern inline RPMALLOC_ALLOCATOR void*
@@ -2875,8 +2871,6 @@ rpmalloc_heap_free_all(rpmalloc_heap_t* heapptr) {
 		atomic_store32(&heap->span_use[iclass].current, 0 );
 	}
 #endif
-
-	_memory_heap_orphan(heap);
 }
 
 extern inline void

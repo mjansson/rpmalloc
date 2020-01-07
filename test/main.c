@@ -30,6 +30,11 @@ test_fail_cb(const char* reason, const char* file, int line) {
 
 #define test_fail(msg) test_fail_cb(msg, __FILE__, __LINE__)
 
+static void
+defer_free_thread(void *arg) {
+	rpfree(arg);
+}
+
 static int
 test_alloc(void) {
 	unsigned int iloop = 0;
@@ -286,6 +291,20 @@ test_alloc(void) {
 	}
 	rpmalloc_finalize();
 
+	// Test that a full span with deferred block is finalized properly
+	rpmalloc_initialize();
+	{
+		addr[0] = rpmalloc(23457);
+	
+		thread_arg targ;
+		targ.fn = defer_free_thread;
+		targ.arg = addr[0];
+		uintptr_t thread = thread_run(&targ);
+		thread_sleep(100);
+		thread_join(thread);
+	}
+	rpmalloc_finalize();
+
 	printf("Memory allocation tests passed\n");
 
 	return 0;
@@ -372,6 +391,7 @@ typedef struct _allocator_thread_arg {
 	unsigned int        num_datasize; //max 32
 	void**              pointers;
 	void**              crossthread_pointers;
+	int                 init_fini_each_loop;
 } allocator_thread_arg_t;
 
 static void
@@ -396,7 +416,13 @@ allocator_thread(void* argp) {
 
 	thread_sleep(1);
 
+	if (arg.init_fini_each_loop)
+		rpmalloc_thread_finalize();
+
 	for (iloop = 0; iloop < arg.loops; ++iloop) {
+		if (arg.init_fini_each_loop)
+			rpmalloc_thread_initialize();
+
 		for (ipass = 0; ipass < arg.passes; ++ipass) {
 			cursize = 4 + arg.datasize[(iloop + ipass + iwait) % arg.num_datasize] + ((iloop + ipass) % 1024);
 
@@ -439,7 +465,13 @@ allocator_thread(void* argp) {
 
 			rpfree(addr[ipass]);
 		}
+
+		if (arg.init_fini_each_loop)
+			rpmalloc_thread_finalize();
 	}
+
+	if (arg.init_fini_each_loop)
+		rpmalloc_thread_initialize();
 
 	rpfree(data);
 	rpfree(addr);
@@ -733,6 +765,7 @@ test_threaded(void) {
 	arg.num_datasize = 16;
 	arg.loops = 100;
 	arg.passes = 4000;
+	arg.init_fini_each_loop = 0;
 
 	thread_arg targ;
 	targ.fn = allocator_thread;
@@ -894,41 +927,46 @@ test_first_class_heaps(void) {
 	uintptr_t threadres[32];
 	unsigned int i;
 	size_t num_alloc_threads;
-	allocator_thread_arg_t arg;
+	allocator_thread_arg_t arg[32];
 
 	rpmalloc_initialize();
 
-	num_alloc_threads = _hardware_threads;
+	num_alloc_threads = _hardware_threads * 2;
 	if (num_alloc_threads < 2)
 		num_alloc_threads = 2;
-	if (num_alloc_threads > 32)
-		num_alloc_threads = 32;
+	if (num_alloc_threads > 16)
+		num_alloc_threads = 16;
 
-	arg.datasize[0] = 19;
-	arg.datasize[1] = 249;
-	arg.datasize[2] = 797;
-	arg.datasize[3] = 3058;
-	arg.datasize[4] = 47892;
-	arg.datasize[5] = 173902;
-	arg.datasize[6] = 389;
-	arg.datasize[7] = 19;
-	arg.datasize[8] = 2493;
-	arg.datasize[9] = 7979;
-	arg.datasize[10] = 3;
-	arg.datasize[11] = 79374;
-	arg.datasize[12] = 3432;
-	arg.datasize[13] = 548;
-	arg.datasize[14] = 38934;
-	arg.datasize[15] = 234;
-	arg.num_datasize = 16;
-	arg.loops = 100;
-	arg.passes = 4000;
+	for (i = 0; i < num_alloc_threads; ++i) {
+		arg[i].datasize[0] = 19;
+		arg[i].datasize[1] = 249;
+		arg[i].datasize[2] = 797;
+		arg[i].datasize[3] = 3058;
+		arg[i].datasize[4] = 47892;
+		arg[i].datasize[5] = 173902;
+		arg[i].datasize[6] = 389;
+		arg[i].datasize[7] = 19;
+		arg[i].datasize[8] = 2493;
+		arg[i].datasize[9] = 7979;
+		arg[i].datasize[10] = 3;
+		arg[i].datasize[11] = 79374;
+		arg[i].datasize[12] = 3432;
+		arg[i].datasize[13] = 548;
+		arg[i].datasize[14] = 38934;
+		arg[i].datasize[15] = 234;
+		arg[i].num_datasize = 16;
+		arg[i].loops = 100;
+		arg[i].passes = 4000;
+		arg[i].init_fini_each_loop = 1;
 
-	thread_arg targ;
-	targ.fn = heap_allocator_thread;
-	targ.arg = &arg;
-	for (i = 0; i < num_alloc_threads; ++i)
+		thread_arg targ;
+		targ.fn = heap_allocator_thread;
+		if ((i % 2) != 0)
+			targ.fn = allocator_thread;
+		targ.arg = &arg[i];
+
 		thread[i] = thread_run(&targ);
+	}
 
 	thread_sleep(1000);
 
