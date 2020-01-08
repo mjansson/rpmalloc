@@ -771,7 +771,7 @@ _memory_unmap_span(span_t* span) {
 			unmap_count = master->total_spans;
 		_memory_statistics_sub(&_reserved_spans, unmap_count);
 		_memory_statistics_sub(&_master_spans, 1);
-		_memory_unmap(master, unmap_count * _memory_span_size, master->align_offset, master->total_spans * _memory_span_size);
+		_memory_unmap(master, unmap_count * _memory_span_size, master->align_offset, (size_t)master->total_spans * _memory_span_size);
 	}
 }
 
@@ -1145,7 +1145,7 @@ free_list_partial_init(void** list, void** first_block, void* page_start, void* 
 	*first_block = block_start;
 	if (block_count > 1) {
 		void* free_block = pointer_offset(block_start, block_size);
-		void* block_end = pointer_offset(block_start, block_size * block_count);
+		void* block_end = pointer_offset(block_start, (size_t)block_size * block_count);
 		//If block size is less than half a memory page, bound init to next memory page boundary
 		if (block_size < (_memory_page_size >> 1)) {
 			void* page_end = pointer_offset(page_start, _memory_page_size);
@@ -1237,7 +1237,7 @@ _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 			block = free_list_pop(&heap_class->free_list);
 		} else {
 			//If the span did not fully initialize free list, link up another page worth of blocks			
-			void* block_start = pointer_offset(span, SPAN_HEADER_SIZE + (span->free_list_limit * span->block_size));
+			void* block_start = pointer_offset(span, SPAN_HEADER_SIZE + ((size_t)span->free_list_limit * span->block_size));
 			span->free_list_limit += free_list_partial_init(&heap_class->free_list, &block,
 				(void*)((uintptr_t)block_start & ~(_memory_page_size - 1)), block_start,
 				span->block_count - span->free_list_limit, span->block_size);
@@ -1682,7 +1682,7 @@ _memory_deallocate_large(span_t* span) {
 		if (span->flags & SPAN_FLAG_MASTER) {
 			heap->span_reserve_master = span;
 		} else { //SPAN_FLAG_SUBSPAN
-			span_t* master = (span_t*)pointer_offset(span, -(intptr_t)(span->offset_from_master * _memory_span_size));
+			span_t* master = (span_t*)pointer_offset(span, -(intptr_t)((size_t)span->offset_from_master * _memory_span_size));
 			heap->span_reserve_master = master;
 			assert(master->flags & SPAN_FLAG_MASTER);
 			assert(atomic_load32(&master->remaining_spans) >= (int32_t)span->span_count);
@@ -1762,9 +1762,9 @@ _memory_reallocate(heap_t* heap, void* p, size_t size, size_t oldsize, unsigned 
 			void* blocks_start = pointer_offset(span, SPAN_HEADER_SIZE);
 			uint32_t block_offset = (uint32_t)pointer_diff(p, blocks_start);
 			uint32_t block_idx = block_offset / span->block_size;
-			void* block = pointer_offset(blocks_start, block_idx * span->block_size);
+			void* block = pointer_offset(blocks_start, (size_t)block_idx * span->block_size);
 			if (!oldsize)
-				oldsize = span->block_size - (uint32_t)pointer_diff(p, block);
+				oldsize = (size_t)span->block_size - pointer_diff(p, block);
 			if ((size_t)span->block_size >= size) {
 				//Still fits in block, never mind trying to save memory, but preserve data if alignment changed
 				if ((p != block) && !(flags & RPMALLOC_NO_PRESERVE))
