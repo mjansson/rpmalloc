@@ -124,6 +124,9 @@
 #  ifndef WIN32_LEAN_AND_MEAN
 #    define WIN32_LEAN_AND_MEAN
 #  endif
+#  ifndef __USE_MINGW_ANSI_STDIO
+#  define __USE_MINGW_ANSI_STDIO 1
+#  endif
 #  include <windows.h>
 #  if ENABLE_VALIDATE_ARGS
 #    include <Intsafe.h>
@@ -132,7 +135,6 @@
 #  include <unistd.h>
 #  include <stdio.h>
 #  include <stdlib.h>
-#  include <errno.h>
 #  if defined(__APPLE__)
 #    include <mach/mach_vm.h>
 #    include <mach/vm_statistics.h>
@@ -146,6 +148,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <errno.h>
 
 #if ENABLE_ASSERTS
 #  undef NDEBUG
@@ -2045,10 +2048,12 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 
 	//The ABA counter in heap orphan list is tied to using HEAP_ORPHAN_ABA_SIZE
 	size_t min_span_size = HEAP_ORPHAN_ABA_SIZE;
-	size_t max_page_size = 4 * 1024 * 1024;
-	const size_t ptrbits = sizeof(void*);
-	if (ptrbits > 4)
-		max_page_size = 4096ULL * 1024ULL * 1024ULL;
+	size_t max_page_size;
+#if UINTPTR_MAX > 0xFFFFFFFF
+	max_page_size = 4096ULL * 1024ULL * 1024ULL;
+#else
+	max_page_size = 4 * 1024 * 1024;
+#endif
 	if (_memory_page_size < min_span_size)
 		_memory_page_size = min_span_size;
 	if (_memory_page_size > max_page_size)
