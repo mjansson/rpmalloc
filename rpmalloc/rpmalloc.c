@@ -171,9 +171,6 @@ typedef volatile long      atomic32_t;
 typedef volatile long long atomic64_t;
 typedef volatile void*     atomicptr_t;
 
-#define atomic_thread_fence_acquire()
-#define atomic_thread_fence_release()
-
 static FORCEINLINE int32_t atomic_load32(atomic32_t* src) { return *src; }
 static FORCEINLINE void    atomic_store32(atomic32_t* dst, int32_t val) { *dst = val; }
 static FORCEINLINE int32_t atomic_incr32(atomic32_t* val) { return (int32_t)_InterlockedIncrement(val); }
@@ -185,6 +182,7 @@ static FORCEINLINE int64_t atomic_add64(atomic64_t* val, int64_t add) { return (
 static FORCEINLINE int32_t atomic_add32(atomic32_t* val, int32_t add) { return (int32_t)_InterlockedExchangeAdd(val, add) + add; }
 static FORCEINLINE void*   atomic_load_ptr(atomicptr_t* src) { return (void*)*src; }
 static FORCEINLINE void    atomic_store_ptr(atomicptr_t* dst, void* val) { *dst = val; }
+static FORCEINLINE void    atomic_store_ptr_release(atomicptr_t* dst, void* val) { *dst = val; }
 static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref) { return (_InterlockedCompareExchangePointer ((void* volatile*)dst, val, ref) == ref) ? 1 : 0; }
 
 #define EXPECTED(x) (x)
@@ -198,21 +196,19 @@ typedef volatile _Atomic(int32_t) atomic32_t;
 typedef volatile _Atomic(int64_t) atomic64_t;
 typedef volatile _Atomic(void*) atomicptr_t;
 
-#define atomic_thread_fence_acquire() atomic_thread_fence(memory_order_acquire)
-#define atomic_thread_fence_release() atomic_thread_fence(memory_order_release)
-
 static FORCEINLINE int32_t atomic_load32(atomic32_t* src) { return atomic_load_explicit(src, memory_order_relaxed); }
-static FORCEINLINE void    atomic_store32(atomic32_t* dst, int32_t val) { atomic_store_explicit(dst, val, memory_order_relaxed); }
-static FORCEINLINE int32_t atomic_incr32(atomic32_t* val) { return atomic_fetch_add_explicit(val, 1, memory_order_relaxed) + 1; }
+static FORCEINLINE void    atomic_store32(atomic32_t* dst, int32_t val) { atomic_store_explicit(dst, val, order, memory_order_relaxed); }
+static FORCEINLINE int32_t atomic_incr32(atomic32_t* val) { return atomic_fetch_add_explicit(val, 1, order, memory_order_relaxed) + 1; }
 #if ENABLE_STATISTICS || ENABLE_ADAPTIVE_THREAD_CACHE
-static FORCEINLINE int32_t atomic_decr32(atomic32_t* val) { return atomic_fetch_add_explicit(val, -1, memory_order_relaxed) - 1; }
-static FORCEINLINE int64_t atomic_load64(atomic64_t* val) { return atomic_load_explicit(val, memory_order_relaxed); }
+static FORCEINLINE int32_t atomic_decr32(atomic32_t* val) { return atomic_fetch_add_explicit(val, -1, order, memory_order_relaxed) - 1; }
+static FORCEINLINE int64_t atomic_load64(atomic64_t* val) { return atomic_load_explicit(val, order, memory_order_relaxed); }
 static FORCEINLINE int64_t atomic_add64(atomic64_t* val, int64_t add) { return atomic_fetch_add_explicit(val, add, memory_order_relaxed) + add; }
 #endif
 static FORCEINLINE int32_t atomic_add32(atomic32_t* val, int32_t add) { return atomic_fetch_add_explicit(val, add, memory_order_relaxed) + add; }
 static FORCEINLINE void*   atomic_load_ptr(atomicptr_t* src) { return atomic_load_explicit(src, memory_order_relaxed); }
 static FORCEINLINE void    atomic_store_ptr(atomicptr_t* dst, void* val) { atomic_store_explicit(dst, val, memory_order_relaxed); }
-static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref) { return atomic_compare_exchange_weak_explicit(dst, &ref, val, memory_order_release, memory_order_acquire); }
+static FORCEINLINE void    atomic_store_ptr_release(atomicptr_t* dst, void* val) { atomic_store_explicit(dst, val, memory_order_release); }
+static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref) { return atomic_compare_exchange_weak_explicit(dst, &ref, val, memory_order_relaxed, memory_order_relaxed); }
 
 #define EXPECTED(x) __builtin_expect((x), 1)
 #define UNEXPECTED(x) __builtin_expect((x), 0)
@@ -612,10 +608,10 @@ _memory_unmap_os(void* address, size_t size, size_t offset, size_t release);
 #else
 #  define _memory_statistics_inc(counter) do {} while(0)
 #  define _memory_statistics_dec(counter) do {} while(0)
-#  define _memory_statistics_add(atomic_counter, value) do {} while(0)
+#  define _memory_statistics_add(counter, value) do {} while(0)
 #  define _memory_statistics_add64(counter, value) do {} while(0)
-#  define _memory_statistics_add_peak(atomic_counter, value, peak) do {} while (0)
-#  define _memory_statistics_sub(atomic_counter, value) do {} while(0)
+#  define _memory_statistics_add_peak(counter, value, peak) do {} while (0)
+#  define _memory_statistics_sub(counter, value) do {} while(0)
 #  define _memory_statistics_inc_alloc(heap, class_idx) do {} while(0)
 #  define _memory_statistics_inc_free(heap, class_idx) do {} while(0)
 #endif
@@ -700,7 +696,7 @@ _memory_span_initialize(span_t* span, size_t total_span_count, size_t span_count
 	span->span_count = (uint32_t)span_count;
 	span->align_offset = (uint32_t)align_offset;
 	span->flags = SPAN_FLAG_MASTER;
-	atomic_store32(&span->remaining_spans, (int32_t)total_span_count);	
+	atomic_store32(&span->remaining_spans, (int32_t)total_span_count);
 }
 
 //! Map an aligned set of spans, taking configured mapping granularity and the page size into account
@@ -885,7 +881,9 @@ static void
 _memory_cache_insert(global_cache_t* cache, span_t* span, size_t cache_limit) {
 	assert((span->list_size == 1) || (span->next != 0));
 	int32_t list_size = (int32_t)span->list_size;
-	//Unmap if cache has reached the limit
+	//Unmap if cache has reached the limit. Does not need stronger synchronization, the worst
+	//case is that the span list is unmapped when it could have been cached (no real dependency
+	//between the two variables)
 	if (atomic_add32(&cache->size, list_size) > (int32_t)cache_limit) {
 #if !ENABLE_UNLIMITED_GLOBAL_CACHE
 		_memory_unmap_span_list(span);
@@ -965,13 +963,12 @@ static void _memory_deallocate_huge(span_t*);
 //! Adopt the deferred span cache list, optionally extracting the first single span for immediate re-use
 static void
 _memory_heap_cache_adopt_deferred(heap_t* heap, span_t** single_span) {
-	atomic_thread_fence_acquire();
 	span_t* span = (span_t*)atomic_load_ptr(&heap->span_free_deferred);
 	if (!span)
 		return;
-	do {
+	while (!atomic_cas_ptr(&heap->span_free_deferred, 0, span)) {
 		span = (span_t*)atomic_load_ptr(&heap->span_free_deferred);
-	} while (!atomic_cas_ptr(&heap->span_free_deferred, 0, span));
+	} 
 	while (span) {
 		span_t* next_span = (span_t*)span->free_list;
 		assert(span->heap == heap);
