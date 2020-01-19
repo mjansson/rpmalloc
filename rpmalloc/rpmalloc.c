@@ -197,11 +197,11 @@ typedef volatile _Atomic(int64_t) atomic64_t;
 typedef volatile _Atomic(void*) atomicptr_t;
 
 static FORCEINLINE int32_t atomic_load32(atomic32_t* src) { return atomic_load_explicit(src, memory_order_relaxed); }
-static FORCEINLINE void    atomic_store32(atomic32_t* dst, int32_t val) { atomic_store_explicit(dst, val, order, memory_order_relaxed); }
-static FORCEINLINE int32_t atomic_incr32(atomic32_t* val) { return atomic_fetch_add_explicit(val, 1, order, memory_order_relaxed) + 1; }
+static FORCEINLINE void    atomic_store32(atomic32_t* dst, int32_t val) { atomic_store_explicit(dst, val, memory_order_relaxed); }
+static FORCEINLINE int32_t atomic_incr32(atomic32_t* val) { return atomic_fetch_add_explicit(val, 1, memory_order_relaxed) + 1; }
 #if ENABLE_STATISTICS || ENABLE_ADAPTIVE_THREAD_CACHE
-static FORCEINLINE int32_t atomic_decr32(atomic32_t* val) { return atomic_fetch_add_explicit(val, -1, order, memory_order_relaxed) - 1; }
-static FORCEINLINE int64_t atomic_load64(atomic64_t* val) { return atomic_load_explicit(val, order, memory_order_relaxed); }
+static FORCEINLINE int32_t atomic_decr32(atomic32_t* val) { return atomic_fetch_add_explicit(val, -1, memory_order_relaxed) - 1; }
+static FORCEINLINE int64_t atomic_load64(atomic64_t* val) { return atomic_load_explicit(val, memory_order_relaxed); }
 static FORCEINLINE int64_t atomic_add64(atomic64_t* val, int64_t add) { return atomic_fetch_add_explicit(val, add, memory_order_relaxed) + add; }
 #endif
 static FORCEINLINE int32_t atomic_add32(atomic32_t* val, int32_t add) { return atomic_fetch_add_explicit(val, add, memory_order_relaxed) + add; }
@@ -1754,7 +1754,7 @@ _memory_reallocate(heap_t* heap, void* p, size_t size, size_t oldsize, unsigned 
 			uint32_t block_idx = block_offset / span->block_size;
 			void* block = pointer_offset(blocks_start, (size_t)block_idx * span->block_size);
 			if (!oldsize)
-				oldsize = (size_t)span->block_size - pointer_diff(p, block);
+				oldsize = (size_t)((ptrdiff_t)span->block_size - pointer_diff(p, block));
 			if ((size_t)span->block_size >= size) {
 				//Still fits in block, never mind trying to save memory, but preserve data if alignment changed
 				if ((p != block) && !(flags & RPMALLOC_NO_PRESERVE))
