@@ -966,9 +966,8 @@ _memory_heap_cache_adopt_deferred(heap_t* heap, span_t** single_span) {
 	span_t* span = (span_t*)atomic_load_ptr(&heap->span_free_deferred);
 	if (!span)
 		return;
-	while (!atomic_cas_ptr(&heap->span_free_deferred, 0, span)) {
+	while (!atomic_cas_ptr(&heap->span_free_deferred, 0, span))
 		span = (span_t*)atomic_load_ptr(&heap->span_free_deferred);
-	} 
 	while (span) {
 		span_t* next_span = (span_t*)span->free_list;
 		assert(span->heap == heap);
@@ -1178,8 +1177,7 @@ _memory_span_initialize_new(heap_t* heap, heap_class_t* heap_class, span_t* span
 	span->used_count = size_class->block_count;
 	span->free_list = 0;
 	span->list_size = 0;
-	atomic_store_ptr(&span->free_list_deferred, 0);
-	atomic_thread_fence_release();
+	atomic_store_ptr_release(&span->free_list_deferred, 0);
 
 	//Setup free list. Only initialize one system page worth of free blocks in list
 	void* block;
@@ -1201,8 +1199,7 @@ _memory_span_extract_free_list_deferred(span_t* span) {
 		span->free_list = atomic_load_ptr(&span->free_list_deferred);
 	} while ((span->free_list == INVALID_POINTER) || !atomic_cas_ptr(&span->free_list_deferred, INVALID_POINTER, span->free_list));
 	span->list_size = 0;
-	atomic_store_ptr(&span->free_list_deferred, 0);
-	atomic_thread_fence_release();
+	atomic_store_ptr_release(&span->free_list_deferred, 0);
 }
 
 static int
@@ -1242,7 +1239,6 @@ _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 		span->used_count = span->block_count;
 
 		//Swap in deferred free list if present
-		atomic_thread_fence_acquire();
 		if (atomic_load_ptr(&span->free_list_deferred))
 			_memory_span_extract_free_list_deferred(span);
 
@@ -1314,7 +1310,6 @@ _memory_allocate_large(heap_t* heap, size_t size) {
 	assert(span->span_count == span_count);
 	span->size_class = SIZE_CLASS_LARGE;
 	span->heap = heap;
-	atomic_thread_fence_release();
 
 #if RPMALLOC_FIRST_CLASS_HEAPS
 	_memory_span_double_link_list_add(&heap->large_huge_span, span);
@@ -1549,7 +1544,6 @@ _memory_heap_extract_orphan(atomicptr_t* heap_list) {
 	uintptr_t orphan_counter;
 	heap_t* heap;
 	heap_t* next_heap;
-	atomic_thread_fence_acquire();
 	do {
 		raw_heap = atomic_load_ptr(heap_list);
 		heap = (heap_t*)((uintptr_t)raw_heap & ~(uintptr_t)(HEAP_ORPHAN_ABA_SIZE - 1));
@@ -1615,12 +1609,11 @@ static void
 _memory_deallocate_defer_small_or_medium(span_t* span, void* block) {
 	void* free_list;
 	do {
-		atomic_thread_fence_acquire();
 		free_list = atomic_load_ptr(&span->free_list_deferred);
 		*((void**)block) = free_list;
 	} while ((free_list == INVALID_POINTER) || !atomic_cas_ptr(&span->free_list_deferred, INVALID_POINTER, free_list));
 	uint32_t free_count = ++span->list_size;
-	atomic_store_ptr(&span->free_list_deferred, block);
+	atomic_store_ptr_release(&span->free_list_deferred, block);
 	if (free_count == span->block_count) {
 		// Span was completely freed by this block. Due to the INVALID_POINTER spin lock
 		// no other thread can reach this state simultaneously on this span.
@@ -2175,8 +2168,6 @@ _memory_span_finalize(heap_t* heap, size_t iclass, span_t* span, span_t* class_s
 //! Finalize the allocator
 void
 rpmalloc_finalize(void) {
-	atomic_thread_fence_acquire();
-
 	rpmalloc_thread_finalize();
 	//rpmalloc_dump_statistics(stderr);
 
@@ -2264,7 +2255,6 @@ rpmalloc_finalize(void) {
 #if RPMALLOC_FIRST_CLASS_HEAPS
 	atomic_store_ptr(&_memory_first_class_orphan_heaps, 0);
 #endif
-	atomic_thread_fence_release();
 
 #if (defined(__APPLE__) || defined(__HAIKU__)) && ENABLE_PRELOAD
 	pthread_key_delete(_memory_thread_heap);
@@ -2298,7 +2288,6 @@ rpmalloc_thread_initialize(void) {
 	if (!get_thread_heap_raw()) {
 		heap_t* heap = _memory_allocate_heap(0);
 		if (heap) {
-			atomic_thread_fence_acquire();
 			_memory_statistics_inc(&_memory_active_heaps);
 			set_thread_heap(heap);
 #if defined(_MSC_VER) && !defined(__clang__) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
@@ -2546,7 +2535,6 @@ rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats) {
 		heap_class_t* heap_class = heap->span_class + iclass;
 		span_t* span = heap_class->partial_span;
 		while (span) {
-			atomic_thread_fence_acquire();
 			size_t free_count = span->list_size;
 			size_t block_count = size_class->block_count;
 			if (span->free_list_limit < block_count)
