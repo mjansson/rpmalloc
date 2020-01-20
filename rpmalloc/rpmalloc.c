@@ -183,7 +183,8 @@ static FORCEINLINE int32_t atomic_add32(atomic32_t* val, int32_t add) { return (
 static FORCEINLINE void*   atomic_load_ptr(atomicptr_t* src) { return (void*)*src; }
 static FORCEINLINE void    atomic_store_ptr(atomicptr_t* dst, void* val) { *dst = val; }
 static FORCEINLINE void    atomic_store_ptr_release(atomicptr_t* dst, void* val) { *dst = val; }
-static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref) { return (_InterlockedCompareExchangePointer ((void* volatile*)dst, val, ref) == ref) ? 1 : 0; }
+static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref) { return (_InterlockedCompareExchangePointer((void* volatile*)dst, val, ref) == ref) ? 1 : 0; }
+static FORCEINLINE int     atomic_cas_ptr_acquire(atomicptr_t* dst, void* val, void* ref) { return atomic_cas_ptr(dst, val, ref); }
 
 #define EXPECTED(x) (x)
 #define UNEXPECTED(x) (x)
@@ -209,6 +210,7 @@ static FORCEINLINE void*   atomic_load_ptr(atomicptr_t* src) { return atomic_loa
 static FORCEINLINE void    atomic_store_ptr(atomicptr_t* dst, void* val) { atomic_store_explicit(dst, val, memory_order_relaxed); }
 static FORCEINLINE void    atomic_store_ptr_release(atomicptr_t* dst, void* val) { atomic_store_explicit(dst, val, memory_order_release); }
 static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref) { return atomic_compare_exchange_weak_explicit(dst, &ref, val, memory_order_relaxed, memory_order_relaxed); }
+static FORCEINLINE int     atomic_cas_ptr_acquire(atomicptr_t* dst, void* val, void* ref) { return atomic_compare_exchange_weak_explicit(dst, &ref, val, memory_order_acquire, memory_order_relaxed); }
 
 #define EXPECTED(x) __builtin_expect((x), 1)
 #define UNEXPECTED(x) __builtin_expect((x), 0)
@@ -1195,6 +1197,9 @@ _memory_span_initialize_new(heap_t* heap, heap_class_t* heap_class, span_t* span
 
 static void
 _memory_span_extract_free_list_deferred(span_t* span) {
+	// Here we do not need any acquire semantics on the CAS operation since we are not
+	// interested in the list size, we simply reset it to zero with release semantics on store.
+	// Refer to _memory_deallocate_defer_small_or_medium for further comments on this dependency
 	do {
 		span->free_list = atomic_load_ptr(&span->free_list_deferred);
 	} while ((span->free_list == INVALID_POINTER) || !atomic_cas_ptr(&span->free_list_deferred, INVALID_POINTER, span->free_list));
@@ -1607,11 +1612,15 @@ _memory_deallocate_defer_free_span(heap_t* heap, span_t* span) {
 //! Put the block in the deferred free list of the owning span
 static void
 _memory_deallocate_defer_small_or_medium(span_t* span, void* block) {
+	// The memory ordering here is a bit tricky, to avoid having to ABA protect
+	// the deferred free list to avoid desynchronization of list and list size
+	// we need to have acquire semantics on successful CAS of the pointer to
+	// guarantee the list_size variable validity + release semantics on pointer store
 	void* free_list;
 	do {
 		free_list = atomic_load_ptr(&span->free_list_deferred);
 		*((void**)block) = free_list;
-	} while ((free_list == INVALID_POINTER) || !atomic_cas_ptr(&span->free_list_deferred, INVALID_POINTER, free_list));
+	} while ((free_list == INVALID_POINTER) || !atomic_cas_ptr_acquire(&span->free_list_deferred, INVALID_POINTER, free_list));
 	uint32_t free_count = ++span->list_size;
 	atomic_store_ptr_release(&span->free_list_deferred, block);
 	if (free_count == span->block_count) {
