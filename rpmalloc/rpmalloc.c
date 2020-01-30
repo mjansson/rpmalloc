@@ -35,7 +35,7 @@
 #endif
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            0
+#define ENABLE_ASSERTS            1
 #endif
 #ifndef ENABLE_OVERRIDE
 //! Override standard library malloc/free and new/delete entry points
@@ -1266,7 +1266,6 @@ _memory_span_initialize_new(heap_t* heap, heap_class_t* heap_class, span_t* span
 	span->flags &= ~SPAN_FLAG_ALIGNED_BLOCKS;
 	span->block_size = size_class->block_size;
 	span->block_count = size_class->block_count;
-	span->used_count = size_class->block_count;
 	span->free_list = 0;
 	span->list_size = 0;
 	atomic_store_ptr_release(&span->free_list_deferred, 0);
@@ -1276,10 +1275,13 @@ _memory_span_initialize_new(heap_t* heap, heap_class_t* heap_class, span_t* span
 	span->free_list_limit = free_list_partial_init(&heap_class->free_list, &block, 
 		span, pointer_offset(span, SPAN_HEADER_SIZE), size_class->block_count, size_class->block_size);
 	//Link span as partial if there remains blocks to be initialized as free list, or full if fully initialized
-	if (span->free_list_limit < span->block_count)
+	if (span->free_list_limit < span->block_count) {
 		_memory_span_double_link_list_add(&heap_class->partial_span, span);
-	else
+		span->used_count = span->free_list_limit;
+	} else {
 		_memory_span_double_link_list_add(&heap_class->full_span, span);
+		span->used_count = span->block_count;
+	}
 	return block;
 }
 
@@ -1329,7 +1331,8 @@ _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 				(void*)((uintptr_t)block_start & ~(_memory_page_size - 1)), block_start,
 				span->block_count - span->free_list_limit, span->block_size);
 		}
-		span->used_count = span->block_count;
+		assert(span->free_list_limit <= span->block_count);
+		span->used_count = span->free_list_limit;
 
 		//Swap in deferred free list if present
 		if (atomic_load_ptr(&span->free_list_deferred))

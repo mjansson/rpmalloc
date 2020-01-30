@@ -18,6 +18,9 @@ Fixed natural alignment check in rpaligned_realloc to 16 bytes (check was 32, wh
 Minor performance improvements for all code paths by simplified span handling, and for aligned allocations
 with alignment less or equal to 128 bytes by utilizing natural block alignments
 
+Refactor finalization to be compatible with global scope data causing dynamic allocations and frees, like
+C++ objects with custom ctors/dtors.
+
 
 1.4.0
 
