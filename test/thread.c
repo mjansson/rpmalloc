@@ -23,12 +23,6 @@ thread_entry(void* argptr) {
 #  include <pthread.h>
 #  include <sched.h>
 
-#if !defined(__x86_64__) && !defined(_AMD64_) && !defined(_M_AMD64) && !defined(__i386__)
-#  define MEMORY_BARRIER __sync_synchronize()
-#else
-#  define MEMORY_BARRIER __asm__ __volatile__("":::"memory")
-#endif
-
 static void*
 thread_entry(void* argptr) {
 	thread_arg* arg = argptr;
@@ -94,19 +88,8 @@ thread_sleep(int milliseconds) {
 void
 thread_yield(void) {
 #ifdef _WIN32
-	Sleep(0);
-	_ReadWriteBarrier();
+	SleepEx(0, 1);
 #else
 	sched_yield();
-	MEMORY_BARRIER;
-#endif
-}
-
-void
-thread_fence(void) {
-#ifdef _WIN32
-	_ReadWriteBarrier();
-#else
-	MEMORY_BARRIER;
 #endif
 }

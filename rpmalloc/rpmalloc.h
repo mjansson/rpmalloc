@@ -280,7 +280,7 @@ rpmalloc_usable_size(void* ptr);
 #if RPMALLOC_FIRST_CLASS_HEAPS
 
 //! Heap type
-typedef void* rpmalloc_heap_t;
+typedef struct heap_t rpmalloc_heap_t;
 
 //! Acquire a new heap. Will reuse existing released heaps or allocate memory for a new heap
 //  if none available. Heap API is imlemented with the strict assumption that only one single

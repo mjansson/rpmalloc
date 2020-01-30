@@ -2728,13 +2728,13 @@ rpmalloc_heap_acquire(void) {
 	// heap is cleared with rpmalloc_heap_free_all()
 	heap_t* heap = _memory_allocate_heap(1);
 	_memory_statistics_inc(&_memory_active_heaps);
-	return (rpmalloc_heap_t*)heap;
+	return heap;
 }
 
 extern inline void
 rpmalloc_heap_release(rpmalloc_heap_t* heap) {
 	if (heap)
-		_memory_heap_finalize((heap_t*)heap, 1);
+		_memory_heap_finalize(heap, 1);
 }
 
 extern inline RPMALLOC_ALLOCATOR void*
@@ -2745,7 +2745,7 @@ rpmalloc_heap_alloc(rpmalloc_heap_t* heap, size_t size) {
 		return ptr;
 	}
 #endif
-	return _memory_allocate((heap_t*)heap, size);
+	return _memory_allocate(heap, size);
 }
 
 extern inline RPMALLOC_ALLOCATOR void*
@@ -2756,7 +2756,7 @@ rpmalloc_heap_aligned_alloc(rpmalloc_heap_t* heap, size_t alignment, size_t size
 		return ptr;
 	}
 #endif
-	return _memory_aligned_allocate((heap_t*)heap, alignment, size);
+	return _memory_aligned_allocate(heap, alignment, size);
 }
 
 extern inline RPMALLOC_ALLOCATOR void*
@@ -2784,7 +2784,7 @@ rpmalloc_heap_aligned_calloc(rpmalloc_heap_t* heap, size_t alignment, size_t num
 #else
 	total = num * size;
 #endif
-	void* block = _memory_aligned_allocate((heap_t*)heap, alignment, total);
+	void* block = _memory_aligned_allocate(heap, alignment, total);
 	if (block)
 		memset(block, 0, total);
 	return block;
@@ -2798,7 +2798,7 @@ rpmalloc_heap_realloc(rpmalloc_heap_t* heap, void* ptr, size_t size, unsigned in
 		return ptr;
 	}
 #endif
-	return _memory_reallocate((heap_t*)heap, ptr, size, 0, flags);
+	return _memory_reallocate(heap, ptr, size, 0, flags);
 }
 
 extern inline RPMALLOC_ALLOCATOR void*
@@ -2809,7 +2809,7 @@ rpmalloc_heap_aligned_realloc(rpmalloc_heap_t* heap, void* ptr, size_t alignment
 		return 0;
 	}
 #endif
-	return _memory_aligned_reallocate((heap_t*)heap, ptr, alignment, size, 0, flags);	
+	return _memory_aligned_reallocate(heap, ptr, alignment, size, 0, flags);	
 }
 
 extern inline void
@@ -2819,8 +2819,7 @@ rpmalloc_heap_free(rpmalloc_heap_t* heap, void* ptr) {
 }
 
 extern inline void
-rpmalloc_heap_free_all(rpmalloc_heap_t* heapptr) {
-	heap_t* heap = (heap_t*)heapptr;
+rpmalloc_heap_free_all(rpmalloc_heap_t* heap) {
 	span_t* span;
 	span_t* next_span;
 
@@ -2887,9 +2886,9 @@ rpmalloc_heap_free_all(rpmalloc_heap_t* heapptr) {
 
 extern inline void
 rpmalloc_heap_thread_set_current(rpmalloc_heap_t* heap) {
-	rpmalloc_heap_t* prev_heap = (rpmalloc_heap_t*)get_thread_heap_raw();
+	heap_t* prev_heap = get_thread_heap_raw();
 	if (prev_heap != heap) {
-		set_thread_heap((heap_t*)heap);
+		set_thread_heap(heap);
 		if (prev_heap)
 			rpmalloc_heap_release(prev_heap);
 	}

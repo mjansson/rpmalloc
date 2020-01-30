@@ -26,9 +26,6 @@ thread_sleep(int milliseconds);
 extern void
 thread_yield(void);
 
-extern void
-thread_fence(void);
-
 #ifdef __cplusplus
 }
 #endif

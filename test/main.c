@@ -907,7 +907,6 @@ test_threadspam(void) {
 
 	for (j = 0; j < num_passes; ++j) {
 		thread_sleep(10);
-		thread_fence();
 
 		for (i = 0; i < num_alloc_threads; ++i) {
 			threadres[i] = thread_join(thread[i]);
