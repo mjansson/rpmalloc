@@ -171,9 +171,6 @@ typedef volatile long      atomic32_t;
 typedef volatile long long atomic64_t;
 typedef volatile void*     atomicptr_t;
 
-#define atomic_thread_fence_acquire()
-#define atomic_thread_fence_release()
-
 static FORCEINLINE int32_t atomic_load32(atomic32_t* src) { return *src; }
 static FORCEINLINE void    atomic_store32(atomic32_t* dst, int32_t val) { *dst = val; }
 static FORCEINLINE int32_t atomic_incr32(atomic32_t* val) { return (int32_t)_InterlockedIncrement(val); }
@@ -185,7 +182,9 @@ static FORCEINLINE int64_t atomic_add64(atomic64_t* val, int64_t add) { return (
 static FORCEINLINE int32_t atomic_add32(atomic32_t* val, int32_t add) { return (int32_t)_InterlockedExchangeAdd(val, add) + add; }
 static FORCEINLINE void*   atomic_load_ptr(atomicptr_t* src) { return (void*)*src; }
 static FORCEINLINE void    atomic_store_ptr(atomicptr_t* dst, void* val) { *dst = val; }
-static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref) { return (_InterlockedCompareExchangePointer ((void* volatile*)dst, val, ref) == ref) ? 1 : 0; }
+static FORCEINLINE void    atomic_store_ptr_release(atomicptr_t* dst, void* val) { *dst = val; }
+static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref) { return (_InterlockedCompareExchangePointer((void* volatile*)dst, val, ref) == ref) ? 1 : 0; }
+static FORCEINLINE int     atomic_cas_ptr_acquire(atomicptr_t* dst, void* val, void* ref) { return atomic_cas_ptr(dst, val, ref); }
 
 #define EXPECTED(x) (x)
 #define UNEXPECTED(x) (x)
@@ -198,9 +197,6 @@ typedef volatile _Atomic(int32_t) atomic32_t;
 typedef volatile _Atomic(int64_t) atomic64_t;
 typedef volatile _Atomic(void*) atomicptr_t;
 
-#define atomic_thread_fence_acquire() atomic_thread_fence(memory_order_acquire)
-#define atomic_thread_fence_release() atomic_thread_fence(memory_order_release)
-
 static FORCEINLINE int32_t atomic_load32(atomic32_t* src) { return atomic_load_explicit(src, memory_order_relaxed); }
 static FORCEINLINE void    atomic_store32(atomic32_t* dst, int32_t val) { atomic_store_explicit(dst, val, memory_order_relaxed); }
 static FORCEINLINE int32_t atomic_incr32(atomic32_t* val) { return atomic_fetch_add_explicit(val, 1, memory_order_relaxed) + 1; }
@@ -212,7 +208,9 @@ static FORCEINLINE int64_t atomic_add64(atomic64_t* val, int64_t add) { return a
 static FORCEINLINE int32_t atomic_add32(atomic32_t* val, int32_t add) { return atomic_fetch_add_explicit(val, add, memory_order_relaxed) + add; }
 static FORCEINLINE void*   atomic_load_ptr(atomicptr_t* src) { return atomic_load_explicit(src, memory_order_relaxed); }
 static FORCEINLINE void    atomic_store_ptr(atomicptr_t* dst, void* val) { atomic_store_explicit(dst, val, memory_order_relaxed); }
-static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref) { return atomic_compare_exchange_weak_explicit(dst, &ref, val, memory_order_release, memory_order_acquire); }
+static FORCEINLINE void    atomic_store_ptr_release(atomicptr_t* dst, void* val) { atomic_store_explicit(dst, val, memory_order_release); }
+static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref) { return atomic_compare_exchange_weak_explicit(dst, &ref, val, memory_order_relaxed, memory_order_relaxed); }
+static FORCEINLINE int     atomic_cas_ptr_acquire(atomicptr_t* dst, void* val, void* ref) { return atomic_compare_exchange_weak_explicit(dst, &ref, val, memory_order_acquire, memory_order_relaxed); }
 
 #define EXPECTED(x) __builtin_expect((x), 1)
 #define UNEXPECTED(x) __builtin_expect((x), 0)
@@ -612,10 +610,10 @@ _memory_unmap_os(void* address, size_t size, size_t offset, size_t release);
 #else
 #  define _memory_statistics_inc(counter) do {} while(0)
 #  define _memory_statistics_dec(counter) do {} while(0)
-#  define _memory_statistics_add(atomic_counter, value) do {} while(0)
+#  define _memory_statistics_add(counter, value) do {} while(0)
 #  define _memory_statistics_add64(counter, value) do {} while(0)
-#  define _memory_statistics_add_peak(atomic_counter, value, peak) do {} while (0)
-#  define _memory_statistics_sub(atomic_counter, value) do {} while(0)
+#  define _memory_statistics_add_peak(counter, value, peak) do {} while (0)
+#  define _memory_statistics_sub(counter, value) do {} while(0)
 #  define _memory_statistics_inc_alloc(heap, class_idx) do {} while(0)
 #  define _memory_statistics_inc_free(heap, class_idx) do {} while(0)
 #endif
@@ -700,7 +698,7 @@ _memory_span_initialize(span_t* span, size_t total_span_count, size_t span_count
 	span->span_count = (uint32_t)span_count;
 	span->align_offset = (uint32_t)align_offset;
 	span->flags = SPAN_FLAG_MASTER;
-	atomic_store32(&span->remaining_spans, (int32_t)total_span_count);	
+	atomic_store32(&span->remaining_spans, (int32_t)total_span_count);
 }
 
 //! Map an aligned set of spans, taking configured mapping granularity and the page size into account
@@ -885,7 +883,9 @@ static void
 _memory_cache_insert(global_cache_t* cache, span_t* span, size_t cache_limit) {
 	assert((span->list_size == 1) || (span->next != 0));
 	int32_t list_size = (int32_t)span->list_size;
-	//Unmap if cache has reached the limit
+	//Unmap if cache has reached the limit. Does not need stronger synchronization, the worst
+	//case is that the span list is unmapped when it could have been cached (no real dependency
+	//between the two variables)
 	if (atomic_add32(&cache->size, list_size) > (int32_t)cache_limit) {
 #if !ENABLE_UNLIMITED_GLOBAL_CACHE
 		_memory_unmap_span_list(span);
@@ -965,13 +965,11 @@ static void _memory_deallocate_huge(span_t*);
 //! Adopt the deferred span cache list, optionally extracting the first single span for immediate re-use
 static void
 _memory_heap_cache_adopt_deferred(heap_t* heap, span_t** single_span) {
-	atomic_thread_fence_acquire();
 	span_t* span = (span_t*)atomic_load_ptr(&heap->span_free_deferred);
 	if (!span)
 		return;
-	do {
+	while (!atomic_cas_ptr(&heap->span_free_deferred, 0, span))
 		span = (span_t*)atomic_load_ptr(&heap->span_free_deferred);
-	} while (!atomic_cas_ptr(&heap->span_free_deferred, 0, span));
 	while (span) {
 		span_t* next_span = (span_t*)span->free_list;
 		assert(span->heap == heap);
@@ -1181,8 +1179,7 @@ _memory_span_initialize_new(heap_t* heap, heap_class_t* heap_class, span_t* span
 	span->used_count = size_class->block_count;
 	span->free_list = 0;
 	span->list_size = 0;
-	atomic_store_ptr(&span->free_list_deferred, 0);
-	atomic_thread_fence_release();
+	atomic_store_ptr_release(&span->free_list_deferred, 0);
 
 	//Setup free list. Only initialize one system page worth of free blocks in list
 	void* block;
@@ -1200,12 +1197,14 @@ _memory_span_initialize_new(heap_t* heap, heap_class_t* heap_class, span_t* span
 
 static void
 _memory_span_extract_free_list_deferred(span_t* span) {
+	// Here we do not need any acquire semantics on the CAS operation since we are not
+	// interested in the list size, we simply reset it to zero with release semantics on store.
+	// Refer to _memory_deallocate_defer_small_or_medium for further comments on this dependency
 	do {
 		span->free_list = atomic_load_ptr(&span->free_list_deferred);
 	} while ((span->free_list == INVALID_POINTER) || !atomic_cas_ptr(&span->free_list_deferred, INVALID_POINTER, span->free_list));
 	span->list_size = 0;
-	atomic_store_ptr(&span->free_list_deferred, 0);
-	atomic_thread_fence_release();
+	atomic_store_ptr_release(&span->free_list_deferred, 0);
 }
 
 static int
@@ -1245,7 +1244,6 @@ _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 		span->used_count = span->block_count;
 
 		//Swap in deferred free list if present
-		atomic_thread_fence_acquire();
 		if (atomic_load_ptr(&span->free_list_deferred))
 			_memory_span_extract_free_list_deferred(span);
 
@@ -1317,7 +1315,6 @@ _memory_allocate_large(heap_t* heap, size_t size) {
 	assert(span->span_count == span_count);
 	span->size_class = SIZE_CLASS_LARGE;
 	span->heap = heap;
-	atomic_thread_fence_release();
 
 #if RPMALLOC_FIRST_CLASS_HEAPS
 	_memory_span_double_link_list_add(&heap->large_huge_span, span);
@@ -1552,7 +1549,6 @@ _memory_heap_extract_orphan(atomicptr_t* heap_list) {
 	uintptr_t orphan_counter;
 	heap_t* heap;
 	heap_t* next_heap;
-	atomic_thread_fence_acquire();
 	do {
 		raw_heap = atomic_load_ptr(heap_list);
 		heap = (heap_t*)((uintptr_t)raw_heap & ~(uintptr_t)(HEAP_ORPHAN_ABA_SIZE - 1));
@@ -1616,14 +1612,17 @@ _memory_deallocate_defer_free_span(heap_t* heap, span_t* span) {
 //! Put the block in the deferred free list of the owning span
 static void
 _memory_deallocate_defer_small_or_medium(span_t* span, void* block) {
+	// The memory ordering here is a bit tricky, to avoid having to ABA protect
+	// the deferred free list to avoid desynchronization of list and list size
+	// we need to have acquire semantics on successful CAS of the pointer to
+	// guarantee the list_size variable validity + release semantics on pointer store
 	void* free_list;
 	do {
-		atomic_thread_fence_acquire();
 		free_list = atomic_load_ptr(&span->free_list_deferred);
 		*((void**)block) = free_list;
-	} while ((free_list == INVALID_POINTER) || !atomic_cas_ptr(&span->free_list_deferred, INVALID_POINTER, free_list));
+	} while ((free_list == INVALID_POINTER) || !atomic_cas_ptr_acquire(&span->free_list_deferred, INVALID_POINTER, free_list));
 	uint32_t free_count = ++span->list_size;
-	atomic_store_ptr(&span->free_list_deferred, block);
+	atomic_store_ptr_release(&span->free_list_deferred, block);
 	if (free_count == span->block_count) {
 		// Span was completely freed by this block. Due to the INVALID_POINTER spin lock
 		// no other thread can reach this state simultaneously on this span.
@@ -1764,7 +1763,7 @@ _memory_reallocate(heap_t* heap, void* p, size_t size, size_t oldsize, unsigned 
 			uint32_t block_idx = block_offset / span->block_size;
 			void* block = pointer_offset(blocks_start, (size_t)block_idx * span->block_size);
 			if (!oldsize)
-				oldsize = (size_t)span->block_size - pointer_diff(p, block);
+				oldsize = (size_t)((ptrdiff_t)span->block_size - pointer_diff(p, block));
 			if ((size_t)span->block_size >= size) {
 				//Still fits in block, never mind trying to save memory, but preserve data if alignment changed
 				if ((p != block) && !(flags & RPMALLOC_NO_PRESERVE))
@@ -2178,8 +2177,6 @@ _memory_span_finalize(heap_t* heap, size_t iclass, span_t* span, span_t* class_s
 //! Finalize the allocator
 void
 rpmalloc_finalize(void) {
-	atomic_thread_fence_acquire();
-
 	rpmalloc_thread_finalize();
 	//rpmalloc_dump_statistics(stderr);
 
@@ -2267,7 +2264,6 @@ rpmalloc_finalize(void) {
 #if RPMALLOC_FIRST_CLASS_HEAPS
 	atomic_store_ptr(&_memory_first_class_orphan_heaps, 0);
 #endif
-	atomic_thread_fence_release();
 
 #if (defined(__APPLE__) || defined(__HAIKU__)) && ENABLE_PRELOAD
 	pthread_key_delete(_memory_thread_heap);
@@ -2301,7 +2297,6 @@ rpmalloc_thread_initialize(void) {
 	if (!get_thread_heap_raw()) {
 		heap_t* heap = _memory_allocate_heap(0);
 		if (heap) {
-			atomic_thread_fence_acquire();
 			_memory_statistics_inc(&_memory_active_heaps);
 			set_thread_heap(heap);
 #if defined(_MSC_VER) && !defined(__clang__) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
@@ -2549,7 +2544,6 @@ rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats) {
 		heap_class_t* heap_class = heap->span_class + iclass;
 		span_t* span = heap_class->partial_span;
 		while (span) {
-			atomic_thread_fence_acquire();
 			size_t free_count = span->list_size;
 			size_t block_count = size_class->block_count;
 			if (span->free_list_limit < block_count)
@@ -2734,13 +2728,13 @@ rpmalloc_heap_acquire(void) {
 	// heap is cleared with rpmalloc_heap_free_all()
 	heap_t* heap = _memory_allocate_heap(1);
 	_memory_statistics_inc(&_memory_active_heaps);
-	return (rpmalloc_heap_t*)heap;
+	return heap;
 }
 
 extern inline void
 rpmalloc_heap_release(rpmalloc_heap_t* heap) {
 	if (heap)
-		_memory_heap_finalize((heap_t*)heap, 1);
+		_memory_heap_finalize(heap, 1);
 }
 
 extern inline RPMALLOC_ALLOCATOR void*
@@ -2751,7 +2745,7 @@ rpmalloc_heap_alloc(rpmalloc_heap_t* heap, size_t size) {
 		return ptr;
 	}
 #endif
-	return _memory_allocate((heap_t*)heap, size);
+	return _memory_allocate(heap, size);
 }
 
 extern inline RPMALLOC_ALLOCATOR void*
@@ -2762,7 +2756,7 @@ rpmalloc_heap_aligned_alloc(rpmalloc_heap_t* heap, size_t alignment, size_t size
 		return ptr;
 	}
 #endif
-	return _memory_aligned_allocate((heap_t*)heap, alignment, size);
+	return _memory_aligned_allocate(heap, alignment, size);
 }
 
 extern inline RPMALLOC_ALLOCATOR void*
@@ -2790,7 +2784,7 @@ rpmalloc_heap_aligned_calloc(rpmalloc_heap_t* heap, size_t alignment, size_t num
 #else
 	total = num * size;
 #endif
-	void* block = _memory_aligned_allocate((heap_t*)heap, alignment, total);
+	void* block = _memory_aligned_allocate(heap, alignment, total);
 	if (block)
 		memset(block, 0, total);
 	return block;
@@ -2804,7 +2798,7 @@ rpmalloc_heap_realloc(rpmalloc_heap_t* heap, void* ptr, size_t size, unsigned in
 		return ptr;
 	}
 #endif
-	return _memory_reallocate((heap_t*)heap, ptr, size, 0, flags);
+	return _memory_reallocate(heap, ptr, size, 0, flags);
 }
 
 extern inline RPMALLOC_ALLOCATOR void*
@@ -2815,7 +2809,7 @@ rpmalloc_heap_aligned_realloc(rpmalloc_heap_t* heap, void* ptr, size_t alignment
 		return 0;
 	}
 #endif
-	return _memory_aligned_reallocate((heap_t*)heap, ptr, alignment, size, 0, flags);	
+	return _memory_aligned_reallocate(heap, ptr, alignment, size, 0, flags);	
 }
 
 extern inline void
@@ -2825,8 +2819,7 @@ rpmalloc_heap_free(rpmalloc_heap_t* heap, void* ptr) {
 }
 
 extern inline void
-rpmalloc_heap_free_all(rpmalloc_heap_t* heapptr) {
-	heap_t* heap = (heap_t*)heapptr;
+rpmalloc_heap_free_all(rpmalloc_heap_t* heap) {
 	span_t* span;
 	span_t* next_span;
 
@@ -2893,9 +2886,9 @@ rpmalloc_heap_free_all(rpmalloc_heap_t* heapptr) {
 
 extern inline void
 rpmalloc_heap_thread_set_current(rpmalloc_heap_t* heap) {
-	rpmalloc_heap_t* prev_heap = (rpmalloc_heap_t*)get_thread_heap_raw();
+	heap_t* prev_heap = get_thread_heap_raw();
 	if (prev_heap != heap) {
-		set_thread_heap((heap_t*)heap);
+		set_thread_heap(heap);
 		if (prev_heap)
 			rpmalloc_heap_release(prev_heap);
 	}
