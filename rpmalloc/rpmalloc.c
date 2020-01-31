@@ -10,7 +10,6 @@
  */
 
 #include "rpmalloc.h"
-#pragma optimize ( "", off )
 
 /// Build time configurable limits
 #ifndef HEAP_ARRAY_SIZE
@@ -31,11 +30,11 @@
 #endif
 #ifndef ENABLE_STATISTICS
 //! Enable statistics collection
-#define ENABLE_STATISTICS         1
+#define ENABLE_STATISTICS         0
 #endif
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS            1
+#define ENABLE_ASSERTS            0
 #endif
 #ifndef ENABLE_OVERRIDE
 //! Override standard library malloc/free and new/delete entry points
