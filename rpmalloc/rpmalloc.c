@@ -1574,8 +1574,7 @@ _memory_heap_initialize(heap_t* heap) {
 	memset(heap, 0, sizeof(heap_t));
 
 	//Get a new heap ID
-	heap->id = atomic_incr32(&_memory_heap_id);
-	assert(heap->id != 0);
+	heap->id = 1 + atomic_incr32(&_memory_heap_id);
 
 	//Link in heap in heap ID map
 	heap_t* next_heap;
@@ -2190,21 +2189,6 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
     fls_key = FlsAlloc(&rp_thread_destructor);
 #endif
 
-	atomic_store32(&_memory_heap_id, 1);
-	atomic_store32(&_memory_orphan_counter, 0);
-#if ENABLE_STATISTICS
-	atomic_store32(&_memory_active_heaps, 0);
-	atomic_store32(&_reserved_spans, 0);
-	atomic_store32(&_master_spans, 0);
-	atomic_store32(&_mapped_pages, 0);
-	_mapped_pages_peak = 0;
-	atomic_store32(&_mapped_total, 0);
-	atomic_store32(&_unmapped_total, 0);
-	atomic_store32(&_mapped_pages_os, 0);
-	atomic_store32(&_huge_pages_current, 0);
-	_huge_pages_peak = 0;
-#endif
-
 	//Setup all small and medium size classes
 	size_t iclass = 0;
 	_memory_size_class[iclass].block_size = SMALL_GRANULARITY;
@@ -2225,9 +2209,6 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		_memory_size_class[SMALL_CLASS_COUNT + iclass].block_size = (uint32_t)size;
 		_memory_adjust_size_class(SMALL_CLASS_COUNT + iclass);
 	}
-
-	for (size_t list_idx = 0; list_idx < HEAP_ARRAY_SIZE; ++list_idx)
-		atomic_store_ptr(&_memory_heaps[list_idx], 0);
 
 	//Initialize this thread
 	rpmalloc_thread_initialize();
@@ -2336,7 +2317,9 @@ rpmalloc_finalize(void) {
 #if (defined(__APPLE__) || defined(__HAIKU__)) && ENABLE_PRELOAD
 	pthread_key_delete(_memory_thread_heap);
 #endif
-
+#if defined(_MSC_VER) && !defined(__clang__) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
+    FlsFree(fls_key);
+#endif
 #if ENABLE_STATISTICS
 	//If you hit these asserts you probably have memory leaks (perhaps global scope data doing dynamic allocations) or double frees in your code
 	assert(!atomic_load32(&_mapped_pages));
@@ -2345,10 +2328,6 @@ rpmalloc_finalize(void) {
 #endif
 
 	_rpmalloc_initialized = 0;
-
-#if defined(_MSC_VER) && !defined(__clang__) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
-    FlsFree(fls_key);
-#endif
 }
 
 //! Initialize thread, assign heap
