@@ -2318,7 +2318,8 @@ rpmalloc_finalize(void) {
 	pthread_key_delete(_memory_thread_heap);
 #endif
 #if defined(_MSC_VER) && !defined(__clang__) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
-    FlsFree(fls_key);
+	FlsFree(fls_key);
+	fls_key = 0;
 #endif
 #if ENABLE_STATISTICS
 	//If you hit these asserts you probably have memory leaks (perhaps global scope data doing dynamic allocations) or double frees in your code
@@ -2351,6 +2352,9 @@ rpmalloc_thread_finalize(void) {
 	heap_t* heap = get_thread_heap_raw();
 	if (heap)
 		_memory_heap_release_raw(heap);
+#if defined(_MSC_VER) && !defined(__clang__) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
+	FlsSetValue(fls_key, 0);
+#endif
 }
 
 int
