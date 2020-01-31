@@ -1286,18 +1286,19 @@ _memory_span_initialize_new(heap_t* heap, heap_class_t* heap_class, span_t* span
 
 static void
 _memory_span_extract_free_list_deferred(span_t* span) {
-	// Here we do not need any acquire semantics on the CAS operation since we are not
-	// interested in the list size, we simply reset it to zero with release semantics on store.
+	// We need acquire semantics on the CAS operation since we are interested in the list size
 	// Refer to _memory_deallocate_defer_small_or_medium for further comments on this dependency
 	do {
 		span->free_list = atomic_load_ptr(&span->free_list_deferred);
-	} while ((span->free_list == INVALID_POINTER) || !atomic_cas_ptr(&span->free_list_deferred, INVALID_POINTER, span->free_list));
+	} while ((span->free_list == INVALID_POINTER) || !atomic_cas_ptr_acquire(&span->free_list_deferred, INVALID_POINTER, span->free_list));
+	span->used_count -= span->list_size;
 	span->list_size = 0;
 	atomic_store_ptr_release(&span->free_list_deferred, 0);
 }
 
 static int
 _memory_span_is_fully_utilized(span_t* span) {
+	assert(span->free_list_limit <= span->block_count);
 	return !span->free_list && (span->free_list_limit >= span->block_count);
 }
 
@@ -2235,12 +2236,10 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 
 static span_t*
 _memory_span_finalize(heap_t* heap, size_t iclass, span_t* span, span_t** list_head) {
-	(void)sizeof(heap);
-	(void)sizeof(iclass);
 	heap_class_t* heap_class = heap->span_class + iclass;
 	span_t* class_span = (span_t*)((uintptr_t)heap_class->free_list & _memory_span_mask);
 	if (span == class_span) {
-		// Adopt the free list back into the span
+		// Adopt the heap class free list back into the span free list
 		void* block = span->free_list;
 		void* last_block = 0;
 		while (block) {
