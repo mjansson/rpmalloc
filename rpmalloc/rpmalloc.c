@@ -1680,11 +1680,10 @@ _memory_deallocate_direct_small_or_medium(span_t* span, void* block) {
 		_memory_span_double_link_list_remove(&heap_class->full_span, span);
 		_memory_span_double_link_list_add(&heap_class->partial_span, span);
 	}
+	--span->used_count;
 	*((void**)block) = span->free_list;
 	span->free_list = block;
-	uint32_t used = --span->used_count;
-	uint32_t free = span->list_size;
-	if (UNEXPECTED(used == free)) {
+	if (UNEXPECTED(span->used_count == span->list_size)) {
 		heap_class_t* heap_class = &heap->span_class[span->size_class];
 		_memory_span_double_link_list_remove(&heap_class->partial_span, span);
 		_memory_span_release_to_cache(heap, span);
@@ -2238,26 +2237,20 @@ static span_t*
 _memory_span_finalize(heap_t* heap, size_t iclass, span_t* span, span_t** list_head) {
 	(void)sizeof(heap);
 	(void)sizeof(iclass);
-	uint32_t total_free_blocks = span->list_size;
-	uint32_t block_count = span->block_count;
-	if (span->free_list_limit < span->block_count)
-		block_count = span->free_list_limit;
-	uint32_t free_list_count = 0;
-	void* block = span->free_list;
-	void* last_block = 0;
-	while (block) {
-		++free_list_count;
-		last_block = block;
-		block = *((void**)block);
-	}
 	heap_class_t* heap_class = heap->span_class + iclass;
 	span_t* class_span = (span_t*)((uintptr_t)heap_class->free_list & _memory_span_mask);
 	if (span == class_span) {
 		// Adopt the free list back into the span
-		uint32_t class_free_count = 0;
+		void* block = span->free_list;
+		void* last_block = 0;
+		while (block) {
+			last_block = block;
+			block = *((void**)block);
+		}
+		uint32_t free_count = 0;
 		block = heap_class->free_list;
 		while (block) {
-			++class_free_count;
+			++free_count;
 			block = *((void**)block);
 		}
 		if (last_block) {
@@ -2266,20 +2259,17 @@ _memory_span_finalize(heap_t* heap, size_t iclass, span_t* span, span_t** list_h
 			span->free_list = heap_class->free_list;
 		}
 		heap_class->free_list = 0;
-		free_list_count += class_free_count;
+		span->used_count -= free_count;
 	}
-	total_free_blocks += free_list_count;
 	//If this assert triggers you have memory leaks
-	assert(total_free_blocks == block_count);
-	if (total_free_blocks == block_count) {
+	assert(span->list_size == span->used_count);
+	if (span->list_size == span->used_count) {
 		_memory_statistics_dec(&heap->span_use[0].current);
 		_memory_statistics_dec(&heap->size_class_use[iclass].spans_current);
 		// This function only used for spans in double linked lists
 		if (list_head)
 			_memory_span_double_link_list_remove(list_head, span);
 		_memory_unmap_span(span);
-	} else {
-		span->used_count = block_count - free_list_count;
 	}
 	return (span == class_span) ? 0 : class_span;
 }
