@@ -58,13 +58,6 @@ extern "C" {
 #define RPMALLOC_FIRST_CLASS_HEAPS 0
 #endif
 
-//! Define RPMALLOC_GLOBAL_FINALIZATION to enable finalization to happen implicitly during
-//  global scope teardown in the runtime. This will introduce a small overhead to track
-//  fully allocated spans in heaps.
-#ifndef RPMALLOC_GLOBAL_FINALIZATION
-#define RPMALLOC_GLOBAL_FINALIZATION 1
-#endif
-
 //! Flag to rpaligned_realloc to not preserve content in reallocation
 #define RPMALLOC_NO_PRESERVE    1
 //! Flag to rpaligned_realloc to fail and return null pointer if grow cannot be done in-place,
