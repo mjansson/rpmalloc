@@ -2031,7 +2031,6 @@ rpmalloc_initialize(void) {
 		rpmalloc_thread_initialize();
 		return 0;
 	}
-	memset(&_memory_config, 0, sizeof(rpmalloc_config_t));
 	return rpmalloc_initialize_config(0);
 }
 
@@ -2045,6 +2044,8 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 
 	if (config)
 		memcpy(&_memory_config, config, sizeof(rpmalloc_config_t));
+	else
+		memset(&_memory_config, 0, sizeof(rpmalloc_config_t));
 
 	if (!_memory_config.memory_map || !_memory_config.memory_unmap) {
 		_memory_config.memory_map = _memory_map_os;
@@ -2065,35 +2066,10 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		GetSystemInfo(&system_info);
 		_memory_page_size = system_info.dwPageSize;
 		_memory_map_granularity = system_info.dwAllocationGranularity;
-		if (config && config->enable_huge_pages) {
-			HANDLE token = 0;
-			size_t large_page_minimum = GetLargePageMinimum();
-			if (large_page_minimum)
-				OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token);
-			if (token) {
-				LUID luid;
-				if (LookupPrivilegeValue(0, SE_LOCK_MEMORY_NAME, &luid)) {
-					TOKEN_PRIVILEGES token_privileges;
-					memset(&token_privileges, 0, sizeof(token_privileges));
-					token_privileges.PrivilegeCount = 1;
-					token_privileges.Privileges[0].Luid = luid;
-					token_privileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-					if (AdjustTokenPrivileges(token, FALSE, &token_privileges, 0, 0, 0)) {
-						DWORD err = GetLastError();
-						if (err == ERROR_SUCCESS) {
-							_memory_huge_pages = 1;
-							_memory_page_size = large_page_minimum;
-							_memory_map_granularity = large_page_minimum;
-						}
-					}
-				}
-				CloseHandle(token);
-			}
-		}
 #else
 		_memory_page_size = (size_t)sysconf(_SC_PAGESIZE);
 		_memory_map_granularity = _memory_page_size;
-		if (config && config->enable_huge_pages) {
+		if (_memory_config.enable_huge_pages) {
 #if defined(__linux__)
 			size_t huge_page_size = 0;
 			FILE* meminfo = fopen("/proc/meminfo", "r");
@@ -2128,9 +2104,39 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		}
 #endif
 	} else {
-		if (config && config->enable_huge_pages)
+		if (_memory_config.enable_huge_pages)
 			_memory_huge_pages = 1;
 	}
+
+#if PLATFORM_WINDOWS
+	if (_memory_config.enable_huge_pages) {
+		HANDLE token = 0;
+		size_t large_page_minimum = GetLargePageMinimum();
+		if (large_page_minimum)
+			OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token);
+		if (token) {
+			LUID luid;
+			if (LookupPrivilegeValue(0, SE_LOCK_MEMORY_NAME, &luid)) {
+				TOKEN_PRIVILEGES token_privileges;
+				memset(&token_privileges, 0, sizeof(token_privileges));
+				token_privileges.PrivilegeCount = 1;
+				token_privileges.Privileges[0].Luid = luid;
+				token_privileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+				if (AdjustTokenPrivileges(token, FALSE, &token_privileges, 0, 0, 0)) {
+					DWORD err = GetLastError();
+					if (err == ERROR_SUCCESS) {
+						_memory_huge_pages = 1;
+						if (large_page_minimum > _memory_page_size)
+						 	_memory_page_size = large_page_minimum;
+						if (large_page_minimum > _memory_map_granularity)
+							_memory_map_granularity = large_page_minimum;
+					}
+				}
+			}
+			CloseHandle(token);
+		}
+	}
+#endif
 
 	//The ABA counter in heap orphan list is tied to using HEAP_ORPHAN_ABA_SIZE
 	size_t min_span_size = HEAP_ORPHAN_ABA_SIZE;
