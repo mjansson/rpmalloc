@@ -2339,8 +2339,8 @@ _memory_heap_finalize(heap_t* heap) {
 			--heap->full_span_count;
 			if (!_memory_span_finalize(heap, iclass, class_span, list)) {
 				if (list)
-					_memory_span_double_link_list_remove(list, span);
-				_memory_span_double_link_list_add(&heap_class->partial_span, span);
+					_memory_span_double_link_list_remove(list, class_span);
+				_memory_span_double_link_list_add(&heap_class->partial_span, class_span);
 			}
 		}
 	}
