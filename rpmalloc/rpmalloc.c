@@ -1052,7 +1052,8 @@ _memory_heap_global_finalize(heap_t* heap);
 
 static void
 _memory_unlink_orphan_heap(atomicptr_t* list, heap_t* heap) {
-	heap_t* orphan = (heap_t*)((uintptr_t)atomic_load_ptr(list) & ~(uintptr_t)(HEAP_ORPHAN_ABA_SIZE - 1));
+	void* raworphan = atomic_load_ptr(list);
+	heap_t* orphan = (heap_t*)((uintptr_t)raworphan & ~(uintptr_t)(HEAP_ORPHAN_ABA_SIZE - 1));
 	if (orphan == heap) {
 		//We're now in single-threaded finalization phase, no need to ABA protect or CAS
 		atomic_store_ptr(list, heap->next_orphan);
