@@ -217,7 +217,42 @@ static FORCEINLINE int     atomic_cas_ptr_acquire(atomicptr_t* dst, void* val, v
     
 #endif
 
+///
+/// Statistics related functions (evaluate to nothing when statistics not enabled)
+///
+
+#if ENABLE_STATISTICS
+#  define _memory_statistics_inc(counter) atomic_incr32(counter)
+#  define _memory_statistics_dec(counter) atomic_decr32(counter)
+#  define _memory_statistics_add(counter, value) atomic_add32(counter, (int32_t)(value))
+#  define _memory_statistics_add64(counter, value) atomic_add64(counter, (int64_t)(value))
+#  define _memory_statistics_add_peak(counter, value, peak) do { int32_t _cur_count = atomic_add32(counter, (int32_t)(value)); if (_cur_count > (peak)) peak = _cur_count; } while (0)
+#  define _memory_statistics_sub(counter, value) atomic_add32(counter, -(int32_t)(value))
+#  define _memory_statistics_inc_alloc(heap, class_idx) do { \
+	int32_t alloc_current = atomic_incr32(&heap->size_class_use[class_idx].alloc_current); \
+	if (alloc_current > heap->size_class_use[class_idx].alloc_peak) \
+		heap->size_class_use[class_idx].alloc_peak = alloc_current; \
+	atomic_incr32(&heap->size_class_use[class_idx].alloc_total); \
+} while(0)
+#  define _memory_statistics_inc_free(heap, class_idx) do { \
+	atomic_decr32(&heap->size_class_use[class_idx].alloc_current); \
+	atomic_incr32(&heap->size_class_use[class_idx].free_total); \
+} while(0)
+#else
+#  define _memory_statistics_inc(counter) do {} while(0)
+#  define _memory_statistics_dec(counter) do {} while(0)
+#  define _memory_statistics_add(counter, value) do {} while(0)
+#  define _memory_statistics_add64(counter, value) do {} while(0)
+#  define _memory_statistics_add_peak(counter, value, peak) do {} while (0)
+#  define _memory_statistics_sub(counter, value) do {} while(0)
+#  define _memory_statistics_inc_alloc(heap, class_idx) do {} while(0)
+#  define _memory_statistics_inc_free(heap, class_idx) do {} while(0)
+#endif
+
+///
 /// Preconfigured limits and sizes
+///
+
 //! Granularity of a small allocation block (must be power of two)
 #define SMALL_GRANULARITY         16
 //! Small granularity shift count
@@ -262,7 +297,10 @@ _Static_assert((SPAN_HEADER_SIZE & (SPAN_HEADER_SIZE - 1)) == 0, "Span header si
 #define SIZE_CLASS_LARGE SIZE_CLASS_COUNT
 #define SIZE_CLASS_HUGE ((uint32_t)-1)
 
+///
 /// Data types
+///
+
 //! A memory heap, per thread
 typedef struct heap_t heap_t;
 //! Span of memory pages
@@ -335,14 +373,14 @@ struct size_class_use_t {
 typedef struct size_class_use_t size_class_use_t;
 #endif
 
-//A span can either represent a single span of memory pages with size declared by span_map_count configuration variable,
-//or a set of spans in a continuous region, a super span. Any reference to the term "span" usually refers to both a single
-//span or a super span. A super span can further be divided into multiple spans (or this, super spans), where the first
-//(super)span is the master and subsequent (super)spans are subspans. The master span keeps track of how many subspans
-//that are still alive and mapped in virtual memory, and once all subspans and master have been unmapped the entire
-//superspan region is released and unmapped (on Windows for example, the entire superspan range has to be released
-//in the same call to release the virtual memory range, but individual subranges can be decommitted individually
-//to reduce physical memory use).
+// A span can either represent a single span of memory pages with size declared by span_map_count configuration variable,
+// or a set of spans in a continuous region, a super span. Any reference to the term "span" usually refers to both a single
+// span or a super span. A super span can further be divided into multiple spans (or this, super spans), where the first
+// (super)span is the master and subsequent (super)spans are subspans. The master span keeps track of how many subspans
+// that are still alive and mapped in virtual memory, and once all subspans and master have been unmapped the entire
+// superspan region is released and unmapped (on Windows for example, the entire superspan range has to be released
+// in the same call to release the virtual memory range, but individual subranges can be decommitted individually
+// to reduce physical memory use).
 struct span_t {
 	//! Free list
 	void*       free_list;
@@ -381,6 +419,7 @@ struct span_t {
 };
 _Static_assert(sizeof(span_t) <= SPAN_HEADER_SIZE, "span size mismatch");
 
+// Control structure for a heap, either a thread heap or a first class heap if enabled
 struct heap_t {
 	//! Owning thread ID
 	uintptr_t    owner_thread;
@@ -440,6 +479,7 @@ struct heap_t {
 #endif
 };
 
+// Size class for defining a block size bucket
 struct size_class_t {
 	//! Size of blocks in this class
 	uint32_t block_size;
@@ -459,7 +499,10 @@ struct global_cache_t {
 	atomic32_t counter;
 };
 
+///
 /// Global data
+///
+
 //! Initialized flag
 static int _rpmalloc_initialized;
 //! Configuration
@@ -533,6 +576,10 @@ static atomic32_t _huge_pages_current;
 //! Peak number of currently allocated pages in huge allocations
 static int32_t _huge_pages_peak;
 #endif
+
+///
+/// Thread local heap and ID
+///
 
 //! Current thread heap
 #if (defined(__APPLE__) || defined(__HAIKU__)) && ENABLE_PRELOAD
@@ -611,52 +658,14 @@ set_thread_heap(heap_t* heap) {
 		heap->owner_thread = get_thread_id();
 }
 
-//! Default implementation to map more virtual memory
-static void*
-_memory_map_os(size_t size, size_t* offset);
-
-//! Default implementation to unmap virtual memory
-static void
-_memory_unmap_os(void* address, size_t size, size_t offset, size_t release);
-
-#if ENABLE_STATISTICS
-#  define _memory_statistics_inc(counter) atomic_incr32(counter)
-#  define _memory_statistics_dec(counter) atomic_decr32(counter)
-#  define _memory_statistics_add(counter, value) atomic_add32(counter, (int32_t)(value))
-#  define _memory_statistics_add64(counter, value) atomic_add64(counter, (int64_t)(value))
-#  define _memory_statistics_add_peak(counter, value, peak) do { int32_t _cur_count = atomic_add32(counter, (int32_t)(value)); if (_cur_count > (peak)) peak = _cur_count; } while (0)
-#  define _memory_statistics_sub(counter, value) atomic_add32(counter, -(int32_t)(value))
-#  define _memory_statistics_inc_alloc(heap, class_idx) do { \
-	int32_t alloc_current = atomic_incr32(&heap->size_class_use[class_idx].alloc_current); \
-	if (alloc_current > heap->size_class_use[class_idx].alloc_peak) \
-		heap->size_class_use[class_idx].alloc_peak = alloc_current; \
-	atomic_incr32(&heap->size_class_use[class_idx].alloc_total); \
-} while(0)
-#  define _memory_statistics_inc_free(heap, class_idx) do { \
-	atomic_decr32(&heap->size_class_use[class_idx].alloc_current); \
-	atomic_incr32(&heap->size_class_use[class_idx].free_total); \
-} while(0)
-#else
-#  define _memory_statistics_inc(counter) do {} while(0)
-#  define _memory_statistics_dec(counter) do {} while(0)
-#  define _memory_statistics_add(counter, value) do {} while(0)
-#  define _memory_statistics_add64(counter, value) do {} while(0)
-#  define _memory_statistics_add_peak(counter, value, peak) do {} while (0)
-#  define _memory_statistics_sub(counter, value) do {} while(0)
-#  define _memory_statistics_inc_alloc(heap, class_idx) do {} while(0)
-#  define _memory_statistics_inc_free(heap, class_idx) do {} while(0)
-#endif
-
-static void
-_memory_heap_cache_insert(heap_t* heap, span_t* span);
-
-static void
-_memory_global_cache_insert(span_t* span);
-
-static void
-_memory_heap_finalize(heap_t* heap);
+///
+/// Low level memory map/unmap
+///
 
 //! Map more virtual memory
+//  size is number of bytes to map
+//  offset receives the offset in bytes from start of mapped region
+//  returns address to start of mapped region to use
 static void*
 _memory_map(size_t size, size_t* offset) {
 	assert(!(size % _memory_page_size));
@@ -667,6 +676,10 @@ _memory_map(size_t size, size_t* offset) {
 }
 
 //! Unmap virtual memory
+//  address is the memory address to unmap, as returned from _memory_map
+//  size is the number of bytes to unmap, which might be less than full region for a partial unmap
+//  offset is the offset in bytes to the actual mapped region, as set by _memory_map
+//  release is set to 0 for partial unmap, or size of entire range for a full unmap
 static void
 _memory_unmap(void* address, size_t size, size_t offset, size_t release) {
 	assert(!release || (release >= size));
@@ -678,6 +691,27 @@ _memory_unmap(void* address, size_t size, size_t offset, size_t release) {
 	}
 	_memory_config.memory_unmap(address, size, offset, release);
 }
+
+//! Default implementation to map more virtual memory
+static void*
+_memory_map_os(size_t size, size_t* offset);
+
+//! Default implementation to unmap virtual memory
+static void
+_memory_unmap_os(void* address, size_t size, size_t offset, size_t release);
+
+
+
+
+static void
+_memory_heap_cache_insert(heap_t* heap, span_t* span);
+
+static void
+_memory_global_cache_insert(span_t* span);
+
+static void
+_memory_heap_finalize(heap_t* heap);
+
 
 //! Declare the span to be a subspan and store distance from master span and span count
 static void
