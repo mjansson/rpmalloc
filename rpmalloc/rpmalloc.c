@@ -265,8 +265,6 @@ _Static_assert((SPAN_HEADER_SIZE & (SPAN_HEADER_SIZE - 1)) == 0, "Span header si
 /// Data types
 //! A memory heap, per thread
 typedef struct heap_t heap_t;
-//! Heap spans per size class
-typedef struct heap_class_t heap_class_t;
 //! Span of memory pages
 typedef struct span_t span_t;
 //! Span list
@@ -383,24 +381,19 @@ struct span_t {
 };
 _Static_assert(sizeof(span_t) <= SPAN_HEADER_SIZE, "span size mismatch");
 
-struct heap_class_t {
-	//! Free list of active span
-	void*        free_list;
-	//! Double linked list of partially used spans with free blocks for each size class.
-	//  Previous span pointer in head points to tail span of list.
-	span_t*      partial_span;
-#if RPMALLOC_FIRST_CLASS_HEAPS
-	//! Double linked list of fully utilized spans with free blocks for each size class.
-	//  Previous span pointer in head points to tail span of list.
-	span_t*      full_span;
-#endif
-};
-
 struct heap_t {
 	//! Owning thread ID
 	uintptr_t    owner_thread;
-	//! Partial span data per size class
-	heap_class_t span_class[SIZE_CLASS_COUNT];
+	//! Free list of active span
+	void*        free_list[SIZE_CLASS_COUNT];
+	//! Double linked list of partially used spans with free blocks for each size class.
+	//  Previous span pointer in head points to tail span of list.
+	span_t*      partial_span[SIZE_CLASS_COUNT];
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	//! Double linked list of fully utilized spans with free blocks for each size class.
+	//  Previous span pointer in head points to tail span of list.
+	span_t*      full_span[SIZE_CLASS_COUNT];
+#endif
 #if ENABLE_THREAD_CACHE
 	//! List of free spans (single linked list)
 	span_t*      span_cache[LARGE_CLASS_COUNT];
@@ -1016,8 +1009,7 @@ _memory_heap_cache_adopt_deferred(heap_t* heap, span_t** single_span) {
 			assert(heap->full_span_count);
 			--heap->full_span_count;
 #if RPMALLOC_FIRST_CLASS_HEAPS
-			heap_class_t* heap_class = heap->span_class + span->size_class;
-			_memory_span_double_link_list_remove(&heap_class->full_span, span);
+			_memory_span_double_link_list_remove(&heap->full_span[span->size_class], span);
 #endif
 			if (single_span && !*single_span) {
 				*single_span = span;
@@ -1110,8 +1102,7 @@ _memory_heap_global_finalize(heap_t* heap) {
 	}
 
 	for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
-		heap_class_t* heap_class = heap->span_class + iclass;
-		if (heap_class->free_list || heap_class->partial_span) {
+		if (heap->free_list[iclass] || heap->partial_span[iclass]) {
 			--heap->finalize;
 			return;
 		}
@@ -1297,7 +1288,7 @@ free_list_partial_init(void** list, void** first_block, void* page_start, void* 
 
 //! Initialize an unused span (from cache or mapped) to be new active span, putting the initial free list in heap class free list
 static void*
-_memory_span_initialize_new(heap_t* heap, heap_class_t* heap_class, span_t* span, uint32_t class_idx) {
+_memory_span_initialize_new(heap_t* heap, span_t* span, uint32_t class_idx) {
 	assert(span->span_count == 1);
 	size_class_t* size_class = _memory_size_class + class_idx;
 	span->size_class = class_idx;
@@ -1311,15 +1302,15 @@ _memory_span_initialize_new(heap_t* heap, heap_class_t* heap_class, span_t* span
 
 	//Setup free list. Only initialize one system page worth of free blocks in list
 	void* block;
-	span->free_list_limit = free_list_partial_init(&heap_class->free_list, &block, 
+	span->free_list_limit = free_list_partial_init(&heap->free_list[class_idx], &block, 
 		span, pointer_offset(span, SPAN_HEADER_SIZE), size_class->block_count, size_class->block_size);
 	//Link span as partial if there remains blocks to be initialized as free list, or full if fully initialized
 	if (span->free_list_limit < span->block_count) {
-		_memory_span_double_link_list_add(&heap_class->partial_span, span);
+		_memory_span_double_link_list_add(&heap->partial_span[class_idx], span);
 		span->used_count = span->free_list_limit;
 	} else {
 #if RPMALLOC_FIRST_CLASS_HEAPS
-		_memory_span_double_link_list_add(&heap_class->full_span, span);
+		_memory_span_double_link_list_add(&heap->full_span[class_idx], span);
 #endif
 		++heap->full_span_count;
 		span->used_count = span->block_count;
@@ -1356,21 +1347,20 @@ free_list_pop(void** list) {
 //! Allocate a small/medium sized memory block from the given heap
 static void*
 _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
-	heap_class_t* heap_class = &heap->span_class[class_idx];
-	span_t* span = heap_class->partial_span;
+	span_t* span = heap->partial_span[class_idx];
 	if (EXPECTED(span != 0)) {
 		assert(span->block_count == _memory_size_class[span->size_class].block_count);
 		assert(!_memory_span_is_fully_utilized(span));
 		void* block;
 		if (span->free_list) {
 			//Swap in free list if not empty
-			heap_class->free_list = span->free_list;
+			heap->free_list[class_idx] = span->free_list;
 			span->free_list = 0;
-			block = free_list_pop(&heap_class->free_list);
+			block = free_list_pop(&heap->free_list[class_idx]);
 		} else {
 			//If the span did not fully initialize free list, link up another page worth of blocks			
 			void* block_start = pointer_offset(span, SPAN_HEADER_SIZE + ((size_t)span->free_list_limit * span->block_size));
-			span->free_list_limit += free_list_partial_init(&heap_class->free_list, &block,
+			span->free_list_limit += free_list_partial_init(&heap->free_list[class_idx], &block,
 				(void*)((uintptr_t)block_start & ~(_memory_page_size - 1)), block_start,
 				span->block_count - span->free_list_limit, span->block_size);
 		}
@@ -1386,9 +1376,9 @@ _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 			return block;
 
 		//The span is fully utilized, unlink from partial list and add to fully utilized list
-		_memory_span_double_link_list_pop_head(&heap_class->partial_span, span);
+		_memory_span_double_link_list_pop_head(&heap->partial_span[class_idx], span);
 #if RPMALLOC_FIRST_CLASS_HEAPS
-		_memory_span_double_link_list_add(&heap_class->full_span, span);
+		_memory_span_double_link_list_add(&heap->full_span[class_idx], span);
 #endif
 		++heap->full_span_count;
 		return block;
@@ -1398,7 +1388,7 @@ _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 	span = _memory_heap_extract_new_span(heap, 1, class_idx);
 	if (EXPECTED(span != 0)) {
 		//Mark span as owned by this heap and set base data, return first block
-		return _memory_span_initialize_new(heap, heap_class, span, class_idx);
+		return _memory_span_initialize_new(heap, span, class_idx);
 	}
 
 	return 0;
@@ -1411,8 +1401,8 @@ _memory_allocate_small(heap_t* heap, size_t size) {
 	//Small sizes have unique size classes
 	const uint32_t class_idx = (uint32_t)((size + (SMALL_GRANULARITY - 1)) >> SMALL_GRANULARITY_SHIFT);
 	_memory_statistics_inc_alloc(heap, class_idx);
-	if (EXPECTED(heap->span_class[class_idx].free_list != 0))
-		return free_list_pop(&heap->span_class[class_idx].free_list);
+	if (EXPECTED(heap->free_list[class_idx] != 0))
+		return free_list_pop(&heap->free_list[class_idx]);
 	return _memory_allocate_from_heap_fallback(heap, class_idx);
 }
 
@@ -1424,8 +1414,8 @@ _memory_allocate_medium(heap_t* heap, size_t size) {
 	const uint32_t base_idx = (uint32_t)(SMALL_CLASS_COUNT + ((size - (SMALL_SIZE_LIMIT + 1)) >> MEDIUM_GRANULARITY_SHIFT));
 	const uint32_t class_idx = _memory_size_class[base_idx].class_idx;
 	_memory_statistics_inc_alloc(heap, class_idx);
-	if (EXPECTED(heap->span_class[class_idx].free_list != 0))
-		return free_list_pop(&heap->span_class[class_idx].free_list);
+	if (EXPECTED(heap->free_list[class_idx] != 0))
+		return free_list_pop(&heap->free_list[class_idx]);
 	return _memory_allocate_from_heap_fallback(heap, class_idx);
 }
 
@@ -1723,19 +1713,17 @@ _memory_deallocate_direct_small_or_medium(span_t* span, void* block) {
 	//Add block to free list
 	if (UNEXPECTED(_memory_span_is_fully_utilized(span))) {
 		span->used_count = span->block_count;
-		heap_class_t* heap_class = &heap->span_class[span->size_class];
 #if RPMALLOC_FIRST_CLASS_HEAPS
-		_memory_span_double_link_list_remove(&heap_class->full_span, span);
+		_memory_span_double_link_list_remove(&heap->full_span[span->size_class], span);
 #endif
-		_memory_span_double_link_list_add(&heap_class->partial_span, span);
+		_memory_span_double_link_list_add(&heap->partial_span[span->size_class], span);
 		--heap->full_span_count;
 	}
 	--span->used_count;
 	*((void**)block) = span->free_list;
 	span->free_list = block;
 	if (UNEXPECTED(span->used_count == span->list_size)) {
-		heap_class_t* heap_class = &heap->span_class[span->size_class];
-		_memory_span_double_link_list_remove(&heap_class->partial_span, span);
+		_memory_span_double_link_list_remove(&heap->partial_span[span->size_class], span);
 		_memory_span_release_to_cache(heap, span);
 	}
 }
@@ -2275,8 +2263,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 
 static int
 _memory_span_finalize(heap_t* heap, size_t iclass, span_t* span, span_t** list_head) {
-	heap_class_t* heap_class = heap->span_class + iclass;
-	span_t* class_span = (span_t*)((uintptr_t)heap_class->free_list & _memory_span_mask);
+	span_t* class_span = (span_t*)((uintptr_t)heap->free_list[iclass] & _memory_span_mask);
 	if (span == class_span) {
 		// Adopt the heap class free list back into the span free list
 		void* block = span->free_list;
@@ -2286,17 +2273,17 @@ _memory_span_finalize(heap_t* heap, size_t iclass, span_t* span, span_t** list_h
 			block = *((void**)block);
 		}
 		uint32_t free_count = 0;
-		block = heap_class->free_list;
+		block = heap->free_list[iclass];
 		while (block) {
 			++free_count;
 			block = *((void**)block);
 		}
 		if (last_block) {
-			*((void**)last_block) = heap_class->free_list;
+			*((void**)last_block) = heap->free_list[iclass];
 		} else {
-			span->free_list = heap_class->free_list;
+			span->free_list = heap->free_list[iclass];
 		}
-		heap_class->free_list = 0;
+		heap->free_list[iclass] = 0;
 		span->used_count -= free_count;
 	}
 	//If this assert triggers you have memory leaks
@@ -2324,25 +2311,24 @@ _memory_heap_finalize(heap_t* heap) {
 	_memory_heap_cache_adopt_deferred(heap, 0);
 
 	for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
-		heap_class_t* heap_class = heap->span_class + iclass;				
-		span_t* span = heap_class->partial_span;
+		span_t* span = heap->partial_span[iclass];
 		while (span) {
 			span_t* next = span->next;
-			_memory_span_finalize(heap, iclass, span, &heap_class->partial_span);
+			_memory_span_finalize(heap, iclass, span, &heap->partial_span[iclass]);
 			span = next;
 		}
 		// If class still has a free list it must be a full span
-		if (heap_class->free_list) {
-			span_t* class_span = (span_t*)((uintptr_t)heap_class->free_list & _memory_span_mask);
+		if (heap->free_list[iclass]) {
+			span_t* class_span = (span_t*)((uintptr_t)heap->free_list[iclass] & _memory_span_mask);
 			span_t** list = 0;
 #if RPMALLOC_FIRST_CLASS_HEAPS
-			list = &heap_class->full_span;
+			list = &heap->full_span[iclass];
 #endif
 			--heap->full_span_count;
 			if (!_memory_span_finalize(heap, iclass, class_span, list)) {
 				if (list)
 					_memory_span_double_link_list_remove(list, class_span);
-				_memory_span_double_link_list_add(&heap_class->partial_span, class_span);
+				_memory_span_double_link_list_add(&heap->partial_span[iclass], class_span);
 			}
 		}
 	}
@@ -2651,8 +2637,7 @@ rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats) {
 
 	for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
 		size_class_t* size_class = _memory_size_class + iclass;
-		heap_class_t* heap_class = heap->span_class + iclass;
-		span_t* span = heap_class->partial_span;
+		span_t* span = heap->partial_span[iclass];
 		while (span) {
 			size_t free_count = span->list_size;
 			size_t block_count = size_class->block_count;
@@ -2936,20 +2921,23 @@ rpmalloc_heap_free_all(rpmalloc_heap_t* heap) {
 	_memory_heap_cache_adopt_deferred(heap, 0);
 
 	for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
-		span = heap->span_class[iclass].partial_span;
+		span = heap->partial_span[iclass];
 		while (span) {
 			next_span = span->next;
 			_memory_heap_cache_insert(heap, span);
 			span = next_span;
 		}
-		span = heap->span_class[iclass].full_span;
+		heap->partial_span[iclass] = 0;
+		span = heap->full_span[iclass];
 		while (span) {
 			next_span = span->next;
 			_memory_heap_cache_insert(heap, span);
 			span = next_span;
 		}
 	}
-	memset(heap->span_class, 0, sizeof(heap->span_class));
+	memset(heap->free_list, 0, sizeof(heap->free_list));
+	memset(heap->partial_span, 0, sizeof(heap->partial_span));
+	memset(heap->full_span, 0, sizeof(heap->full_span));
 
 	span = heap->large_huge_span;
 	while (span) {
