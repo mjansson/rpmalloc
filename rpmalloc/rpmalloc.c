@@ -245,31 +245,31 @@ static FORCEINLINE int     atomic_cas_ptr_acquire(atomicptr_t* dst, void* val, v
 ///
 
 #if ENABLE_STATISTICS
-#  define _memory_statistics_inc(counter) atomic_incr32(counter)
-#  define _memory_statistics_dec(counter) atomic_decr32(counter)
-#  define _memory_statistics_add(counter, value) atomic_add32(counter, (int32_t)(value))
-#  define _memory_statistics_add64(counter, value) atomic_add64(counter, (int64_t)(value))
-#  define _memory_statistics_add_peak(counter, value, peak) do { int32_t _cur_count = atomic_add32(counter, (int32_t)(value)); if (_cur_count > (peak)) peak = _cur_count; } while (0)
-#  define _memory_statistics_sub(counter, value) atomic_add32(counter, -(int32_t)(value))
-#  define _memory_statistics_inc_alloc(heap, class_idx) do { \
+#  define _rpmalloc_stat_inc(counter) atomic_incr32(counter)
+#  define _rpmalloc_stat_dec(counter) atomic_decr32(counter)
+#  define _rpmalloc_stat_add(counter, value) atomic_add32(counter, (int32_t)(value))
+#  define _rpmalloc_stat_add64(counter, value) atomic_add64(counter, (int64_t)(value))
+#  define _rpmalloc_stat_add_peak(counter, value, peak) do { int32_t _cur_count = atomic_add32(counter, (int32_t)(value)); if (_cur_count > (peak)) peak = _cur_count; } while (0)
+#  define _rpmalloc_stat_sub(counter, value) atomic_add32(counter, -(int32_t)(value))
+#  define _rpmalloc_stat_inc_alloc(heap, class_idx) do { \
 	int32_t alloc_current = atomic_incr32(&heap->size_class_use[class_idx].alloc_current); \
 	if (alloc_current > heap->size_class_use[class_idx].alloc_peak) \
 		heap->size_class_use[class_idx].alloc_peak = alloc_current; \
 	atomic_incr32(&heap->size_class_use[class_idx].alloc_total); \
 } while(0)
-#  define _memory_statistics_inc_free(heap, class_idx) do { \
+#  define _rpmalloc_stat_inc_free(heap, class_idx) do { \
 	atomic_decr32(&heap->size_class_use[class_idx].alloc_current); \
 	atomic_incr32(&heap->size_class_use[class_idx].free_total); \
 } while(0)
 #else
-#  define _memory_statistics_inc(counter) do {} while(0)
-#  define _memory_statistics_dec(counter) do {} while(0)
-#  define _memory_statistics_add(counter, value) do {} while(0)
-#  define _memory_statistics_add64(counter, value) do {} while(0)
-#  define _memory_statistics_add_peak(counter, value, peak) do {} while (0)
-#  define _memory_statistics_sub(counter, value) do {} while(0)
-#  define _memory_statistics_inc_alloc(heap, class_idx) do {} while(0)
-#  define _memory_statistics_inc_free(heap, class_idx) do {} while(0)
+#  define _rpmalloc_stat_inc(counter) do {} while(0)
+#  define _rpmalloc_stat_dec(counter) do {} while(0)
+#  define _rpmalloc_stat_add(counter, value) do {} while(0)
+#  define _rpmalloc_stat_add64(counter, value) do {} while(0)
+#  define _rpmalloc_stat_add_peak(counter, value, peak) do {} while (0)
+#  define _rpmalloc_stat_sub(counter, value) do {} while(0)
+#  define _rpmalloc_stat_inc_alloc(heap, class_idx) do {} while(0)
+#  define _rpmalloc_stat_inc_free(heap, class_idx) do {} while(0)
 #endif
 
 ///
@@ -693,8 +693,8 @@ static void*
 _rpmalloc_mmap(size_t size, size_t* offset) {
 	assert(!(size % _memory_page_size));
 	assert(size >= _memory_page_size);
-	_memory_statistics_add_peak(&_mapped_pages, (size >> _memory_page_size_shift), _mapped_pages_peak);
-	_memory_statistics_add(&_mapped_total, (size >> _memory_page_size_shift));
+	_rpmalloc_stat_add_peak(&_mapped_pages, (size >> _memory_page_size_shift), _mapped_pages_peak);
+	_rpmalloc_stat_add(&_mapped_total, (size >> _memory_page_size_shift));
 	return _memory_config.memory_map(size, offset);
 }
 
@@ -709,8 +709,8 @@ _rpmalloc_unmap(void* address, size_t size, size_t offset, size_t release) {
 	assert(!release || (release >= _memory_page_size));
 	if (release) {
 		assert(!(release % _memory_page_size));
-		_memory_statistics_sub(&_mapped_pages, (release >> _memory_page_size_shift));
-		_memory_statistics_add(&_unmapped_total, (release >> _memory_page_size_shift));
+		_rpmalloc_stat_sub(&_mapped_pages, (release >> _memory_page_size_shift));
+		_rpmalloc_stat_add(&_unmapped_total, (release >> _memory_page_size_shift));
 	}
 	_memory_config.memory_unmap(address, size, offset, release);
 }
@@ -745,7 +745,7 @@ _rpmalloc_mmap_os(size_t size, size_t* offset) {
 		return 0;
 	}
 #endif
-	_memory_statistics_add(&_mapped_pages_os, (int32_t)((size + padding) >> _memory_page_size_shift));
+	_rpmalloc_stat_add(&_mapped_pages_os, (int32_t)((size + padding) >> _memory_page_size_shift));
 	if (padding) {
 		size_t final_padding = padding - ((uintptr_t)ptr & ~_memory_span_mask);
 		assert(final_padding <= _memory_span_size);
@@ -794,7 +794,7 @@ _rpmalloc_unmap_os(void* address, size_t size, size_t offset, size_t release) {
 #endif
 #endif
 	if (release)
-		_memory_statistics_sub(&_mapped_pages_os, release >> _memory_page_size_shift);
+		_rpmalloc_stat_sub(&_mapped_pages_os, release >> _memory_page_size_shift);
 }
 
 
@@ -832,7 +832,7 @@ _memory_map_from_reserve(heap_t* heap, size_t span_count) {
 
 	_memory_span_mark_as_subspan_unless_master(heap->span_reserve_master, span, span_count);
 	if (span_count <= LARGE_CLASS_COUNT)
-		_memory_statistics_inc(&heap->span_use[span_count - 1].spans_from_reserved);
+		_rpmalloc_stat_inc(&heap->span_use[span_count - 1].spans_from_reserved);
 
 	return span;
 }
@@ -875,10 +875,10 @@ _memory_map_aligned_span_count(heap_t* heap, size_t span_count) {
 	if (!span)
 		return 0;
 	_memory_span_initialize(span, aligned_span_count, span_count, align_offset);
-	_memory_statistics_add(&_reserved_spans, aligned_span_count);
-	_memory_statistics_inc(&_master_spans);
+	_rpmalloc_stat_add(&_reserved_spans, aligned_span_count);
+	_rpmalloc_stat_inc(&_master_spans);
 	if (span_count <= LARGE_CLASS_COUNT)
-		_memory_statistics_inc(&heap->span_use[span_count - 1].spans_map_calls);
+		_rpmalloc_stat_inc(&heap->span_use[span_count - 1].spans_map_calls);
 	if (aligned_span_count > span_count) {
 		span_t* reserved_spans = (span_t*)pointer_offset(span, span_count * _memory_span_size);
 		size_t reserved_count = aligned_span_count - span_count;
@@ -916,7 +916,7 @@ _memory_unmap_span(span_t* span) {
 		assert(span->align_offset == 0);
 		if (_memory_span_size >= _memory_page_size) {
 			_rpmalloc_unmap(span, span_count * _memory_span_size, 0, 0);
-			_memory_statistics_sub(&_reserved_spans, span_count);
+			_rpmalloc_stat_sub(&_reserved_spans, span_count);
 		}
 	} else {
 		//Special double flag to denote an unmapped master
@@ -930,8 +930,8 @@ _memory_unmap_span(span_t* span) {
 		size_t unmap_count = master->span_count;
 		if (_memory_span_size < _memory_page_size)
 			unmap_count = master->total_spans;
-		_memory_statistics_sub(&_reserved_spans, unmap_count);
-		_memory_statistics_sub(&_master_spans, 1);
+		_rpmalloc_stat_sub(&_reserved_spans, unmap_count);
+		_rpmalloc_stat_sub(&_master_spans, 1);
 		_rpmalloc_unmap(master, unmap_count * _memory_span_size, master->align_offset, (size_t)master->total_spans * _memory_span_size);
 	}
 }
@@ -1145,8 +1145,8 @@ _memory_heap_cache_adopt_deferred(heap_t* heap, span_t** single_span) {
 			if (single_span && !*single_span) {
 				*single_span = span;
 			} else {
-				_memory_statistics_dec(&heap->span_use[0].current);
-				_memory_statistics_dec(&heap->size_class_use[span->size_class].spans_current);
+				_rpmalloc_stat_dec(&heap->span_use[0].current);
+				_rpmalloc_stat_dec(&heap->size_class_use[span->size_class].spans_current);
 				_memory_heap_cache_insert(heap, span);
 			}
 		} else {
@@ -1163,7 +1163,7 @@ _memory_heap_cache_adopt_deferred(heap_t* heap, span_t** single_span) {
 				if (!idx && single_span && !*single_span) {
 					*single_span = span;
 				} else {
-					_memory_statistics_dec(&heap->span_use[idx].current);
+					_rpmalloc_stat_dec(&heap->span_use[idx].current);
 					_memory_heap_cache_insert(heap, span);
 				}
 			}
@@ -1263,7 +1263,7 @@ _memory_heap_cache_insert(heap_t* heap, span_t* span) {
 #if ENABLE_THREAD_CACHE
 	size_t span_count = span->span_count;
 	size_t idx = span_count - 1;
-	_memory_statistics_inc(&heap->span_use[idx].spans_to_cache);
+	_rpmalloc_stat_inc(&heap->span_use[idx].spans_to_cache);
 #if ENABLE_UNLIMITED_THREAD_CACHE
 	_memory_span_list_push(&heap->span_cache[idx], span);
 #else
@@ -1286,8 +1286,8 @@ _memory_heap_cache_insert(heap_t* heap, span_t* span) {
 	heap->span_cache[idx] = _memory_span_list_split(span, release_count);
 	assert(span->list_size == release_count);
 #if ENABLE_GLOBAL_CACHE
-	_memory_statistics_add64(&heap->thread_to_global, (size_t)span->list_size * span_count * _memory_span_size);
-	_memory_statistics_add(&heap->span_use[idx].spans_to_global, span->list_size);
+	_rpmalloc_stat_add64(&heap->thread_to_global, (size_t)span->list_size * span_count * _memory_span_size);
+	_rpmalloc_stat_add(&heap->span_use[idx].spans_to_global, span->list_size);
 	_memory_global_cache_insert(span);
 #else
 	_memory_unmap_span_list(span);
@@ -1308,7 +1308,7 @@ _memory_heap_thread_cache_extract(heap_t* heap, size_t span_count) {
 		_memory_heap_cache_adopt_deferred(heap, &span);
 #if ENABLE_THREAD_CACHE
 	if (!span && heap->span_cache[idx]) {
-		_memory_statistics_inc(&heap->span_use[idx].spans_from_cache);
+		_rpmalloc_stat_inc(&heap->span_use[idx].spans_from_cache);
 		span = _memory_span_list_pop(&heap->span_cache[idx]);
 	}
 #endif
@@ -1329,8 +1329,8 @@ _memory_heap_global_cache_extract(heap_t* heap, size_t span_count) {
 	size_t idx = span_count - 1;
 	heap->span_cache[idx] = _memory_global_cache_extract(span_count);
 	if (heap->span_cache[idx]) {
-		_memory_statistics_add64(&heap->global_to_thread, (size_t)heap->span_cache[idx]->list_size * span_count * _memory_span_size);
-		_memory_statistics_add(&heap->span_use[idx].spans_from_global, heap->span_cache[idx]->list_size);
+		_rpmalloc_stat_add64(&heap->global_to_thread, (size_t)heap->span_cache[idx]->list_size * span_count * _memory_span_size);
+		_rpmalloc_stat_add(&heap->span_use[idx].spans_from_global, heap->span_cache[idx]->list_size);
 		return _memory_span_list_pop(&heap->span_cache[idx]);
 	}
 #endif
@@ -1348,26 +1348,26 @@ _memory_heap_extract_new_span(heap_t* heap, size_t span_count, uint32_t class_id
 	uint32_t current_count = (uint32_t)atomic_incr32(&heap->span_use[idx].current);
 	if (current_count > (uint32_t)atomic_load32(&heap->span_use[idx].high))
 		atomic_store32(&heap->span_use[idx].high, (int32_t)current_count);
-	_memory_statistics_add_peak(&heap->size_class_use[class_idx].spans_current, 1, heap->size_class_use[class_idx].spans_peak);
+	_rpmalloc_stat_add_peak(&heap->size_class_use[class_idx].spans_current, 1, heap->size_class_use[class_idx].spans_peak);
 #endif
 	span_t* span = _memory_heap_thread_cache_extract(heap, span_count);
 	if (EXPECTED(span != 0)) {
-		_memory_statistics_inc(&heap->size_class_use[class_idx].spans_from_cache);
+		_rpmalloc_stat_inc(&heap->size_class_use[class_idx].spans_from_cache);
 		return span;
 	}
 	span = _memory_heap_reserved_extract(heap, span_count);
 	if (EXPECTED(span != 0)) {
-		_memory_statistics_inc(&heap->size_class_use[class_idx].spans_from_reserved);
+		_rpmalloc_stat_inc(&heap->size_class_use[class_idx].spans_from_reserved);
 		return span;
 	}
 	span = _memory_heap_global_cache_extract(heap, span_count);
 	if (EXPECTED(span != 0)) {
-		_memory_statistics_inc(&heap->size_class_use[class_idx].spans_from_cache);
+		_rpmalloc_stat_inc(&heap->size_class_use[class_idx].spans_from_cache);
 		return span;
 	}
 	//Final fallback, map in more virtual memory
 	span = _memory_map_spans(heap, span_count);
-	_memory_statistics_inc(&heap->size_class_use[class_idx].spans_map_calls);
+	_rpmalloc_stat_inc(&heap->size_class_use[class_idx].spans_map_calls);
 	return span;
 }
 
@@ -1379,9 +1379,9 @@ _memory_span_release_to_cache(heap_t* heap, span_t* span) {
 #if ENABLE_ADAPTIVE_THREAD_CACHE || ENABLE_STATISTICS
 	atomic_decr32(&heap->span_use[0].current);
 #endif
-	_memory_statistics_inc(&heap->span_use[0].spans_to_cache);
-	_memory_statistics_inc(&heap->size_class_use[span->size_class].spans_to_cache);
-	_memory_statistics_dec(&heap->size_class_use[span->size_class].spans_current);
+	_rpmalloc_stat_inc(&heap->span_use[0].spans_to_cache);
+	_rpmalloc_stat_inc(&heap->size_class_use[span->size_class].spans_to_cache);
+	_rpmalloc_stat_dec(&heap->size_class_use[span->size_class].spans_current);
 	_memory_heap_cache_insert(heap, span);
 }
 
@@ -1531,7 +1531,7 @@ _memory_allocate_small(heap_t* heap, size_t size) {
 	assert(heap);
 	//Small sizes have unique size classes
 	const uint32_t class_idx = (uint32_t)((size + (SMALL_GRANULARITY - 1)) >> SMALL_GRANULARITY_SHIFT);
-	_memory_statistics_inc_alloc(heap, class_idx);
+	_rpmalloc_stat_inc_alloc(heap, class_idx);
 	if (EXPECTED(heap->free_list[class_idx] != 0))
 		return free_list_pop(&heap->free_list[class_idx]);
 	return _memory_allocate_from_heap_fallback(heap, class_idx);
@@ -1544,7 +1544,7 @@ _memory_allocate_medium(heap_t* heap, size_t size) {
 	//Calculate the size class index and do a dependent lookup of the final class index (in case of merged classes)
 	const uint32_t base_idx = (uint32_t)(SMALL_CLASS_COUNT + ((size - (SMALL_SIZE_LIMIT + 1)) >> MEDIUM_GRANULARITY_SHIFT));
 	const uint32_t class_idx = _memory_size_class[base_idx].class_idx;
-	_memory_statistics_inc_alloc(heap, class_idx);
+	_rpmalloc_stat_inc_alloc(heap, class_idx);
 	if (EXPECTED(heap->free_list[class_idx] != 0))
 		return free_list_pop(&heap->free_list[class_idx]);
 	return _memory_allocate_from_heap_fallback(heap, class_idx);
@@ -1598,7 +1598,7 @@ _memory_allocate_huge(heap_t* heap, size_t size) {
 	span->span_count = (uint32_t)num_pages;
 	span->align_offset = (uint32_t)align_offset;
 	span->heap = heap;
-	_memory_statistics_add_peak(&_huge_pages_current, num_pages, _huge_pages_peak);
+	_rpmalloc_stat_add_peak(&_huge_pages_current, num_pages, _huge_pages_peak);
 
 #if RPMALLOC_FIRST_CLASS_HEAPS
 	_memory_span_double_link_list_add(&heap->large_huge_span, span);
@@ -1726,7 +1726,7 @@ retry:
 	span->span_count = (uint32_t)num_pages;
 	span->align_offset = (uint32_t)align_offset;
 	span->heap = heap;
-	_memory_statistics_add_peak(&_huge_pages_current, num_pages, _huge_pages_peak);
+	_rpmalloc_stat_add_peak(&_huge_pages_current, num_pages, _huge_pages_peak);
 
 #if RPMALLOC_FIRST_CLASS_HEAPS
 	_memory_span_double_link_list_add(&heap->large_huge_span, span);
@@ -1891,7 +1891,7 @@ _memory_deallocate_defer_small_or_medium(span_t* span, void* block) {
 
 static void
 _memory_deallocate_small_or_medium(span_t* span, void* p) {
-	_memory_statistics_inc_free(span->heap, span->size_class);
+	_rpmalloc_stat_inc_free(span->heap, span->size_class);
 	if (span->flags & SPAN_FLAG_ALIGNED_BLOCKS) {
 		//Realign pointer to block start
 		void* blocks_start = pointer_offset(span, SPAN_HEADER_SIZE);
@@ -1941,7 +1941,7 @@ _memory_deallocate_large(span_t* span) {
 			assert(master->flags & SPAN_FLAG_MASTER);
 			assert(atomic_load32(&master->remaining_spans) >= (int32_t)span->span_count);
 		}
-		_memory_statistics_inc(&heap->span_use[idx].spans_to_reserved);
+		_rpmalloc_stat_inc(&heap->span_use[idx].spans_to_reserved);
 	} else {
 		//Insert into cache list
 		_memory_heap_cache_insert(heap, span);
@@ -1965,7 +1965,7 @@ _memory_deallocate_huge(span_t* span) {
 	//Oversized allocation, page count is stored in span_count
 	size_t num_pages = span->span_count;
 	_rpmalloc_unmap(span, num_pages * _memory_page_size, span->align_offset, num_pages * _memory_page_size);
-	_memory_statistics_sub(&_huge_pages_current, num_pages);
+	_rpmalloc_stat_sub(&_huge_pages_current, num_pages);
 }
 
 //! Deallocate the given block
@@ -2145,8 +2145,8 @@ _memory_heap_release(void* heapptr, int first_class) {
 			assert(span->span_count == (iclass + 1));
 			size_t release_count = (!iclass ? _memory_span_release_count : _memory_span_release_count_large);
 			span_t* next = _memory_span_list_split(span, (uint32_t)release_count);
-			_memory_statistics_add64(&heap->thread_to_global, (size_t)span->list_size * span->span_count * _memory_span_size);
-			_memory_statistics_add(&heap->span_use[iclass].spans_to_global, span->list_size);
+			_rpmalloc_stat_add64(&heap->thread_to_global, (size_t)span->list_size * span->span_count * _memory_span_size);
+			_rpmalloc_stat_add(&heap->span_use[iclass].spans_to_global, span->list_size);
 			_memory_global_cache_insert(span);
 			span = next;
 		}
@@ -2397,8 +2397,8 @@ _memory_span_finalize(heap_t* heap, size_t iclass, span_t* span, span_t** list_h
 	//If this assert triggers you have memory leaks
 	assert(span->list_size == span->used_count);
 	if (span->list_size == span->used_count) {
-		_memory_statistics_dec(&heap->span_use[0].current);
-		_memory_statistics_dec(&heap->size_class_use[iclass].spans_current);
+		_rpmalloc_stat_dec(&heap->span_use[0].current);
+		_rpmalloc_stat_dec(&heap->size_class_use[iclass].spans_current);
 		// This function only used for spans in double linked lists
 		if (list_head)
 			_memory_span_double_link_list_remove(list_head, span);
@@ -2498,7 +2498,7 @@ rpmalloc_thread_initialize(void) {
 	if (!get_thread_heap_raw()) {
 		heap_t* heap = _memory_allocate_heap(0);
 		if (heap) {
-			_memory_statistics_inc(&_memory_active_heaps);
+			_rpmalloc_stat_inc(&_memory_active_heaps);
 			set_thread_heap(heap);
 #if defined(_MSC_VER) && !defined(__clang__) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
 			FlsSetValue(fls_key, heap);
@@ -2848,7 +2848,7 @@ rpmalloc_heap_acquire(void) {
 	// could already be allocated from the heap which would (wrongly) be released when
 	// heap is cleared with rpmalloc_heap_free_all()
 	heap_t* heap = _memory_allocate_heap(1);
-	_memory_statistics_inc(&_memory_active_heaps);
+	_rpmalloc_stat_inc(&_memory_active_heaps);
 	return heap;
 }
 
@@ -2985,8 +2985,8 @@ rpmalloc_heap_free_all(rpmalloc_heap_t* heap) {
 			assert(span->span_count == (iclass + 1));
 			size_t release_count = (!iclass ? _memory_span_release_count : _memory_span_release_count_large);
 			next_span = _memory_span_list_split(span, (uint32_t)release_count);
-			_memory_statistics_add64(&heap->thread_to_global, (size_t)span->list_size * span->span_count * _memory_span_size);
-			_memory_statistics_add(&heap->span_use[iclass].spans_to_global, span->list_size);
+			_rpmalloc_stat_add64(&heap->thread_to_global, (size_t)span->list_size * span->span_count * _memory_span_size);
+			_rpmalloc_stat_add(&heap->span_use[iclass].spans_to_global, span->list_size);
 			_memory_global_cache_insert(span);
 			span = next_span;
 		}
