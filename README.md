@@ -31,6 +31,12 @@ The benchmark producing these numbers were run on an Ubuntu 16.10 machine with 8
 
 Configuration of the thread and global caches can be important depending on your use pattern. See [CACHE](CACHE.md) for a case study and some comments/guidelines.
 
+# Required functions
+
+Before calling any other function in the API, you __MUST__ call the initization function, either __rpmalloc_initialize__ or __pmalloc_initialize_config__, or you will get undefined behaviour when calling other rpmalloc entry point.
+
+Before terminating your use of the allocator, you __SHOULD__ call __rpmalloc_finalize__ in order to release caches and unmap virtual memory, as well as prepare the allocator for global scope cleanup at process exit or dynamic library unload depending on your use case.
+
 # Using
 The easiest way to use the library is simply adding __rpmalloc.[h|c]__ to your project and compile them along with your sources. This contains only the rpmalloc specific entry points and does not provide internal hooks to process and/or thread creation at the moment. You are required to call these functions from your own code in order to initialize and finalize the allocator in your process and threads:
 
