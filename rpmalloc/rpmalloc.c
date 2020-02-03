@@ -150,6 +150,29 @@
 #include <string.h>
 #include <errno.h>
 
+#if defined(_MSC_VER) && !defined(__clang__) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
+#include <fibersapi.h>
+static DWORD fls_key;
+static void NTAPI
+_rpmalloc_thread_destructor(void* value) {
+	if (value)
+		rpmalloc_thread_finalize();
+}
+#endif
+
+#if PLATFORM_POSIX
+#  include <sys/mman.h>
+#  include <sched.h>
+#  ifdef __FreeBSD__
+#    include <sys/sysctl.h>
+#    define MAP_HUGETLB MAP_ALIGNED_SUPER
+#  endif
+#  ifndef MAP_UNINITIALIZED
+#    define MAP_UNINITIALIZED 0
+#  endif
+#endif
+#include <errno.h>
+
 #if ENABLE_ASSERTS
 #  undef NDEBUG
 #  if defined(_MSC_VER) && !defined(_DEBUG)
@@ -667,7 +690,7 @@ set_thread_heap(heap_t* heap) {
 //  offset receives the offset in bytes from start of mapped region
 //  returns address to start of mapped region to use
 static void*
-_memory_map(size_t size, size_t* offset) {
+_rpmalloc_mmap(size_t size, size_t* offset) {
 	assert(!(size % _memory_page_size));
 	assert(size >= _memory_page_size);
 	_memory_statistics_add_peak(&_mapped_pages, (size >> _memory_page_size_shift), _mapped_pages_peak);
@@ -681,7 +704,7 @@ _memory_map(size_t size, size_t* offset) {
 //  offset is the offset in bytes to the actual mapped region, as set by _memory_map
 //  release is set to 0 for partial unmap, or size of entire range for a full unmap
 static void
-_memory_unmap(void* address, size_t size, size_t offset, size_t release) {
+_rpmalloc_unmap(void* address, size_t size, size_t offset, size_t release) {
 	assert(!release || (release >= size));
 	assert(!release || (release >= _memory_page_size));
 	if (release) {
@@ -692,13 +715,87 @@ _memory_unmap(void* address, size_t size, size_t offset, size_t release) {
 	_memory_config.memory_unmap(address, size, offset, release);
 }
 
-//! Default implementation to map more virtual memory
+//! Default implementation to map new pages to virtual memory
 static void*
-_memory_map_os(size_t size, size_t* offset);
+_rpmalloc_mmap_os(size_t size, size_t* offset) {
+	//Either size is a heap (a single page) or a (multiple) span - we only need to align spans, and only if larger than map granularity
+	size_t padding = ((size >= _memory_span_size) && (_memory_span_size > _memory_map_granularity)) ? _memory_span_size : 0;
+	assert(size >= _memory_page_size);
+#if PLATFORM_WINDOWS
+	//Ok to MEM_COMMIT - according to MSDN, "actual physical pages are not allocated unless/until the virtual addresses are actually accessed"
+	void* ptr = VirtualAlloc(0, size + padding, (_memory_huge_pages ? MEM_LARGE_PAGES : 0) | MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	if (!ptr) {
+		assert(!"Failed to map virtual memory block");
+		return 0;
+	}
+#else
+	int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED;
+#  if defined(__APPLE__)
+	int fd = (int)VM_MAKE_TAG(240U);
+	if (_memory_huge_pages)
+		fd |= VM_FLAGS_SUPERPAGE_SIZE_2MB;
+	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, flags, fd, 0);
+#  elif defined(MAP_HUGETLB)
+	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, (_memory_huge_pages ? MAP_HUGETLB : 0) | flags, -1, 0);
+#  else
+	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, flags, -1, 0);
+#  endif
+	if ((ptr == MAP_FAILED) || !ptr) {
+		assert("Failed to map virtual memory block" == 0);
+		return 0;
+	}
+#endif
+	_memory_statistics_add(&_mapped_pages_os, (int32_t)((size + padding) >> _memory_page_size_shift));
+	if (padding) {
+		size_t final_padding = padding - ((uintptr_t)ptr & ~_memory_span_mask);
+		assert(final_padding <= _memory_span_size);
+		assert(final_padding <= padding);
+		assert(!(final_padding % 8));
+		ptr = pointer_offset(ptr, final_padding);
+		*offset = final_padding >> 3;
+	}
+	assert((size < _memory_span_size) || !((uintptr_t)ptr & ~_memory_span_mask));
+	return ptr;
+}
 
-//! Default implementation to unmap virtual memory
+//! Default implementation to unmap pages from virtual memory
 static void
-_memory_unmap_os(void* address, size_t size, size_t offset, size_t release);
+_rpmalloc_unmap_os(void* address, size_t size, size_t offset, size_t release) {
+	assert(release || (offset == 0));
+	assert(!release || (release >= _memory_page_size));
+	assert(size >= _memory_page_size);
+	if (release && offset) {
+		offset <<= 3;
+		address = pointer_offset(address, -(int32_t)offset);
+#if PLATFORM_POSIX
+		//Padding is always one span size
+		release += _memory_span_size;
+#endif
+	}
+#if !DISABLE_UNMAP
+#if PLATFORM_WINDOWS
+	if (!VirtualFree(address, release ? 0 : size, release ? MEM_RELEASE : MEM_DECOMMIT)) {
+		assert(!"Failed to unmap virtual memory block");
+	}
+#else
+	if (release) {
+		if (munmap(address, release)) {
+			assert("Failed to unmap virtual memory block" == 0);
+		}
+	}
+	else {
+#if defined(POSIX_MADV_FREE)
+		if (posix_madvise(address, size, POSIX_MADV_FREE))
+#endif
+		if (posix_madvise(address, size, POSIX_MADV_DONTNEED)) {
+			assert("Failed to madvise virtual memory block as free" == 0);
+		}
+	}
+#endif
+#endif
+	if (release)
+		_memory_statistics_sub(&_mapped_pages_os, release >> _memory_page_size_shift);
+}
 
 
 
@@ -774,7 +871,7 @@ _memory_map_aligned_span_count(heap_t* heap, size_t span_count) {
 	//full set of spans. Otherwise we would waste memory if page size > span size (huge pages)
 	size_t aligned_span_count = _memory_map_align_span_count(span_count);
 	size_t align_offset = 0;
-	span_t* span = (span_t*)_memory_map(aligned_span_count * _memory_span_size, &align_offset);
+	span_t* span = (span_t*)_rpmalloc_mmap(aligned_span_count * _memory_span_size, &align_offset);
 	if (!span)
 		return 0;
 	_memory_span_initialize(span, aligned_span_count, span_count, align_offset);
@@ -818,7 +915,7 @@ _memory_unmap_span(span_t* span) {
 		//Directly unmap subspans (unless huge pages, in which case we defer and unmap entire page range with master)
 		assert(span->align_offset == 0);
 		if (_memory_span_size >= _memory_page_size) {
-			_memory_unmap(span, span_count * _memory_span_size, 0, 0);
+			_rpmalloc_unmap(span, span_count * _memory_span_size, 0, 0);
 			_memory_statistics_sub(&_reserved_spans, span_count);
 		}
 	} else {
@@ -835,7 +932,7 @@ _memory_unmap_span(span_t* span) {
 			unmap_count = master->total_spans;
 		_memory_statistics_sub(&_reserved_spans, unmap_count);
 		_memory_statistics_sub(&_master_spans, 1);
-		_memory_unmap(master, unmap_count * _memory_span_size, master->align_offset, (size_t)master->total_spans * _memory_span_size);
+		_rpmalloc_unmap(master, unmap_count * _memory_span_size, master->align_offset, (size_t)master->total_spans * _memory_span_size);
 	}
 }
 
@@ -1105,7 +1202,7 @@ _memory_unmap_heap(heap_t* heap) {
 			_memory_unlink_orphan_heap(&_memory_first_class_orphan_heaps, heap);
 #endif
 			size_t block_size = (1 + (sizeof(heap_t) >> _memory_page_size_shift)) * _memory_page_size;
-			_memory_unmap(heap, block_size, heap->align_offset, block_size);
+			_rpmalloc_unmap(heap, block_size, heap->align_offset, block_size);
 		}
 	} else {
 		if (atomic_decr32(&heap->master_heap->child_count) == 0) {
@@ -1492,7 +1589,7 @@ _memory_allocate_huge(heap_t* heap, size_t size) {
 	if (size & (_memory_page_size - 1))
 		++num_pages;
 	size_t align_offset = 0;
-	span_t* span = (span_t*)_memory_map(num_pages * _memory_page_size, &align_offset);
+	span_t* span = (span_t*)_rpmalloc_mmap(num_pages * _memory_page_size, &align_offset);
 	if (!span)
 		return span;
 
@@ -1602,7 +1699,7 @@ retry:
 	align_offset = 0;
 	mapped_size = num_pages * _memory_page_size;
 
-	span = (span_t*)_memory_map(mapped_size, &align_offset);
+	span = (span_t*)_rpmalloc_mmap(mapped_size, &align_offset);
 	if (!span) {
 		errno = ENOMEM;
 		return 0;
@@ -1615,7 +1712,7 @@ retry:
 	if (((size_t)pointer_diff(ptr, span) >= _memory_span_size) ||
 	    (pointer_offset(ptr, size) > pointer_offset(span, mapped_size)) ||
 	    (((uintptr_t)ptr & _memory_span_mask) != (uintptr_t)span)) {
-		_memory_unmap(span, mapped_size, align_offset, mapped_size);
+		_rpmalloc_unmap(span, mapped_size, align_offset, mapped_size);
 		++num_pages;
 		if (num_pages > limit_pages) {
 			errno = EINVAL;
@@ -1681,7 +1778,7 @@ _memory_allocate_heap_new(void) {
 	//Map in pages for a new heap
 	size_t align_offset = 0;
 	size_t block_size = (1 + (sizeof(heap_t) >> _memory_page_size_shift)) * _memory_page_size;
-	heap_t* heap = (heap_t*)_memory_map(block_size, &align_offset);
+	heap_t* heap = (heap_t*)_rpmalloc_mmap(block_size, &align_offset);
 	if (!heap)
 		return heap;
 
@@ -1867,7 +1964,7 @@ _memory_deallocate_huge(span_t* span) {
 
 	//Oversized allocation, page count is stored in span_count
 	size_t num_pages = span->span_count;
-	_memory_unmap(span, num_pages * _memory_page_size, span->align_offset, num_pages * _memory_page_size);
+	_rpmalloc_unmap(span, num_pages * _memory_page_size, span->align_offset, num_pages * _memory_page_size);
 	_memory_statistics_sub(&_huge_pages_current, num_pages);
 }
 
@@ -2075,29 +2172,6 @@ _memory_heap_release_raw(void* heapptr) {
 	_memory_heap_release(heapptr, 0);
 }
 
-#if defined(_MSC_VER) && !defined(__clang__) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
-#include <fibersapi.h>
-static DWORD fls_key;
-static void NTAPI
-rp_thread_destructor(void* value) {
-	if (value)
-		rpmalloc_thread_finalize();
-}
-#endif
-
-#if PLATFORM_POSIX
-#  include <sys/mman.h>
-#  include <sched.h>
-#  ifdef __FreeBSD__
-#    include <sys/sysctl.h>
-#    define MAP_HUGETLB MAP_ALIGNED_SUPER
-#  endif
-#  ifndef MAP_UNINITIALIZED
-#    define MAP_UNINITIALIZED 0
-#  endif
-#endif
-#include <errno.h>
-
 //! Initialize the allocator and setup global data
 extern inline int
 rpmalloc_initialize(void) {
@@ -2122,8 +2196,8 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		memset(&_memory_config, 0, sizeof(rpmalloc_config_t));
 
 	if (!_memory_config.memory_map || !_memory_config.memory_unmap) {
-		_memory_config.memory_map = _memory_map_os;
-		_memory_config.memory_unmap = _memory_unmap_os;
+		_memory_config.memory_map = _rpmalloc_mmap_os;
+		_memory_config.memory_unmap = _rpmalloc_unmap_os;
 	}
 
 #if RPMALLOC_CONFIGURABLE
@@ -2266,7 +2340,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		return -1;
 #endif
 #if defined(_MSC_VER) && !defined(__clang__) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
-    fls_key = FlsAlloc(&rp_thread_destructor);
+    fls_key = FlsAlloc(&_rpmalloc_thread_destructor);
 #endif
 
 	//Setup all small and medium size classes
@@ -2452,88 +2526,6 @@ rpmalloc_is_thread_initialized(void) {
 const rpmalloc_config_t*
 rpmalloc_config(void) {
 	return &_memory_config;
-}
-
-//! Map new pages to virtual memory
-static void*
-_memory_map_os(size_t size, size_t* offset) {
-	//Either size is a heap (a single page) or a (multiple) span - we only need to align spans, and only if larger than map granularity
-	size_t padding = ((size >= _memory_span_size) && (_memory_span_size > _memory_map_granularity)) ? _memory_span_size : 0;
-	assert(size >= _memory_page_size);
-#if PLATFORM_WINDOWS
-	//Ok to MEM_COMMIT - according to MSDN, "actual physical pages are not allocated unless/until the virtual addresses are actually accessed"
-	void* ptr = VirtualAlloc(0, size + padding, (_memory_huge_pages ? MEM_LARGE_PAGES : 0) | MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-	if (!ptr) {
-		assert(!"Failed to map virtual memory block");
-		return 0;
-	}
-#else
-	int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED;
-#  if defined(__APPLE__)
-	int fd = (int)VM_MAKE_TAG(240U);
-	if (_memory_huge_pages)
-		fd |= VM_FLAGS_SUPERPAGE_SIZE_2MB;
-	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, flags, fd, 0);
-#  elif defined(MAP_HUGETLB)
-	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, (_memory_huge_pages ? MAP_HUGETLB : 0) | flags, -1, 0);
-#  else
-	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, flags, -1, 0);
-#  endif
-	if ((ptr == MAP_FAILED) || !ptr) {
-		assert("Failed to map virtual memory block" == 0);
-		return 0;
-	}
-#endif
-	_memory_statistics_add(&_mapped_pages_os, (int32_t)((size + padding) >> _memory_page_size_shift));
-	if (padding) {
-		size_t final_padding = padding - ((uintptr_t)ptr & ~_memory_span_mask);
-		assert(final_padding <= _memory_span_size);
-		assert(final_padding <= padding);
-		assert(!(final_padding % 8));
-		ptr = pointer_offset(ptr, final_padding);
-		*offset = final_padding >> 3;
-	}
-	assert((size < _memory_span_size) || !((uintptr_t)ptr & ~_memory_span_mask));
-	return ptr;
-}
-
-//! Unmap pages from virtual memory
-static void
-_memory_unmap_os(void* address, size_t size, size_t offset, size_t release) {
-	assert(release || (offset == 0));
-	assert(!release || (release >= _memory_page_size));
-	assert(size >= _memory_page_size);
-	if (release && offset) {
-		offset <<= 3;
-		address = pointer_offset(address, -(int32_t)offset);
-#if PLATFORM_POSIX
-		//Padding is always one span size
-		release += _memory_span_size;
-#endif
-	}
-#if !DISABLE_UNMAP
-#if PLATFORM_WINDOWS
-	if (!VirtualFree(address, release ? 0 : size, release ? MEM_RELEASE : MEM_DECOMMIT)) {
-		assert(!"Failed to unmap virtual memory block");
-	}
-#else
-	if (release) {
-		if (munmap(address, release)) {
-			assert("Failed to unmap virtual memory block" == 0);
-		}
-	}
-	else {
-#if defined(POSIX_MADV_FREE)
-		if (posix_madvise(address, size, POSIX_MADV_FREE))
-#endif
-		if (posix_madvise(address, size, POSIX_MADV_DONTNEED)) {
-			assert("Failed to madvise virtual memory block as free" == 0);
-		}
-	}
-#endif
-#endif
-	if (release)
-		_memory_statistics_sub(&_mapped_pages_os, release >> _memory_page_size_shift);
 }
 
 // Extern interface
