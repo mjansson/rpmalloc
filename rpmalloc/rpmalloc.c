@@ -389,12 +389,16 @@ struct heap_class_t {
 	//! Double linked list of partially used spans with free blocks for each size class.
 	//  Previous span pointer in head points to tail span of list.
 	span_t*      partial_span;
+#if RPMALLOC_FIRST_CLASS_HEAPS
 	//! Double linked list of fully utilized spans with free blocks for each size class.
 	//  Previous span pointer in head points to tail span of list.
 	span_t*      full_span;
+#endif
 };
 
 struct heap_t {
+	//! Owning thread ID
+	uintptr_t    owner_thread;
 	//! Partial span data per size class
 	heap_class_t span_class[SIZE_CLASS_COUNT];
 #if ENABLE_THREAD_CACHE
@@ -412,7 +416,7 @@ struct heap_t {
 	span_t*      large_huge_span;
 #endif
 	//! Number of full spans
-	size_t       large_huge_span_count;
+	size_t       full_span_count;
 	//! Mapped but unused spans
 	span_t*      span_reserve;
 	//! Master span for mapped but unused spans
@@ -576,6 +580,32 @@ get_thread_heap(void) {
 #endif
 }
 
+//! Fast thread ID
+static inline uintptr_t 
+get_thread_id(void) {
+#if defined(_WIN32)
+	return (uintptr_t)NtCurrentTeb();
+#elif defined(__GNUC__) || defined(__clang__)
+	uintptr_t tid;
+#  if defined(__i386__)
+	__asm__("movl %%gs:0, %0" : "=r" (tid) : : );
+#  elif defined(__MACH__)
+	__asm__("movq %%gs:0, %0" : "=r" (tid) : : );
+#  elif defined(__x86_64__)
+	__asm__("movq %%fs:0, %0" : "=r" (tid) : : );
+#  elif defined(__arm__)
+	asm volatile ("mrc p15, 0, %0, c13, c0, 3" : "=r" (tid));
+#  elif defined(__aarch64__)
+	asm volatile ("mrs %0, tpidr_el0" : "=r" (tid));
+#  else
+	tid = (uintptr_t)get_thread_heap_raw();
+#  endif
+	return tid;
+#else
+	return (uintptr_t)get_thread_heap_raw();
+#endif
+}
+
 //! Set the current thread heap
 static void
 set_thread_heap(heap_t* heap) {
@@ -584,6 +614,8 @@ set_thread_heap(heap_t* heap) {
 #else
 	_memory_thread_heap = heap;
 #endif
+	if (heap)
+		heap->owner_thread = get_thread_id();
 }
 
 //! Default implementation to map more virtual memory
@@ -980,9 +1012,13 @@ _memory_heap_cache_adopt_deferred(heap_t* heap, span_t** single_span) {
 	while (span) {
 		span_t* next_span = (span_t*)span->free_list;
 		assert(span->heap == heap);
+		assert(heap->full_span_count);
+		--heap->full_span_count;
 		if (EXPECTED(span->size_class < SIZE_CLASS_COUNT)) {
+#if RPMALLOC_FIRST_CLASS_HEAPS
 			heap_class_t* heap_class = heap->span_class + span->size_class;
 			_memory_span_double_link_list_remove(&heap_class->full_span, span);
+#endif
 			if (single_span && !*single_span) {
 				*single_span = span;
 			} else {
@@ -994,7 +1030,6 @@ _memory_heap_cache_adopt_deferred(heap_t* heap, span_t** single_span) {
 #if RPMALLOC_FIRST_CLASS_HEAPS
 			_memory_span_double_link_list_remove(&heap->large_huge_span, span);
 #endif
-			--heap->large_huge_span_count;
 			if (span->size_class == SIZE_CLASS_HUGE) {
 				_memory_deallocate_huge(span);
 			} else {
@@ -1058,10 +1093,6 @@ _memory_heap_global_finalize(heap_t* heap) {
 	}
 
 	_memory_heap_finalize(heap);
-	if (heap->large_huge_span_count) {
-		--heap->finalize;
-		return;
-	}
 
 	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
 		span_t* span = heap->span_cache[iclass];
@@ -1069,9 +1100,15 @@ _memory_heap_global_finalize(heap_t* heap) {
 		if (span)
 			_memory_unmap_span_list(span);
 	}
+
+	if (heap->full_span_count) {
+		--heap->finalize;
+		return;
+	}
+
 	for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
 		heap_class_t* heap_class = heap->span_class + iclass;
-		if (heap_class->free_list || heap_class->partial_span || heap_class->full_span) {
+		if (heap_class->free_list || heap_class->partial_span) {
 			--heap->finalize;
 			return;
 		}
@@ -1278,7 +1315,10 @@ _memory_span_initialize_new(heap_t* heap, heap_class_t* heap_class, span_t* span
 		_memory_span_double_link_list_add(&heap_class->partial_span, span);
 		span->used_count = span->free_list_limit;
 	} else {
+#if RPMALLOC_FIRST_CLASS_HEAPS
 		_memory_span_double_link_list_add(&heap_class->full_span, span);
+#endif
+		++heap->full_span_count;
 		span->used_count = span->block_count;
 	}
 	return block;
@@ -1344,7 +1384,10 @@ _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 
 		//The span is fully utilized, unlink from partial list and add to fully utilized list
 		_memory_span_double_link_list_pop_head(&heap_class->partial_span, span);
+#if RPMALLOC_FIRST_CLASS_HEAPS
 		_memory_span_double_link_list_add(&heap_class->full_span, span);
+#endif
+		++heap->full_span_count;
 		return block;
 	}
 
@@ -1408,7 +1451,7 @@ _memory_allocate_large(heap_t* heap, size_t size) {
 #if RPMALLOC_FIRST_CLASS_HEAPS
 	_memory_span_double_link_list_add(&heap->large_huge_span, span);
 #endif
-	++heap->large_huge_span_count;
+	++heap->full_span_count;
 
 	return pointer_offset(span, SPAN_HEADER_SIZE);
 }
@@ -1436,7 +1479,7 @@ _memory_allocate_huge(heap_t* heap, size_t size) {
 #if RPMALLOC_FIRST_CLASS_HEAPS
 	_memory_span_double_link_list_add(&heap->large_huge_span, span);
 #endif
-	++heap->large_huge_span_count;
+	++heap->full_span_count;
 
 	return pointer_offset(span, SPAN_HEADER_SIZE);
 }
@@ -1564,7 +1607,7 @@ retry:
 #if RPMALLOC_FIRST_CLASS_HEAPS
 	_memory_span_double_link_list_add(&heap->large_huge_span, span);
 #endif
-	++heap->large_huge_span_count;
+	++heap->full_span_count;
 
 	return ptr;
 }
@@ -1590,6 +1633,7 @@ _memory_heap_orphan(heap_t* heap, int first_class) {
 	void* raw_heap;
 	uintptr_t orphan_counter;
 	heap_t* last_heap;
+	heap->owner_thread = (uintptr_t)-1;
 #if RPMALLOC_FIRST_CLASS_HEAPS
 	atomicptr_t* heap_list = (first_class ? &_memory_first_class_orphan_heaps : &_memory_orphan_heaps);
 #else
@@ -1672,13 +1716,16 @@ _memory_allocate_heap(int first_class) {
 static void
 _memory_deallocate_direct_small_or_medium(span_t* span, void* block) {
 	heap_t* heap = span->heap;
-	assert(heap == get_thread_heap_raw() || heap->finalize);
+	assert(heap->owner_thread == get_thread_id() || heap->finalize);
 	//Add block to free list
 	if (UNEXPECTED(_memory_span_is_fully_utilized(span))) {
 		span->used_count = span->block_count;
 		heap_class_t* heap_class = &heap->span_class[span->size_class];
+#if RPMALLOC_FIRST_CLASS_HEAPS
 		_memory_span_double_link_list_remove(&heap_class->full_span, span);
+#endif
 		_memory_span_double_link_list_add(&heap_class->partial_span, span);
+		--heap->full_span_count;
 	}
 	--span->used_count;
 	*((void**)block) = span->free_list;
@@ -1730,7 +1777,7 @@ _memory_deallocate_small_or_medium(span_t* span, void* p) {
 		p = pointer_offset(p, -(int32_t)(block_offset % span->block_size));
 	}
 	//Check if block belongs to this heap or if deallocation should be deferred
-	if ((span->heap == get_thread_heap_raw()) || span->heap->finalize)
+	if ((span->heap->owner_thread == get_thread_id()) || span->heap->finalize)
 		_memory_deallocate_direct_small_or_medium(span, p);
 	else
 		_memory_deallocate_defer_small_or_medium(span, p);
@@ -1742,14 +1789,14 @@ _memory_deallocate_large(span_t* span) {
 	assert(span->size_class == SIZE_CLASS_LARGE);
 	assert(!(span->flags & SPAN_FLAG_MASTER) || !(span->flags & SPAN_FLAG_SUBSPAN));
 	assert((span->flags & SPAN_FLAG_MASTER) || (span->flags & SPAN_FLAG_SUBSPAN));
-	heap_t* heap = get_thread_heap_raw();
 	//We must always defer (unless finalizing) if from another heap since we cannot touch the list or counters of another heap
-	int defer = (heap != span->heap) && !span->heap->finalize;
+	int defer = (span->heap->owner_thread != get_thread_id()) && !span->heap->finalize;
 	if (defer) {
 		_memory_deallocate_defer_free_span(span->heap, span);
 		return;
 	}
-	--span->heap->large_huge_span_count;
+	assert(span->heap->full_span_count);
+	--span->heap->full_span_count;
 #if RPMALLOC_FIRST_CLASS_HEAPS
 	_memory_span_double_link_list_remove(&span->heap->large_huge_span, span);
 #endif
@@ -1758,6 +1805,8 @@ _memory_deallocate_large(span_t* span) {
 	size_t idx = span->span_count - 1;
 	atomic_decr32(&span->heap->span_use[idx].current);
 #endif
+	heap_t* heap = get_thread_heap();
+	assert(heap);
 	span->heap = heap;
 	if ((span->span_count > 1) && !heap->finalize && !heap->spans_reserved) {
 		heap->span_reserve = span;
@@ -1781,12 +1830,12 @@ _memory_deallocate_large(span_t* span) {
 static void
 _memory_deallocate_huge(span_t* span) {
 	assert(span->heap);
-	if ((span->heap != get_thread_heap_raw()) && !span->heap->finalize) {
+	if ((span->heap->owner_thread != get_thread_id()) && !span->heap->finalize) {
 		_memory_deallocate_defer_free_span(span->heap, span);
 		return;
 	}
-
-	--span->heap->large_huge_span_count;
+	assert(span->heap->full_span_count);
+	--span->heap->full_span_count;
 #if RPMALLOC_FIRST_CLASS_HEAPS
 	_memory_span_double_link_list_remove(&span->heap->large_huge_span, span);
 #endif
@@ -2221,7 +2270,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	return 0;
 }
 
-static span_t*
+static int
 _memory_span_finalize(heap_t* heap, size_t iclass, span_t* span, span_t** list_head) {
 	heap_class_t* heap_class = heap->span_class + iclass;
 	span_t* class_span = (span_t*)((uintptr_t)heap_class->free_list & _memory_span_mask);
@@ -2256,8 +2305,9 @@ _memory_span_finalize(heap_t* heap, size_t iclass, span_t* span, span_t** list_h
 		if (list_head)
 			_memory_span_double_link_list_remove(list_head, span);
 		_memory_unmap_span(span);
+		return 1;
 	}
-	return (span == class_span) ? 0 : class_span;
+	return 0;
 }
 
 static void
@@ -2278,11 +2328,19 @@ _memory_heap_finalize(heap_t* heap) {
 			_memory_span_finalize(heap, iclass, span, &heap_class->partial_span);
 			span = next;
 		}
-		span = heap_class->full_span;
-		while (span) {
-			span_t* next = span->next;
-			_memory_span_finalize(heap, iclass, span, &heap_class->full_span);
-			span = next;
+		// If class still has a free list it must be a full span
+		if (heap_class->free_list) {
+			span_t* class_span = (span_t*)((uintptr_t)heap_class->free_list & _memory_span_mask);
+			span_t** list = 0;
+#if RPMALLOC_FIRST_CLASS_HEAPS
+			list = &heap_class->full_span;
+#endif
+			--heap->full_span_count;
+			if (!_memory_span_finalize(heap, iclass, class_span, list)) {
+				if (list)
+					_memory_span_double_link_list_remove(list, span);
+				_memory_span_double_link_list_add(&heap_class->partial_span, span);
+			}
 		}
 	}
 
@@ -2900,7 +2958,7 @@ rpmalloc_heap_free_all(rpmalloc_heap_t* heap) {
 		span = next_span;
 	}
 	heap->large_huge_span = 0;
-	heap->large_huge_span_count = 0;
+	heap->full_span_count = 0;
 
 #if ENABLE_THREAD_CACHE
 	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
