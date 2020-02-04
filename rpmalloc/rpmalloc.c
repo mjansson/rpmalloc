@@ -865,6 +865,35 @@ _rpmalloc_span_mark_as_subspan_unless_master(span_t* master, span_t* subspan, si
 	subspan->span_count = (uint32_t)span_count;
 }
 
+//! Unpack a span with span_count > 1 to a list of spans
+static span_t*
+_rpmalloc_span_unpack(span_t* span, span_t** last) {
+	span_t* last_span = span;
+	span->list_size = span->span_count;
+	if (span->span_count == 1) {
+		*last = span;
+		return span;
+	}
+
+	int is_master = !!(span->flags & SPAN_FLAG_MASTER);
+	uint32_t offset_from_master = is_master ? 0 : span->offset_from_master;
+	uint32_t list_size = span->list_size;
+	span->span_count = 1;
+	while (list_size > 1) {
+		last_span->next = (span_t*)pointer_offset(last_span, _memory_span_size);
+		
+		last_span = last_span->next;
+		last_span->span_count = 1;
+		last_span->list_size = list_size--;
+		last_span->flags = SPAN_FLAG_SUBSPAN;
+		last_span->offset_from_master = ++offset_from_master;
+		last_span->align_offset = 0;
+	}
+	last_span->next = 0;
+	*last = last_span;
+	return span;
+}
+
 
 ////////////
 ///
