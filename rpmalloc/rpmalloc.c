@@ -11,6 +11,263 @@
 
 #include "rpmalloc.h"
 
+#include <stdint.h>
+#include <errno.h>
+
+/// Preconfigured limits and sizes
+//! Size of a chunk
+#define CHUNK_SIZE                (4 * 1024 * 1024)
+//! Minimum size of chunk header
+#define CHUNK_HEADER_SIZE         128
+//! Granularity of a small allocation block (must be power of two)
+#define SMALL_GRANULARITY         16
+//! Small granularity shift count
+#define SMALL_GRANULARITY_SHIFT   4
+//! Number of small block size classes
+#define SMALL_CLASS_COUNT         65
+//! Maximum size of a small block
+#define SMALL_SIZE_LIMIT          (SMALL_GRANULARITY * (SMALL_CLASS_COUNT - 1))
+//! Granularity of a medium allocation block
+#define MEDIUM_GRANULARITY        512
+//! Medium granularity shift count
+#define MEDIUM_GRANULARITY_SHIFT  9
+//! Number of medium block size classes
+#define MEDIUM_CLASS_COUNT        61
+//! Maximum size of a medium block
+#define MEDIUM_SIZE_LIMIT         (SMALL_SIZE_LIMIT + (MEDIUM_GRANULARITY * MEDIUM_CLASS_COUNT))
+//! Total number of small + medium size classes
+#define SIZE_CLASS_COUNT          (SMALL_CLASS_COUNT + MEDIUM_CLASS_COUNT)
+//! Maximum size of a large block
+#define LARGE_SIZE_LIMIT          (CHUNK_SIZE - CHUNK_HEADER_SIZE)
+
+typedef struct span_s span_t;
+typedef struct chunk_s chunk_t;
+typedef struct heap_s heap_t;
+
+#define SPAN_TYPE_SMALL 0
+#define SPAN_TYPE_LARGE 0
+#define SPAN_TYPE_HUGE 0
+
+//! A span is a collection of memory blocks of the same size. The span is owned
+//  by (and contained in) a chunk. The chunk for a memory block(and a span) can
+//  always be reached by masking the address with the chunk alignment mask.
+struct span_s {
+	//! Free list
+	void*        free_list;
+	//! Span type
+	uint32_t     type;
+};
+
+//! A chunk is a collection of spans, which can be of different types. A chunk
+//  is always owned completely by a heap. Span control blocks are collated in
+//  the chunk header, followed by span memory block areas until end of chunk.
+struct chunk_s {
+	//! Owning thread ID
+	uintptr_t    thread;
+	//! Owning heap
+	heap_t*      heap;
+	//! Next chunk
+	chunk_t*     next;
+	//! Spans contained (variable array, at least one)
+	span_t       spans[1];
+};
+
+//! A heap maintains ownership of all chunks allocated by the heap
+struct heap_s {
+	//! Free list for each size class
+	void*        free_list[SIZE_CLASS_COUNT];
+	//! Chunks
+	chunk_t*     chunks;
+};
+
+//
+// Validation
+//
+
+#if ENABLE_ASSERTS
+#include <stdio.h>
+static void
+rpmalloc_assert_fail(const char* msg, const char* function, const char* file, int line) {
+	fprintf(stderr, "\n*** Assert failed: %s (%s %s:%d) ***\n", msg, function, file, line);
+	fflush(stderr);
+	abort();
+}
+#define rpmalloc_assert(x) do { if (!(x)) rpmalloc_assert_fail(#x, __FUNCTION__, __FILE__, __LINE__); } while (0)
+#else
+#define rpmalloc_assert_fail(msg, function, file, line) do {} while (0)
+#define rpmalloc_assert(x) do {} while (0)
+#endif
+
+#if ENABLE_VALIDATE_ARGS
+#define rpmalloc_validate_size(size) do { if (size >= MAX_ALLOC_SIZE) { errno = EINVAL; return 0; } } while(0)
+#if PLATFORM_WINDOWS
+#define rpmalloc_safe_mult(lhs, rhs, res) do { int err = SizeTMult(lhs, rhs, &res); if ((err != S_OK) || (res >= MAX_ALLOC_SIZE)) { errno = EINVAL; return 0; } } while (0)
+#else
+#define rpmalloc_safe_mult(lhs, rhs, res) do { int err = __builtin_umull_overflow(lhs, rhs, &res); if (err || (res >= MAX_ALLOC_SIZE)) { errno = EINVAL; return 0; } } while (0)
+#endif
+#else
+#define rpmalloc_validate_size(size)
+#define rpmalloc_safe_mult(lhs, rhs, res) res = (lhs) * (rhs)
+#endif
+
+//
+// Allocate a block from a span
+//
+static void*
+rpmalloc_span_allocate(span_t* span) {
+
+}
+
+
+//
+// Heap span control
+//
+
+//! Find a small span (SPAN_TYPE_SMALL) for small or medium sized blocks
+static span_t*
+rpmalloc_heap_find_small_span(heap_t* heap, uint32_t class_idx) {
+
+}
+
+
+//
+// Main heap allocator entry points
+//
+
+//! Allocate a small or medium sized memory block from the given heap
+static void*
+rpmalloc_heap_allocate_small_medium(heap_t* heap, uint32_t class_idx) {
+	if (heap->free_list[class_idx])
+		return free_list_pop(&heap->free_list[class_idx]);
+	span_t* span = rpmalloc_heap_find_small_span(heap, class_idx);
+	return rpmalloc_span_allocate(span);
+}
+
+//! Allocate any sized block from the given heap
+static void*
+rpmalloc_heap_allocate(heap_t* heap, size_t size) {
+	rpmalloc_assert(heap);
+	if (size <= SMALL_SIZE_LIMIT) {
+		//Small sizes have unique size classes
+		const uint32_t class_idx = (uint32_t)((size + (SMALL_GRANULARITY - 1)) >> SMALL_GRANULARITY_SHIFT);
+		return rpmalloc_heap_allocate_small_medium(heap, class_idx);
+	}
+	else if (size <= MEDIUM_SIZE_LIMIT) {
+		//Calculate the size class index and do a dependent lookup of the final class index (in case of merged classes)
+		const uint32_t base_idx = (uint32_t)(SMALL_CLASS_COUNT + ((size - (SMALL_SIZE_LIMIT + 1)) >> MEDIUM_GRANULARITY_SHIFT));
+		const uint32_t class_idx = size_class[base_idx].class_idx;
+		return rpmalloc_heap_allocate_small_medium(heap, class_idx);
+	}
+	else if (size <= LARGE_SIZE_LIMIT) {
+		return rpmalloc_heap_allocate_large(heap, size);
+	}
+	return rpmalloc_heap_allocate_huge(heap, size);
+}
+
+//! Deallocate the given block
+static void
+rpmalloc_deallocate(void* p) {
+	//Grab the chunk
+	chunk_t* chunk = (chunk_t*)((uintptr_t)p & CHUNK_MASK);
+	if (chunk) {
+		if (EXPECTED(span->size_class < SIZE_CLASS_COUNT))
+			_memory_deallocate_small_or_medium(span, p);
+		else if (span->size_class == SIZE_CLASS_LARGE)
+			_memory_deallocate_large(span);
+		else
+			_memory_deallocate_huge(span);
+	}
+}
+
+
+
+
+
+//
+// Extern interface
+//
+
+extern inline RPMALLOC_ALLOCATOR void*
+rpmalloc(size_t size) {
+	rpmalloc_validate_size(size);
+	return rpmalloc_heap_allocate(get_thread_heap(), size);
+}
+
+extern inline void
+rpfree(void* ptr) {
+	rpmalloc_deallocate(ptr);
+}
+
+extern inline RPMALLOC_ALLOCATOR void*
+rpcalloc(size_t num, size_t size) {
+	size_t total;
+	rpmalloc_safe_mult(num, size, total);
+	void* block = rpmalloc_heap_allocate(get_thread_heap(), total);
+	if (block)
+		memset(block, 0, total);
+	return block;
+}
+
+extern inline RPMALLOC_ALLOCATOR void*
+rprealloc(void* ptr, size_t size) {
+	rpmalloc_validate_size(size);
+	return rpmalloc_heap_reallocate(get_thread_heap(), ptr, size, 0, 0);
+}
+
+extern RPMALLOC_ALLOCATOR void*
+rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize, unsigned int flags) {
+#if ENABLE_VALIDATE_ARGS
+	if ((size + alignment < size) || (alignment > _memory_page_size)) {
+		errno = EINVAL;
+		return 0;
+	}
+#endif
+	return rpmalloc_heap_aligned_reallocate(get_thread_heap(), ptr, alignment, size, oldsize, flags);
+}
+
+extern RPMALLOC_ALLOCATOR void*
+rpaligned_alloc(size_t alignment, size_t size) {
+	return rpmalloc_heap_aligned_allocate(get_thread_heap(), alignment, size);
+}
+
+extern inline RPMALLOC_ALLOCATOR void*
+rpaligned_calloc(size_t alignment, size_t num, size_t size) {
+	size_t total;
+	rpmalloc_safe_mult(num, size, total);
+	void* block = rpmalloc_heap_aligned_allocate(get_thread_heap(), alignment, size);
+	if (block)
+		memset(block, 0, total);
+	return block;
+}
+
+extern inline RPMALLOC_ALLOCATOR void*
+rpmemalign(size_t alignment, size_t size) {
+	return rpmalloc_heap_aligned_allocate(get_thread_heap(), alignment, size);
+}
+
+extern inline int
+rpposix_memalign(void **memptr, size_t alignment, size_t size) {
+	if (memptr)
+		*memptr = rpmalloc_heap_aligned_allocate(get_thread_heap(), alignment, size);
+	else
+		return EINVAL;
+	return *memptr ? 0 : ENOMEM;
+}
+
+extern inline size_t
+rpmalloc_usable_size(void* ptr) {
+	return (ptr ? _memory_usable_size(ptr) : 0);
+}
+
+#if ENABLE_PRELOAD || ENABLE_OVERRIDE
+#include "malloc.c"
+#endif
+
+
+
+
+#if 0
+
 /// Build time configurable limits
 #ifndef HEAP_ARRAY_SIZE
 //! Size of heap hashmap
@@ -3010,5 +3267,7 @@ rpmalloc_heap_thread_set_current(rpmalloc_heap_t* heap) {
 #if ENABLE_PRELOAD || ENABLE_OVERRIDE
 
 #include "malloc.c"
+
+#endif
 
 #endif
