@@ -1012,9 +1012,9 @@ _memory_heap_cache_adopt_deferred(heap_t* heap, span_t** single_span) {
 	while (span) {
 		span_t* next_span = (span_t*)span->free_list;
 		assert(span->heap == heap);
-		assert(heap->full_span_count);
-		--heap->full_span_count;
 		if (EXPECTED(span->size_class < SIZE_CLASS_COUNT)) {
+			assert(heap->full_span_count);
+			--heap->full_span_count;
 #if RPMALLOC_FIRST_CLASS_HEAPS
 			heap_class_t* heap_class = heap->span_class + span->size_class;
 			_memory_span_double_link_list_remove(&heap_class->full_span, span);
@@ -1027,13 +1027,15 @@ _memory_heap_cache_adopt_deferred(heap_t* heap, span_t** single_span) {
 				_memory_heap_cache_insert(heap, span);
 			}
 		} else {
-#if RPMALLOC_FIRST_CLASS_HEAPS
-			_memory_span_double_link_list_remove(&heap->large_huge_span, span);
-#endif
 			if (span->size_class == SIZE_CLASS_HUGE) {
 				_memory_deallocate_huge(span);
 			} else {
 				assert(span->size_class == SIZE_CLASS_LARGE);
+				assert(heap->full_span_count);
+				--heap->full_span_count;
+#if RPMALLOC_FIRST_CLASS_HEAPS
+				_memory_span_double_link_list_remove(&heap->large_huge_span, span);
+#endif
 				uint32_t idx = span->span_count - 1;
 				if (!idx && single_span && !*single_span) {
 					*single_span = span;
