@@ -75,7 +75,6 @@ test_alloc(void) {
 			return test_fail("Bad medium alloc usable size");
 		rpfree(testptr);
 	}
-#if 0
 
 	unsigned int ipass = 0;
 	unsigned int icheck = 0;
@@ -319,7 +318,7 @@ test_alloc(void) {
 		thread_join(thread);
 	}
 	rpmalloc_finalize();
-#endif
+
 	printf("Memory allocation tests passed\n");
 
 	return 0;

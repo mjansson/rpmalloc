@@ -222,15 +222,20 @@ rpmalloc_assert_fail_handler(const char* msg, const char* function, const char* 
 #endif
 
 #if ENABLE_VALIDATE_ARGS
-#define rpmalloc_validate_size(size) do { if (size >= MAX_ALLOC_SIZE) { errno = EINVAL; return 0; } } while(0)
+#define rpmalloc_validate_size(size) do { if (size >= MAX_ALLOC_SIZE) { errno = EINVAL; return 0; } } while (0)
+#define rpmalloc_validate_alignment(align) do { if (align >= SPAN_SIZE) { errno = EINVAL; return 0; } } while (0)
 #if PLATFORM_WINDOWS
-#define rpmalloc_safe_mult(lhs, rhs, res) do { int err = SizeTMult(lhs, rhs, &res); if ((err != S_OK) || (res >= MAX_ALLOC_SIZE)) { errno = EINVAL; return 0; } } while (0)
+#define rpmalloc_safe_mult(lhs, rhs, res) do { int err = SizeTMult(lhs, rhs, &res); if (err != S_OK) { errno = EINVAL; return 0; } } while (0)
+#define rpmalloc_safe_add(lhs, rhs, res) do { int err = SizeTAdd(lhs, rhs, &res); if (err != S_OK) { errno = EINVAL; return 0; } } while (0)
 #else
-#define rpmalloc_safe_mult(lhs, rhs, res) do { int err = __builtin_umull_overflow(lhs, rhs, &res); if (err || (res >= MAX_ALLOC_SIZE)) { errno = EINVAL; return 0; } } while (0)
+#define rpmalloc_safe_mult(lhs, rhs, res) do { int err = __builtin_umull_overflow(lhs, rhs, &res); if (err) { errno = EINVAL; return 0; } } while (0)
+#define rpmalloc_safe_add(lhs, rhs, res) do { int err = __builtin_uadd_overflow(lhs, rhs, &res); if (err) { errno = EINVAL; return 0; } } while (0)
 #endif
 #else
-#define rpmalloc_validate_size(size)
+#define rpmalloc_validate_size(size) do { (void)sizeof(size); } while (0)
+#define rpmalloc_validate_size(align) do { (void)sizeof(align); } while (0)
 #define rpmalloc_safe_mult(lhs, rhs, res) res = (lhs) * (rhs)
+#define rpmalloc_safe_add(lhs, rhs, res) res = (lhs) + (rhs)
 #endif
 
 ///
@@ -1068,6 +1073,70 @@ rpfree(void* ptr) {
 	rpmalloc_deallocate_block(ptr);
 }
 
+extern inline RPMALLOC_ALLOCATOR void*
+rpcalloc(size_t num, size_t size) {
+	size_t total;
+	rpmalloc_safe_mult(num, size, total);
+	rpmalloc_validate_size(total);
+	void* block = rpmalloc_heap_allocate_block(rpmalloc_thread_heap(), total);
+	if (block)
+		memset(block, 0, total);
+	return block;
+}
+
+extern inline RPMALLOC_ALLOCATOR void*
+rprealloc(void* ptr, size_t size) {
+	rpmalloc_validate_size(size);
+	return rpmalloc_heap_reallocate(rpmalloc_thread_heap(), ptr, size, 0, 0);
+}
+
+extern RPMALLOC_ALLOCATOR void*
+rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize, unsigned int flags) {
+	size_t total;
+	rpmalloc_safe_add(size, alignment, total);
+	rpmalloc_validate_size(total);
+	rpmalloc_validate_alignment(alignment);
+	return rpmalloc_heap_aligned_reallocate(rpmalloc_thread_heap(), ptr, alignment, size, oldsize, flags);
+}
+
+extern RPMALLOC_ALLOCATOR void*
+rpaligned_alloc(size_t alignment, size_t size) {
+	rpmalloc_validate_size(size);
+	rpmalloc_validate_alignment(alignment);
+	return rpmalloc_heap_aligned_allocate(get_thread_heap(), alignment, size);
+}
+
+extern inline RPMALLOC_ALLOCATOR void*
+rpaligned_calloc(size_t alignment, size_t num, size_t size) {
+	size_t total;
+	rpmalloc_safe_mult(num, size, total);
+	rpmalloc_validate_size(total);
+	rpmalloc_validate_alignment(alignment);
+	void* block = rpmalloc_heap_aligned_allocate(get_thread_heap(), alignment, total);
+	if (block)
+		memset(block, 0, total);
+	return block;
+}
+
+extern inline RPMALLOC_ALLOCATOR void*
+rpmemalign(size_t alignment, size_t size) {
+	rpmalloc_validate_size(size);
+	rpmalloc_validate_alignment(alignment);
+	return rpmalloc_heap_aligned_allocate(get_thread_heap(), alignment, size);
+}
+
+extern inline int
+rpposix_memalign(void **memptr, size_t alignment, size_t size) {
+	rpmalloc_validate_size(size);
+	rpmalloc_validate_alignment(alignment);
+	if (memptr)
+		*memptr = rpmalloc_heap_aligned_allocate(get_thread_heap(), alignment, size);
+	else
+		return EINVAL;
+	return *memptr ? 0 : ENOMEM;
+}
+
+
 extern size_t
 rpmalloc_usable_size(void* block) {
 	if (!block)
@@ -1093,72 +1162,10 @@ rpmalloc_usable_size(void* block) {
 	return 0;
 }
 
-#if 0
-extern inline RPMALLOC_ALLOCATOR void*
-rpcalloc(size_t num, size_t size) {
-	size_t total;
-	rpmalloc_safe_mult(num, size, total);
-	void* block = rpmalloc_heap_allocate_block(get_thread_heap(), total);
-	if (block)
-		memset(block, 0, total);
-	return block;
-}
-
-extern inline RPMALLOC_ALLOCATOR void*
-rprealloc(void* ptr, size_t size) {
-	rpmalloc_validate_size(size);
-	return rpmalloc_heap_reallocate(get_thread_heap(), ptr, size, 0, 0);
-}
-
-extern RPMALLOC_ALLOCATOR void*
-rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize, unsigned int flags) {
-#if ENABLE_VALIDATE_ARGS
-	if ((size + alignment < size) || (alignment > _memory_page_size)) {
-		errno = EINVAL;
-		return 0;
-	}
-#endif
-	return rpmalloc_heap_aligned_reallocate(get_thread_heap(), ptr, alignment, size, oldsize, flags);
-}
-
-extern RPMALLOC_ALLOCATOR void*
-rpaligned_alloc(size_t alignment, size_t size) {
-	return rpmalloc_heap_aligned_allocate(get_thread_heap(), alignment, size);
-}
-
-extern inline RPMALLOC_ALLOCATOR void*
-rpaligned_calloc(size_t alignment, size_t num, size_t size) {
-	size_t total;
-	rpmalloc_safe_mult(num, size, total);
-	void* block = rpmalloc_heap_aligned_allocate(get_thread_heap(), alignment, size);
-	if (block)
-		memset(block, 0, total);
-	return block;
-}
-
-extern inline RPMALLOC_ALLOCATOR void*
-rpmemalign(size_t alignment, size_t size) {
-	return rpmalloc_heap_aligned_allocate(get_thread_heap(), alignment, size);
-}
-
-extern inline int
-rpposix_memalign(void **memptr, size_t alignment, size_t size) {
-	if (memptr)
-		*memptr = rpmalloc_heap_aligned_allocate(get_thread_heap(), alignment, size);
-	else
-		return EINVAL;
-	return *memptr ? 0 : ENOMEM;
-}
-
-extern inline size_t
-rpmalloc_usable_size(void* ptr) {
-	return (ptr ? _memory_usable_size(ptr) : 0);
-}
-
 #if ENABLE_PRELOAD || ENABLE_OVERRIDE
 #include "malloc.c"
 #endif
-#endif
+
 
 
 
