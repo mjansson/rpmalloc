@@ -26,6 +26,13 @@
 #endif
 
 ///
+/// Implementation controls
+///
+#ifndef ENABLE_NULL_CHECKS
+#define ENABLE_NULL_CHECKS 0
+#endif
+
+///
 /// Preconfigured limits and sizes
 ///
 
@@ -144,6 +151,8 @@ struct chunk_s {
 	span_t       span[SPAN_COUNT];
 	//! Span initialized count
 	size_t       initialized_count;
+	//! Offset to start of memory mapped region
+	size_t       offset;
 	//! Previous chunk
 	chunk_t*     prev;
 	//! Next chunk
@@ -204,9 +213,11 @@ rpmalloc_assert_fail_handler(const char* msg, const char* function, const char* 
 	abort();
 }
 #define rpmalloc_assert_fail(x) do { rpmalloc_assert_fail_handler(#x, __FUNCTION__, __FILE__, __LINE__); } while (0)
+#define rpmalloc_assert_fail_return(x, ret) rpmalloc_assert_fail(x)
 #define rpmalloc_assert(x) do { if (!(x)) rpmalloc_assert_fail_handler(#x, __FUNCTION__, __FILE__, __LINE__); } while (0)
 #else
 #define rpmalloc_assert_fail(msg) do {} while (0)
+#define rpmalloc_assert_fail_return(msg, ret) do { return (ret); } while (0)
 #define rpmalloc_assert(x) do {} while (0)
 #endif
 
@@ -258,6 +269,12 @@ static int   atomicptr_cas_acquire(atomicptr_t* dst, void* val, void* ref) { ret
 #define pointer_offset(ptr, ofs) (void*)((char*)(ptr) + (ptrdiff_t)(ofs))
 #define pointer_diff(first, second) (ptrdiff_t)((const char*)(first) - (const char*)(second))
 
+#if ENABLE_NULL_CHECKS
+#  define CHECK_NOT_NULL(x) (!!(x))
+#else
+#  define CHECK_NOT_NULL(x) 1
+#endif
+
 ///
 /// Global data
 ///
@@ -290,9 +307,16 @@ static atomicsize_t heap_orphan_counter;
 static atomicsize_t heap_id;
 
 ///
-/// Memory mapping
+/// Forward declarations
 ///
 
+static chunk_t*
+rpmalloc_heap_allocate_chunk(heap_t* heap);
+
+
+///
+/// Memory mapping
+///
 
 //! Map new pages to virtual memory
 static void*
@@ -307,8 +331,7 @@ rpmalloc_mmap(size_t size, size_t* offset) {
 	//Ok to MEM_COMMIT - according to MSDN, "actual physical pages are not allocated unless/until the virtual addresses are actually accessed"
 	void* ptr = VirtualAlloc(0, size + padding, (use_huge_pages ? MEM_LARGE_PAGES : 0) | MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 	if (!ptr) {
-		rpmalloc_assert_fail("Failed to map virtual memory block");
-		return 0;
+		rpmalloc_assert_fail_return("Failed to map virtual memory block", 0);
 	}
 #else
 	int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED;
@@ -451,6 +474,21 @@ rpmalloc_thread_heap_set(heap_t* heap) {
 		heap->thread = rpmalloc_thread_id();
 }
 
+///
+/// Layout utility functions
+///
+
+static chunk_t*
+rpmalloc_chunk_from_block(void* block) {
+	return (chunk_t*)((uintptr_t)block & CHUNK_MASK);
+}
+
+static span_t*
+rpmalloc_span_from_block(chunk_t* chunk, void* block) {
+	size_t span_idx = ((char*)block - (char*)chunk) >> SPAN_SHIFT;
+	return chunk->span + span_idx;
+}
+
 
 ///
 /// Free list control
@@ -467,7 +505,7 @@ rpmalloc_free_list_pop(void** list) {
 //! Initialize a (partial) free list up to next system memory page, while reserving the first block
 //  as allocated, returning number of blocks in list
 static uint32_t
-rpmalloc_free_list_partial_init(void** list, void** first_block, void* page_start, void* block_start,
+rpmalloc_free_list_partial_init(void** list, void** first_block, void* block_start,
                                 uint32_t block_count, uint32_t block_size) {
 	*first_block = block_start;
 	if (block_count > 1) {
@@ -475,7 +513,7 @@ rpmalloc_free_list_partial_init(void** list, void** first_block, void* page_star
 		void* block_end = pointer_offset(block_start, (size_t)block_size * block_count);
 		//If block size is less than half a memory page, bound init to next memory page boundary
 		if (block_size < (os_chunk_page_size >> 1)) {
-			void* page_end = pointer_offset(page_start, os_chunk_page_size);
+			void* page_end = pointer_offset(block_start, os_chunk_page_size);
 			if (page_end < block_end)
 				block_end = page_end;
 		}
@@ -530,6 +568,12 @@ rpmalloc_span_chunk(span_t* span) {
 	return (chunk_t*)((uintptr_t)span & CHUNK_MASK);
 }
 
+//! Get start of memory blocks for a span
+static void*
+rpmalloc_span_block_start(span_t* span) {
+	return pointer_offset((uintptr_t)span & CHUNK_MASK, CHUNK_HEADER_SIZE * (size_t)span->block_offset);
+}
+
 //! Swap in the deferred free list from other thread deallocations
 static void
 rpmalloc_span_adopt_deferred_free(span_t* span) {
@@ -554,11 +598,10 @@ rpmalloc_span_small_allocate(span_t* span, heap_t* heap) {
 		span->free = 0;
 	}
 	else {
-		//If the span did not fully initialize free list, link up another page worth of blocks			
-		void* block_start = pointer_offset(span, ((size_t)span->initialized_count * span->block_size));
+		//If the span did not fully initialize free list, link up another page worth of blocks
+		void* block_start = pointer_offset(rpmalloc_span_block_start(span), ((size_t)span->initialized_count * span->block_size));
 		span->initialized_count += (uint16_t)rpmalloc_free_list_partial_init(
-			&heap->free[span->size_class], &block,
-			(void*)((uintptr_t)block_start & ~(os_chunk_page_size - 1)), block_start,
+			&heap->free[span->size_class], &block, block_start,
 			span->block_count - span->initialized_count, span->block_size);
 	}
 	span->used_count = span->initialized_count;
@@ -664,57 +707,55 @@ rpmalloc_chunk_double_link_list_pop_head(chunk_t** head) {
 	*head = (*head)->next;
 }
 
-
 ///
 /// Heap span control
 ///
 
 //! Initialize a small span
-static void
+static void*
 rpmalloc_heap_initialize_small_span(heap_t* heap, span_t* span, uint32_t class_idx, uint32_t block_count, uint32_t block_size, uint32_t block_offset) {
+	void* block;
 	memset(span, 0, sizeof(span_t));
-	span->block_count = block_count;
-	span->block_size = block_size;
-	span->block_offset = block_offset;
+	span->block_count = (uint16_t)block_count;
+	span->block_size = (uint16_t)block_size;
+	span->block_offset = (uint16_t)block_offset;
 	span->type = SPAN_TYPE_SMALL;
 	span->size_class = class_idx;
-	_memory_span_double_link_list_add(&heap->partial_small[class_idx], span);
+	span->initialized_count = (uint16_t)rpmalloc_free_list_partial_init(
+		&heap->free[span->size_class], &block, rpmalloc_span_block_start(span),
+		span->block_count, span->block_size);
+	span->used_count = span->initialized_count;
+	if (span->initialized_count < span->block_count)
+		rpmalloc_span_double_link_list_add(&heap->partial_small[class_idx], span);
+	return block;
 }
 
 //! Aqcuire a new small span
-static span_t*
-rpmalloc_heap_allocate_small_span(heap_t* heap, uint32_t class_idx) {
-	span_t* span;
+static void*
+rpmalloc_heap_allocate_small_span_and_block(heap_t* heap, uint32_t class_idx) {
 	// TODO - cache
 	// ...
 
 	if (heap->partial_chunk) {
 		chunk_t* chunk = heap->partial_chunk;
-		span = chunk->span + chunk->initialized_count;
-		rpmalloc_heap_initialize_small_span(heap, span, class_idx, size_class[class_idx].block_count, size_class[class_idx].block_size, chunk->initialized_count);
+		span_t* span = chunk->span + chunk->initialized_count;
+		uint32_t block_offset = (uint32_t)((SPAN_SIZE * chunk->initialized_count) / CHUNK_HEADER_SIZE);
 		if (++chunk->initialized_count == SPAN_COUNT)
 			rpmalloc_chunk_double_link_list_pop_head(&heap->partial_chunk);
+		return rpmalloc_heap_initialize_small_span(heap, span, class_idx, size_class[class_idx].block_count, size_class[class_idx].block_size, block_offset);
 	}
-	else {
-		chunk_t* chunk = rpmalloc_heap_allocate_chunk(heap);
-		span = chunk->span;
-		if (span) {
-			// First span is truncated to accommodate chunk header
-			...
-			rpmalloc_heap_initialize_small_span(heap, span, class_idx, size_class[class_idx].block_count, size_class[class_idx].block_size, 0);
-		}
-		chunk->initialized_count = 1;
-	}
-	return span;
-}
 
-//! Find a small span (SPAN_TYPE_SMALL) for small or medium sized blocks
-static span_t*
-rpmalloc_heap_find_small_span(heap_t* heap, uint32_t class_idx) {
-	span_t* span = heap->partial_small[class_idx];
-	if (span)
-		return span;
-	return rpmalloc_heap_allocate_small_span(heap, class_idx);
+	chunk_t* chunk = rpmalloc_heap_allocate_chunk(heap);
+	if (CHECK_NOT_NULL(chunk)) {
+		span_t* span = chunk->span;
+		// First span is truncated to accommodate chunk header
+		size_t span_size = SPAN_SIZE - CHUNK_HEADER_SIZE;
+		uint32_t block_count = (uint32_t)(span_size / size_class[class_idx].block_size);
+		chunk->initialized_count = 1;
+		return rpmalloc_heap_initialize_small_span(heap, span, class_idx, block_count, size_class[class_idx].block_size, 1);
+	}
+	
+	return 0;
 }
 
 //! Find a large span (SPAN_TYPE_LARGE) for large sized blocks
@@ -814,8 +855,9 @@ static void*
 rpmalloc_heap_allocate_small_medium(heap_t* heap, uint32_t class_idx) {
 	if (heap->free[class_idx])
 		return rpmalloc_free_list_pop(&heap->free[class_idx]);
-	span_t* span = rpmalloc_heap_find_small_span(heap, class_idx);
-	return rpmalloc_span_small_allocate(span, heap);
+	if (heap->partial_small[class_idx])
+		return rpmalloc_span_small_allocate(heap->partial_small[class_idx], heap);
+	return rpmalloc_heap_allocate_small_span_and_block(heap, class_idx);
 }
 
 //! Allocate a large sized memory block from the given heap
@@ -858,10 +900,9 @@ rpmalloc_heap_allocate_block(heap_t* heap, size_t size) {
 static void
 rpmalloc_deallocate_block(void* block) {
 	//Grab the chunk
-	chunk_t* chunk = (chunk_t*)((uintptr_t)block & CHUNK_MASK);
+	chunk_t* chunk = rpmalloc_chunk_from_block(block);
 	if (chunk) {
-		size_t span_idx = ((char*)block - (char*)chunk) >> SPAN_SHIFT;
-		span_t* span = chunk->span + span_idx;
+		span_t* span = rpmalloc_span_from_block(chunk, block);
 		if (span->type == SPAN_TYPE_SMALL)
 			rpmalloc_span_small_deallocate(span, chunk->heap, block);
 		else if (span->type == SPAN_TYPE_LARGE)
@@ -871,27 +912,49 @@ rpmalloc_deallocate_block(void* block) {
 	}
 }
 
+///
+/// Allocate a new chunk
+///
+static chunk_t*
+rpmalloc_heap_allocate_chunk(heap_t* heap) {
+	size_t offset;
+	chunk_t* chunk = rpmalloc_mmap(CHUNK_SIZE, &offset);
+	if (CHECK_NOT_NULL(chunk)) {
+		chunk->thread = rpmalloc_thread_id();
+		chunk->heap = heap;
+		chunk->initialized_count = 0;
+		chunk->offset = offset;
+		chunk->next = 0;
+		heap->partial_chunk = chunk;
+	}
+	return chunk;
+}
 
 ///
 /// Other functions
 ///
 
+//! Calculate size class properties for the given class
+static void
+rpmalloc_size_class_calc(size_t iclass) {
+	size_class[iclass].block_count = (uint16_t)(SPAN_SIZE / (size_t)size_class[iclass].block_size);
+}
+
 //! Adjust and optimize the size class properties for the given class
 static void
-rpmalloc_size_class_adjust(size_t iclass) {
-	size_class[iclass].block_count = (uint16_t)(SPAN_SIZE / (size_t)size_class[iclass].block_size);
+rpmalloc_medium_size_class_adjust(size_t iclass) {
+	rpmalloc_size_class_calc(iclass);
+	medium_class_map[iclass - SMALL_CLASS_COUNT] = (uint16_t)iclass;
 
 	//Check if previous size classes can be merged
-	if (iclass > SMALL_CLASS_COUNT) {
-		size_t prevclass = iclass - 1;
-		while (prevclass >= SMALL_CLASS_COUNT) {
-			//A class can be merged if number of blocks are equal
-			if (size_class[prevclass].block_count != size_class[iclass].block_count)
-				break;
-			size_class[prevclass].block_size = size_class[iclass].block_size;
-			medium_class_map[prevclass - SMALL_CLASS_COUNT] = (uint16_t)(iclass - SMALL_CLASS_COUNT);
-			--prevclass;
-		}
+	size_t prevclass = iclass - 1;
+	while (prevclass >= SMALL_CLASS_COUNT) {
+		//A class can be merged if number of blocks are equal
+		if (size_class[prevclass].block_count != size_class[iclass].block_count)
+			break;
+		size_class[prevclass].block_size = size_class[iclass].block_size;
+		medium_class_map[prevclass - SMALL_CLASS_COUNT] = (uint16_t)iclass;
+		--prevclass;
 	}
 }
 
@@ -971,15 +1034,17 @@ rpmalloc_initialize() {
 
 	size_t iclass = 0;
 	size_t size = SMALL_GRANULARITY;
-	for (iclass = 0; iclass < SMALL_CLASS_COUNT; ++iclass) {
+	size_class[0].block_size = (uint16_t)size;
+	rpmalloc_size_class_calc(0);
+	for (iclass = 1; iclass < SMALL_CLASS_COUNT; ++iclass) {
 		size_class[iclass].block_size = (uint16_t)size;
-		rpmalloc_size_class_adjust(iclass);
+		rpmalloc_size_class_calc(iclass);
 		size += SMALL_GRANULARITY;
 	}
 	size = SMALL_SIZE_LIMIT + MEDIUM_GRANULARITY;
 	for (iclass = 0; iclass < MEDIUM_CLASS_COUNT; ++iclass) {
 		size_class[SMALL_CLASS_COUNT + iclass].block_size = (uint16_t)size;
-		rpmalloc_size_class_adjust(SMALL_CLASS_COUNT + iclass);
+		rpmalloc_medium_size_class_adjust(SMALL_CLASS_COUNT + iclass);
 		size += MEDIUM_GRANULARITY;
 	}
 
@@ -1002,6 +1067,32 @@ extern inline void
 rpfree(void* ptr) {
 	rpmalloc_deallocate_block(ptr);
 }
+
+extern size_t
+rpmalloc_usable_size(void* block) {
+	if (!block)
+		return 0;
+	//Grab the chunk using guaranteed chunk alignment
+	chunk_t* chunk = rpmalloc_chunk_from_block(block);
+	span_t* span = rpmalloc_span_from_block(chunk, block);
+	if (span->size_class < SIZE_CLASS_COUNT) {
+		//Small/medium block
+		void* blocks_start = rpmalloc_span_block_start(span);
+		return span->block_size - ((size_t)pointer_diff(block, blocks_start) % span->block_size);
+	}
+	//TODO:
+	/*
+	if (span->size_class == SIZE_CLASS_LARGE) {
+		//Large block
+		size_t current_spans = span->span_count;
+		return (current_spans * _memory_span_size) - (size_t)pointer_diff(p, span);
+	}
+	//Oversized block, page count is stored in span_count
+	size_t current_pages = span->span_count;
+	return (current_pages * _memory_page_size) - (size_t)pointer_diff(p, span);*/
+	return 0;
+}
+
 #if 0
 extern inline RPMALLOC_ALLOCATOR void*
 rpcalloc(size_t num, size_t size) {
