@@ -190,10 +190,9 @@ reallocarray(void* ptr, size_t count, size_t size) {
 
 extern inline void* RPMALLOC_CDECL
 valloc(size_t size) {
-	get_thread_heap();
 	if (!size)
-		size = _memory_page_size;
-	size_t total_size = size + _memory_page_size;
+		size = os_page_size;
+	size_t total_size = size + os_page_size;
 #if ENABLE_VALIDATE_ARGS
 	if (total_size < size) {
 		errno = EINVAL;
@@ -201,17 +200,16 @@ valloc(size_t size) {
 	}
 #endif
 	void* buffer = rpmalloc(total_size);
-	if ((uintptr_t)buffer & (_memory_page_size - 1))
-		return (void*)(((uintptr_t)buffer & ~(_memory_page_size - 1)) + _memory_page_size);
+	if ((uintptr_t)buffer & (os_page_size - 1))
+		return (void*)(((uintptr_t)buffer & ~(os_page_size - 1)) + os_page_size);
 	return buffer;
 }
 
 extern inline void* RPMALLOC_CDECL
 pvalloc(size_t size) {
-	get_thread_heap();
 	size_t aligned_size = size;
-	if (aligned_size % _memory_page_size)
-		aligned_size = (1 + (aligned_size / _memory_page_size)) * _memory_page_size;
+	if (aligned_size % os_page_size)
+		aligned_size = (1 + (aligned_size / os_page_size)) * os_page_size;
 #if ENABLE_VALIDATE_ARGS
 	if (aligned_size < size) {
 		errno = EINVAL;
