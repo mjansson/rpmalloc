@@ -583,7 +583,7 @@ rpmalloc_span_adopt_deferred_free(span_t* span) {
 	} while ((span->free == INVALID_POINTER) || !atomicptr_cas_acquire(&span->free_defer, INVALID_POINTER, span->free));
 	span->used_count -= span->defer_size;
 	span->defer_size = 0;
-	atomicptr_store_release(&span->free, 0);
+	atomicptr_store_release(&span->free_defer, 0);
 }
 
 //! Allocate a block from a partial span
