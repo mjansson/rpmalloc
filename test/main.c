@@ -497,6 +497,7 @@ end:
 
 static void
 heap_allocator_thread(void* argp) {
+#if RPMALLOC_FIRST_CLASS_HEAPS
 	allocator_thread_arg_t arg = *(allocator_thread_arg_t*)argp;
 	unsigned int iloop = 0;
 	unsigned int ipass = 0;
@@ -570,6 +571,7 @@ heap_allocator_thread(void* argp) {
 
 end:
 	thread_exit((uintptr_t)ret);
+#endif
 }
 
 static void
@@ -935,6 +937,7 @@ test_threadspam(void) {
 
 static int
 test_first_class_heaps(void) {
+#if RPMALLOC_FIRST_CLASS_HEAPS
 	uintptr_t thread[32];
 	uintptr_t threadres[32];
 	unsigned int i;
@@ -992,8 +995,10 @@ test_first_class_heaps(void) {
 			return -1;
 	}
 
-	printf("Heap threaded tests passed\n");
-
+	printf("Threaded First Class Heap tests passed\n");
+#else
+	printf("First Class Heap threaded not supported. Threaded First Class Heap tests not run.\n");
+#endif
 	return 0;
 }
 
