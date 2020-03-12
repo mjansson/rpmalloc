@@ -14,6 +14,20 @@
 // It also provides automatic initialization/finalization of process and threads
 //
 
+#ifdef _MSC_VER
+#include <stddef.h>
+#ifndef ARCH_64BIT
+#  if defined(__LLP64__) || defined(__LP64__) || defined(_WIN64)
+#    define ARCH_64BIT 1
+static_assert(sizeof(size_t) == 8, "Data type size mismatch");
+static_assert(sizeof(void*) == 8, "Data type size mismatch");
+#  else
+#    define ARCH_64BIT 0
+static_assert(sizeof(size_t) == 4, "Data type size mismatch");
+static_assert(sizeof(void*) == 4, "Data type size mismatch");
+#  endif
+
+#else
 #ifndef ARCH_64BIT
 #  if defined(__LLP64__) || defined(__LP64__) || defined(_WIN64)
 #    define ARCH_64BIT 1
@@ -24,6 +38,8 @@ _Static_assert(sizeof(void*) == 8, "Data type size mismatch");
 _Static_assert(sizeof(size_t) == 4, "Data type size mismatch");
 _Static_assert(sizeof(void*) == 4, "Data type size mismatch");
 #  endif
+#endif
+#endif
 #endif
 
 #if (defined(__GNUC__) || defined(__clang__)) && !defined(__MACH__)
