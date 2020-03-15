@@ -173,17 +173,17 @@ typedef volatile void*     atomicptr_t;
 
 static FORCEINLINE int32_t atomic_load32(atomic32_t* src) { return *src; }
 static FORCEINLINE void    atomic_store32(atomic32_t* dst, int32_t val) { *dst = val; }
-static FORCEINLINE int32_t atomic_incr32(atomic32_t* val) { return (int32_t)_InterlockedIncrement(val); }
-static FORCEINLINE int32_t atomic_decr32(atomic32_t* val) { return (int32_t)_InterlockedDecrement(val); }
+static FORCEINLINE int32_t atomic_incr32(atomic32_t* val) { return (int32_t)InterlockedIncrement(val); }
+static FORCEINLINE int32_t atomic_decr32(atomic32_t* val) { return (int32_t)InterlockedDecrement(val); }
 #if ENABLE_STATISTICS || ENABLE_ADAPTIVE_THREAD_CACHE
 static FORCEINLINE int64_t atomic_load64(atomic64_t* src) { return *src; }
-static FORCEINLINE int64_t atomic_add64(atomic64_t* val, int64_t add) { return (int64_t)_InterlockedExchangeAdd64(val, add) + add; }
+static FORCEINLINE int64_t atomic_add64(atomic64_t* val, int64_t add) { return (int64_t)InterlockedExchangeAdd64(val, add) + add; }
 #endif
-static FORCEINLINE int32_t atomic_add32(atomic32_t* val, int32_t add) { return (int32_t)_InterlockedExchangeAdd(val, add) + add; }
+static FORCEINLINE int32_t atomic_add32(atomic32_t* val, int32_t add) { return (int32_t)InterlockedExchangeAdd(val, add) + add; }
 static FORCEINLINE void*   atomic_load_ptr(atomicptr_t* src) { return (void*)*src; }
 static FORCEINLINE void    atomic_store_ptr(atomicptr_t* dst, void* val) { *dst = val; }
 static FORCEINLINE void    atomic_store_ptr_release(atomicptr_t* dst, void* val) { *dst = val; }
-static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref) { return (_InterlockedCompareExchangePointer((void* volatile*)dst, val, ref) == ref) ? 1 : 0; }
+static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref) { return (InterlockedCompareExchangePointer((void* volatile*)dst, val, ref) == ref) ? 1 : 0; }
 static FORCEINLINE int     atomic_cas_ptr_acquire(atomicptr_t* dst, void* val, void* ref) { return atomic_cas_ptr(dst, val, ref); }
 
 #define EXPECTED(x) (x)
