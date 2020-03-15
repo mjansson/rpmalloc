@@ -827,8 +827,8 @@ test_crossthread(void) {
 		arg[ithread].loops = 50;
 		arg[ithread].passes = 1024;
 #else
-		arg[ithread].loops = 20;
-		arg[ithread].passes = 256;
+		arg[ithread].loops = 10;
+		arg[ithread].passes = 128;
 #endif
 		arg[ithread].pointers = rpmalloc(sizeof(void*) * arg[ithread].loops * arg[ithread].passes);
 		memset(arg[ithread].pointers, 0, sizeof(void*) * arg[ithread].loops * arg[ithread].passes);
