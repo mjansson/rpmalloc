@@ -495,6 +495,8 @@ end:
 	thread_exit((uintptr_t)ret);
 }
 
+#if RPMALLOC_FIRST_CLASS_HEAPS
+
 static void
 heap_allocator_thread(void* argp) {
 	allocator_thread_arg_t arg = *(allocator_thread_arg_t*)argp;
@@ -571,6 +573,8 @@ heap_allocator_thread(void* argp) {
 end:
 	thread_exit((uintptr_t)ret);
 }
+
+#endif
 
 static void
 crossallocator_thread(void* argp) {
@@ -819,8 +823,13 @@ test_crossthread(void) {
 
 	for (unsigned int ithread = 0; ithread < num_alloc_threads; ++ithread) {
 		unsigned int iadd = (ithread * (16 + ithread) + ithread) % 128;
+#if defined(__LLP64__) || defined(__LP64__) || defined(_WIN64)
 		arg[ithread].loops = 50;
 		arg[ithread].passes = 1024;
+#else
+		arg[ithread].loops = 20;
+		arg[ithread].passes = 256;
+#endif
 		arg[ithread].pointers = rpmalloc(sizeof(void*) * arg[ithread].loops * arg[ithread].passes);
 		memset(arg[ithread].pointers, 0, sizeof(void*) * arg[ithread].loops * arg[ithread].passes);
 		arg[ithread].datasize[0] = 19 + iadd;
@@ -935,6 +944,7 @@ test_threadspam(void) {
 
 static int
 test_first_class_heaps(void) {
+#if RPMALLOC_FIRST_CLASS_HEAPS
 	uintptr_t thread[32];
 	uintptr_t threadres[32];
 	unsigned int i;
@@ -967,8 +977,13 @@ test_first_class_heaps(void) {
 		arg[i].datasize[14] = 38934;
 		arg[i].datasize[15] = 234;
 		arg[i].num_datasize = 16;
+#if defined(__LLP64__) || defined(__LP64__) || defined(_WIN64)
 		arg[i].loops = 100;
 		arg[i].passes = 4000;
+#else
+		arg[i].loops = 50;
+		arg[i].passes = 1000;
+#endif
 		arg[i].init_fini_each_loop = 1;
 
 		thread_arg targ;
@@ -993,7 +1008,7 @@ test_first_class_heaps(void) {
 	}
 
 	printf("Heap threaded tests passed\n");
-
+#endif
 	return 0;
 }
 
