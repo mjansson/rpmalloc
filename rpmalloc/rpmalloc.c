@@ -662,9 +662,9 @@ rpmalloc_span_small_deallocate(span_t* span, void* block) {
 	int defer = (span->thread != rpmalloc_thread_id());
 	if (span->flags & SPAN_FLAG_ALIGNED_BLOCKS) {
 		//Realign pointer to block start
-		void* blocks_start = pointer_offset(span, SPAN_SIZE * span->block_offset);
-		uint32_t block_offset = (uint32_t)pointer_diff(block, blocks_start);
-		block = pointer_offset(block, -(int32_t)(block_offset % span->block_size));
+		void* blocks_start = rpmalloc_span_block_start(span);
+		uint32_t block_align_offset = (uint32_t)pointer_diff(block, blocks_start);
+		block = pointer_offset(block, -(int32_t)(block_align_offset % span->block_size));
 	}
 	if (defer)
 		rpmalloc_span_small_deallocate_defer(span, block);
@@ -979,14 +979,14 @@ rpmalloc_heap_aligned_allocate_block(heap_t* heap, size_t alignment, size_t size
 		// then use natural alignment of blocks to provide alignment
 		size_t multiple_size = size ? (size + (SPAN_HEADER_SIZE - 1)) & ~(uintptr_t)(SPAN_HEADER_SIZE - 1) : SPAN_HEADER_SIZE;
 		rpmalloc_assert(!(multiple_size % SPAN_HEADER_SIZE));
-		if (multiple_size <= (size + alignment))
+		if (multiple_size <= total)
 			return rpmalloc_heap_allocate_block(heap, multiple_size);
 	}
 
-	void* block = 0;
+	void* block;
 	size_t align_mask = alignment - 1;
 	if (alignment <= os_page_size) {
-		block = rpmalloc_heap_allocate_block(heap, size + alignment);
+		block = rpmalloc_heap_allocate_block(heap, total);
 		if ((uintptr_t)block & align_mask) {
 			block = (void*)(((uintptr_t)block & ~(uintptr_t)align_mask) + alignment);
 			//Mark as having aligned blocks
@@ -995,6 +995,8 @@ rpmalloc_heap_aligned_allocate_block(heap_t* heap, size_t alignment, size_t size
 		}
 		return block;
 	}
+
+	block = 0;
 #if 0
 	// Fallback to mapping new pages for this request. Since pointers passed
 	// to rpfree must be able to reach the start of the span by bitmasking of
@@ -1126,9 +1128,14 @@ rpmalloc_heap_reallocate_block(heap_t* heap, void* block, size_t size, size_t ol
 	}
 
 	if (!!(flags & RPMALLOC_GROW_OR_FAIL))
+	{
+		if (oldsize >= size)
+			return block;
 		return 0;
+	}
 
-	//Size is greater than block size, need to allocate a new block and deallocate the old
+	//Size is greater than block size or small enough to warrant reallocation,
+	//need to allocate a new block and deallocate the old.
 	//Avoid hysteresis by overallocating if increase is small (below 37%)
 	size_t lower_bound = oldsize + (oldsize >> 2) + (oldsize >> 3);
 	size_t new_size = (size > lower_bound) ? size : ((size > oldsize) ? lower_bound : size);

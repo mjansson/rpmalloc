@@ -129,7 +129,7 @@ test_alloc(void) {
 		}
 		rpfree(testptr);
 	}
-
+#if 0
 	static size_t alignment[5] = { 0, 32, 64, 128, 256 };
 	for (iloop = 0; iloop < 5; ++iloop) {
 		for (ipass = 0; ipass < 128 * 1024; ++ipass) {
@@ -170,7 +170,7 @@ test_alloc(void) {
 			rpfree(baseptr);
 		}
 	}
-
+#endif
 	for (iloop = 0; iloop < 64; ++iloop) {
 		for (ipass = 0; ipass < 8142; ++ipass) {
 			addr[ipass] = rpmalloc(500);
