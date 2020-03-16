@@ -1189,7 +1189,7 @@ rpmalloc_heap_allocate_chunk(heap_t* heap, size_t size) {
 //! Calculate size class properties for the given class
 static void
 rpmalloc_size_class_calc(size_t iclass) {
-	size_class[iclass].block_count = (uint16_t)(SPAN_SIZE / (size_t)size_class[iclass].block_size);
+	size_class[iclass].block_count = (uint16_t)((SPAN_SIZE - SPAN_HEADER_SIZE) / (size_t)size_class[iclass].block_size);
 }
 
 //! Adjust and optimize the size class properties for the given class

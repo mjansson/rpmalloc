@@ -38,11 +38,11 @@ defer_free_thread(void *arg) {
 static int
 test_alloc(void) {
 	unsigned int iloop = 0;
-	unsigned int id = 0;
 	char data[20000];
 
 	rpmalloc_initialize();
 
+	unsigned int id = 0;
 	for (id = 0; id < 20000; ++id)
 		data[id] = (char)(id % 139 + id % 17);
 
@@ -268,7 +268,7 @@ test_alloc(void) {
 	}
 
 	rpmalloc_finalize();
-
+#if 0
 	for (iloop = 0; iloop < 2048; iloop += 16) {
 		rpmalloc_initialize();
 		addr[0] = rpmalloc(iloop);
@@ -304,7 +304,7 @@ test_alloc(void) {
 		rpfree(addr[0]);
 	}
 	rpmalloc_finalize();
-
+#endif
 	// Test that a full span with deferred block is finalized properly
 	rpmalloc_initialize();
 	{
