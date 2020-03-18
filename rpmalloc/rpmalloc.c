@@ -740,9 +740,9 @@ rpmalloc_span_small_deallocate(span_t* span, void* block) {
 
 static void
 rpmalloc_span_large_deallocate(span_t* span, void* block) {
-	//TODO
-	(void)sizeof(span);
 	(void)sizeof(block);
+	chunk_t* chunk = rpmalloc_chunk_from_span(span);
+	rpmalloc_chunk_add_free_span(chunk, span);
 }
 
 static void
@@ -796,9 +796,6 @@ rpmalloc_heap_initialize_large_span(heap_t* heap, span_t* span, size_t chunk_ind
 //! Allocate a new small span (SPAN_TYPE_SMALL) from heap and allocate the first memory block from the span
 static void*
 rpmalloc_heap_allocate_small_span_and_block(heap_t* heap, uint32_t class_idx) {
-	// TODO - cache
-	// ...
-
 	if (heap->partial_chunk) {
 		chunk_t* chunk = heap->partial_chunk;
 		//Utilize a free span before initializing more spans
@@ -814,7 +811,9 @@ rpmalloc_heap_allocate_small_span_and_block(heap_t* heap, uint32_t class_idx) {
 				if (chunk->free)
 					chunk->free->prev = tail;
 			} else {
-				//TODO: Split a large span
+				//Split a large span
+				span_t* next = rpmalloc_span_large_split(span, 1);
+				rpmalloc_span_double_link_list_add_tail(&chunk->free, next);
 			}
 			chunk_index = span->chunk_index;
 			block_offset = span->block_offset;
@@ -851,6 +850,8 @@ rpmalloc_heap_allocate_large_span_and_block(heap_t* heap, size_t size) {
 	uint32_t span_count = (uint32_t)((size + SPAN_HEADER_SIZE + SPAN_SIZE - 1) >> SPAN_SHIFT);
 	chunk_t* chunk = heap->partial_chunk;
 	while (chunk) {
+		check chunk free list from head if span count is 1
+		else check chunk free list from tail until finding one large enough if span count > 1
 		if ((SPAN_COUNT - chunk->initialized_count) >= span_count) {
 			span_t* span = (span_t*)pointer_offset(chunk, SPAN_SIZE * chunk->initialized_count);
 			rpmalloc_heap_initialize_large_span(heap, span, chunk->initialized_count, span_count, SPAN_HEADER_SIZE);
