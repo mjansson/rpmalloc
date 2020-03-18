@@ -146,14 +146,15 @@ struct span_s {
 };
 
 //! A chunk is a collection of spans, which can be of different types. A chunk
-//  is always owned by a heap, but the individual spans can float between heaps.
-//  Span control blocks are located at the start of each span.
+//  is always owned by a heap. Span control blocks are located at the start of each span.
 struct chunk_s {
 	//! A chunk always starts with the first span header
 	span_t       first_span;
 	//! Owning heap
 	heap_t*      heap;
-	//! Span initialized count
+	//! List of free spans in increasing size order
+	span_t*      free;
+	//! Number of initialized spans
 	uint32_t     initialized_count;
 	//! Offset to start of memory mapped region
 	uint32_t     mapped_offset;
@@ -543,6 +544,55 @@ rpmalloc_free_list_partial_init(void** list, void** first_block, void* block_sta
 
 
 ///
+/// Chunk control
+///
+
+static void
+rpmalloc_span_double_link_list_add(span_t** head, span_t* span);
+
+//! Pop head chunk from double linked list
+static void
+rpmalloc_chunk_double_link_list_pop_head(chunk_t** head) {
+	*head = (*head)->next;
+}
+
+//! Unlink chunk from double linked list
+static void
+rpmalloc_chunk_double_link_list_remove(chunk_t** head, chunk_t* chunk) {
+	if (*head == chunk) {
+		rpmalloc_chunk_double_link_list_pop_head(head);
+		return;
+	}
+	chunk->prev->next = chunk->next;
+	if (chunk->next)
+		chunk->next->prev = chunk->prev;
+}
+
+//! Link chunk to double linked list
+static void
+rpmalloc_chunk_double_link_list_add(chunk_t** head, chunk_t* chunk) {
+	if (*head)
+		(*head)->prev = chunk;
+	chunk->next = *head;
+	*head = chunk;
+}
+
+//! Add a span as free in the chunk
+static void
+rpmalloc_chunk_add_free_span(chunk_t* chunk, span_t* span) {
+	//If chunk is previously fully used, add it to heap partial list
+	if (!chunk->free && (chunk->initialized_count == SPAN_COUNT))
+		rpmalloc_chunk_double_link_list_add(&chunk->heap->partial_chunk, chunk);
+	//Maintain a link to the tail of the list
+	span_t* tail = chunk->free ? chunk->free->prev : span;
+	if (chunk->free)
+		chunk->free->prev = span;
+	rpmalloc_span_double_link_list_add(&chunk->free, span);
+	span->prev = tail;
+}
+
+
+///
 /// Span control
 ///
 
@@ -562,6 +612,18 @@ rpmalloc_span_double_link_list_add(span_t** head, span_t* span) {
 static void
 rpmalloc_span_double_link_list_pop_head(span_t** head) {
 	*head = (*head)->next;
+}
+
+//! Remove a span from double linked list
+static void
+rpmalloc_span_double_link_list_remove(span_t** head, span_t* span) {
+	if (*head == span) {
+		rpmalloc_span_double_link_list_pop_head(head);
+	} else {
+		if (span->next)
+			span->next->prev = span->prev;
+		span->prev->next = span->next;
+	}
 }
 
 //! Check if span is fully used
@@ -634,26 +696,30 @@ rpmalloc_span_small_deallocate_defer(span_t* span, void* block) {
 		// TODO
 		//_memory_deallocate_defer_free_span(span->heap, span);
 	}
-	else if (free_count == span->used_count) {
-		// TODO - devise a method to free this span in order to avoid it sitting
-		//        completely free in partial list of owning chunk. Perhaps in
-		//        conjunction with checking if heap is abandoned
-	}
+	// TODO - devise a method to free this span in order to avoid it sitting
+	//        completely free in partial list of owning chunk. Perhaps in
+	//        conjunction with checking if heap is abandoned
+	// else if (free_count == span->used_count) {
+	//    ...
+	// }
 }
-
 
 static void
 rpmalloc_span_small_deallocate_direct(span_t* span, void* block) {
-	//Add block to free list
+	//If span is fully utilized and free floating, add to list of partial spans for the size class
 	if (rpmalloc_span_is_fully_utilized(span)) {
 		chunk_t* chunk = rpmalloc_chunk_from_span(span);
 		rpmalloc_span_double_link_list_add(&chunk->heap->partial_small[span->size_class], span);
 	}
+	//Add block to free list
 	--span->used_count;
 	*((void**)block) = span->free;
 	span->free = block;
+	//If span is completely free, remove from partial list for size class and add it to list of free spans
 	if (span->used_count == span->defer_size) {
-		//TODO - span fully freed
+		chunk_t* chunk = rpmalloc_chunk_from_span(span);
+		rpmalloc_span_double_link_list_remove(&chunk->heap->partial_small[span->size_class], span);
+		rpmalloc_chunk_add_free_span(chunk, span);
 	}
 }
 
@@ -684,38 +750,6 @@ rpmalloc_span_huge_deallocate(span_t* span, void* block) {
 	//TODO
 	(void)sizeof(span);
 	(void)sizeof(block);
-}
-
-
-///
-/// Chunk control
-///
-
-//! Pop head chunk from double linked list
-static void
-rpmalloc_chunk_double_link_list_pop_head(chunk_t** head) {
-	*head = (*head)->next;
-}
-
-//! Unlink chunk from double linked list
-static void
-rpmalloc_chunk_double_link_list_remove(chunk_t** head, chunk_t* chunk) {
-	if (*head == chunk) {
-		rpmalloc_chunk_double_link_list_pop_head(head);
-		return;
-	}
-	chunk->prev->next = chunk->next;
-	if (chunk->next)
-		chunk->next->prev = chunk->prev;
-}
-
-//! Link chunk to double linked list
-static void
-rpmalloc_chunk_double_link_list_add(chunk_t** head, chunk_t* chunk) {
-	if (*head)
-		(*head)->prev = chunk;
-	chunk->next = *head;
-	*head = chunk;
 }
 
 ///
@@ -767,11 +801,32 @@ rpmalloc_heap_allocate_small_span_and_block(heap_t* heap, uint32_t class_idx) {
 
 	if (heap->partial_chunk) {
 		chunk_t* chunk = heap->partial_chunk;
-		span_t* span = (span_t*)pointer_offset(chunk, SPAN_SIZE * chunk->initialized_count);
-		void* block = rpmalloc_heap_initialize_small_span(heap, span, chunk->initialized_count, class_idx, size_class[class_idx].block_count, size_class[class_idx].block_size, SPAN_HEADER_SIZE);
-		if (++chunk->initialized_count == SPAN_COUNT)
+		//Utilize a free span before initializing more spans
+		span_t* span;
+		uint32_t chunk_index;
+		uint32_t block_offset;
+		if (chunk->free) {
+			//Maintain a link to the tail span
+			span_t* tail = chunk->free->prev;
+			span = chunk->free;
+			if (span->type == SPAN_TYPE_SMALL) {
+				rpmalloc_span_double_link_list_pop_head(&chunk->free);
+				if (chunk->free)
+					chunk->free->prev = tail;
+			} else {
+				//TODO: Split a large span
+			}
+			chunk_index = span->chunk_index;
+			block_offset = span->block_offset;
+		} else {
+			//Initialize a new span
+			span = (span_t*)pointer_offset(chunk, SPAN_SIZE * chunk->initialized_count);
+			chunk_index = chunk->initialized_count++;
+			block_offset = SPAN_HEADER_SIZE;
+		}
+		if (!chunk->free && (chunk->initialized_count == SPAN_COUNT))
 			rpmalloc_chunk_double_link_list_pop_head(&heap->partial_chunk);
-		return block;
+		return rpmalloc_heap_initialize_small_span(heap, span, chunk_index, class_idx, size_class[class_idx].block_count, size_class[class_idx].block_size, block_offset);
 	}
 
 	chunk_t* chunk = rpmalloc_heap_allocate_chunk(heap, CHUNK_SIZE);
@@ -1182,6 +1237,7 @@ rpmalloc_heap_allocate_chunk(heap_t* heap, size_t size) {
 	chunk_t* chunk = rpmalloc_mmap(size, &offset);
 	if (CHECK_NOT_NULL(chunk)) {
 		chunk->heap = heap;
+		chunk->free = 0;
 		chunk->initialized_count = 0;
 		chunk->mapped_offset = (uint32_t)offset;
 		chunk->mapped_size = size;
