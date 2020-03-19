@@ -129,7 +129,7 @@ test_alloc(void) {
 		}
 		rpfree(testptr);
 	}
-#if 0
+
 	static size_t alignment[5] = { 0, 32, 64, 128, 256 };
 	for (iloop = 0; iloop < 5; ++iloop) {
 		for (ipass = 0; ipass < 128 * 1024; ++ipass) {
@@ -170,7 +170,7 @@ test_alloc(void) {
 			rpfree(baseptr);
 		}
 	}
-#endif
+
 	for (iloop = 0; iloop < 64; ++iloop) {
 		for (ipass = 0; ipass < 8142; ++ipass) {
 			addr[ipass] = rpmalloc(500);
@@ -268,7 +268,7 @@ test_alloc(void) {
 	}
 
 	rpmalloc_finalize();
-#if 0
+
 	for (iloop = 0; iloop < 2048; iloop += 16) {
 		rpmalloc_initialize();
 		addr[0] = rpmalloc(iloop);
@@ -304,7 +304,7 @@ test_alloc(void) {
 		rpfree(addr[0]);
 	}
 	rpmalloc_finalize();
-#endif
+
 	// Test that a full span with deferred block is finalized properly
 	rpmalloc_initialize();
 	{
@@ -323,7 +323,7 @@ test_alloc(void) {
 
 	return 0;
 }
-#if 0
+
 static int
 test_realloc(void) {
 	srand((unsigned int)time(0));
@@ -372,7 +372,7 @@ test_superalign(void) {
 
 	rpmalloc_initialize();
 
-	size_t alignment[] = { 2048, 4096, 8192, 16384, 32768 };
+	size_t alignment[] = { 1024, 2048, 4096 };//{ 2048, 4096, 8192, 16384, 32768 };
 	size_t sizes[] = { 187, 1057, 2436, 5234, 9235, 17984, 35783, 72436 };
 
 	for (size_t ipass = 0; ipass < 8; ++ipass) {
@@ -380,11 +380,13 @@ test_superalign(void) {
 			for (size_t ialign = 0, asize = sizeof(alignment) / sizeof(alignment[0]); ialign < asize; ++ialign) {
 				for (size_t isize = 0, ssize = sizeof(sizes) / sizeof(sizes[0]); isize < ssize; ++isize) {
 					size_t alloc_size = sizes[isize] + iloop + ipass;
+					if(iloop == 7 && ialign == 2 && isize == 4)
+						isize = isize;
 					uint8_t* ptr = rpaligned_alloc(alignment[ialign], alloc_size);
 					if (!ptr || ((uintptr_t)ptr & (alignment[ialign] - 1)))
 						return test_fail("Super alignment allocation failed");
-					ptr[0] = 1;
-					ptr[alloc_size - 1] = 1;
+					ptr[0] = (uint8_t)(iloop + 1);
+					ptr[alloc_size - 1] = (uint8_t)(iloop + 1);
 					rpfree(ptr);
 				}
 			}
@@ -397,7 +399,7 @@ test_superalign(void) {
 
 	return 0;
 }
-
+#if 0
 typedef struct _allocator_thread_arg {
 	unsigned int        loops;
 	unsigned int        passes; //max 4096
@@ -1005,11 +1007,11 @@ test_run(int argc, char** argv) {
 	test_initialize();
 	if (test_alloc())
 		return -1;
-#if 0
 	if (test_realloc())
 		return -1;
 	if (test_superalign())
 		return -1;
+#if 0
 	if (test_crossthread())
 		return -1;
 	if (test_threadspam())
