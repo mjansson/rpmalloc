@@ -372,7 +372,7 @@ test_superalign(void) {
 
 	rpmalloc_initialize();
 
-	size_t alignment[] = { 1024, 2048, 4096 };//{ 2048, 4096, 8192, 16384, 32768 };
+	size_t alignment[] = { 2048, 4096, 8192, 16384, 32768 };
 	size_t sizes[] = { 187, 1057, 2436, 5234, 9235, 17984, 35783, 72436 };
 
 	for (size_t ipass = 0; ipass < 8; ++ipass) {
@@ -380,8 +380,6 @@ test_superalign(void) {
 			for (size_t ialign = 0, asize = sizeof(alignment) / sizeof(alignment[0]); ialign < asize; ++ialign) {
 				for (size_t isize = 0, ssize = sizeof(sizes) / sizeof(sizes[0]); isize < ssize; ++isize) {
 					size_t alloc_size = sizes[isize] + iloop + ipass;
-					if(iloop == 7 && ialign == 2 && isize == 4)
-						isize = isize;
 					uint8_t* ptr = rpaligned_alloc(alignment[ialign], alloc_size);
 					if (!ptr || ((uintptr_t)ptr & (alignment[ialign] - 1)))
 						return test_fail("Super alignment allocation failed");
@@ -399,7 +397,7 @@ test_superalign(void) {
 
 	return 0;
 }
-#if 0
+
 typedef struct _allocator_thread_arg {
 	unsigned int        loops;
 	unsigned int        passes; //max 4096
@@ -999,7 +997,7 @@ test_first_class_heaps(void) {
 
 	return 0;
 }
-#endif
+
 int
 test_run(int argc, char** argv) {
 	(void)sizeof(argc);
@@ -1011,9 +1009,9 @@ test_run(int argc, char** argv) {
 		return -1;
 	if (test_superalign())
 		return -1;
-#if 0
 	if (test_crossthread())
 		return -1;
+#if 0
 	if (test_threadspam())
 		return -1;
 	if (test_threaded())

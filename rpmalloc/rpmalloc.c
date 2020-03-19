@@ -136,11 +136,9 @@ struct span_s {
 	//! Flags
 	uint32_t     flags:4;
 	//! Offset to blocks start (header size)
-	uint32_t     block_offset:16;
+	uint32_t     block_offset:8;
 	//! Unused
-	uint32_t     unused:2;
-	//! Span count for large or huge spans
-	uint32_t     span_count;
+	uint32_t     span_count:10;
 	//! Owning thread ID
 	uintptr_t    thread;
 	//! Free list deferred from other threads
@@ -149,6 +147,8 @@ struct span_s {
 	span_t*      prev;
 	//! Next span
 	span_t*      next;
+	//! Link to next span in deferred span list
+	span_t*      next_deferred_span;
 };
 
 //! A chunk is a collection of spans, which can be of different types. A chunk
@@ -184,6 +184,8 @@ struct heap_s {
 	span_t*      partial_small[SIZE_CLASS_COUNT];
 	//! Chunk list (double linked)
 	chunk_t*     partial_chunk;
+	//! List of deferred free spans
+	atomicptr_t  free_span_deferred;
 	//! Identifier
 	size_t       id;
 	//! Align offset in memory mapping
@@ -271,6 +273,7 @@ static void  atomicptr_store(atomicptr_t* dst, void* val) { *dst = val; }
 static void  atomicptr_store_release(atomicptr_t* dst, void* val) { *dst = val; }
 static int   atomicptr_cas(atomicptr_t* dst, void* val, void* ref) { return (_InterlockedCompareExchangePointer((void* volatile*)dst, val, ref) == ref) ? 1 : 0; }
 static int   atomicptr_cas_acquire(atomicptr_t* dst, void* val, void* ref) { return atomicptr_cas(dst, val, ref); }
+static void* atomicptr_exchange(atomicptr_t* dst, void* val) { return InterlockedExchangePointer((void* volatile*)dst, val); }
 
 #else
 
@@ -282,6 +285,7 @@ static void  atomicptr_store(atomicptr_t* dst, void* val) { atomic_store_explici
 static void  atomicptr_store_release(atomicptr_t* dst, void* val) { atomic_store_explicit(dst, val, memory_order_release); }
 static int   atomicptr_cas(atomicptr_t* dst, void* val, void* ref) { return atomic_compare_exchange_weak_explicit(dst, &ref, val, memory_order_relaxed, memory_order_relaxed); }
 static int   atomicptr_cas_acquire(atomicptr_t* dst, void* val, void* ref) { return atomic_compare_exchange_weak_explicit(dst, &ref, val, memory_order_acquire, memory_order_relaxed); }
+static void* atomicptr_exchange(atomicptr_t* dst, void* val) { return atomic_exchange_explicit(dst, val, memory_order_relaxed); }
 
 #endif
 
@@ -331,6 +335,12 @@ static atomicsize_t heap_id;
 
 static chunk_t*
 rpmalloc_heap_allocate_chunk(heap_t* heap, size_t size);
+
+static void
+rpmalloc_heap_defer_free_span(heap_t* heap, span_t* span);
+
+static void
+rpmalloc_heap_collect_free_span(heap_t* heap);
 
 
 ///
@@ -579,17 +589,6 @@ rpmalloc_chunk_double_link_list_remove(chunk_t** head, chunk_t* chunk) {
 //! Link chunk to double linked list
 static void
 rpmalloc_chunk_double_link_list_add(chunk_t** head, chunk_t* chunk) {
-	//DEBUG
-	if (*head) {
-		chunk_t* check = *head;
-		while (check) {
-			if (check == chunk)
-				check = check;
-			check = check->next;
-			if (check == *head)
-				check = check;
-		}
-	}
 	if (*head)
 		(*head)->prev = chunk;
 	chunk->next = *head;
@@ -619,13 +618,11 @@ rpmalloc_chunk_add_free_span(chunk_t* chunk, span_t* span) {
 			while (prev->span_count > span->span_count)
 				prev = prev->prev;
 			span->next = prev->next;
-			prev->next = span;
 			span->prev = prev;
+			prev->next->prev = span;
+			prev->next = span;
 		}
 	}
-	//DEBUG
-	if (chunk->free->prev->next != 0)
-		chunk = chunk;
 }
 
 //! Update chunk state
@@ -663,9 +660,6 @@ rpmalloc_span_double_link_list_with_tail_add(span_t** head, span_t* span) {
 		tail = (*head)->prev;
 	rpmalloc_span_double_link_list_add(head, span);
 	span->prev = tail;
-	//DEBUG
-	if (span->prev->next != 0)
-		span = span;
 }
 
 //! Pop head span from double linked list
@@ -679,12 +673,8 @@ static void
 rpmalloc_span_double_link_list_with_tail_pop_head(span_t** head) {
 	span_t* tail = (*head)->prev;
 	rpmalloc_span_double_link_list_pop_head(head);
-	if (*head) {
+	if (*head)
 		(*head)->prev = tail;
-		//DEBUG
-		if (tail->next != 0)
-			tail = tail;
-	}
 }
 
 //! Remove a span from double linked list
@@ -714,11 +704,6 @@ rpmalloc_span_double_link_list_with_tail_remove(span_t** head, span_t* span) {
 				span->next->prev = span->prev;
 			span->prev->next = span->next;
 		}
-	}
-	//DEBUG
-	if (*head) {
-		if ((*head)->prev->next != 0)
-			span = span;
 	}
 }
 
@@ -799,8 +784,8 @@ rpmalloc_span_small_deallocate_defer(span_t* span, void* block) {
 		// Span was completely freed by this block with everything in defer list.
 		// Due to the INVALID_POINTER spin lock no other thread can reach this state
 		// simultaneously on this span. Safe to move to owner heap deferred cache
-		// TODO
-		//_memory_deallocate_defer_free_span(span->heap, span);
+		chunk_t* chunk = rpmalloc_chunk_from_span(span);
+		rpmalloc_heap_defer_free_span(chunk->heap, span);
 	}
 	// TODO - devise a method to free this span in order to avoid it sitting
 	//        completely free in partial list of owning chunk. Perhaps in
@@ -838,17 +823,21 @@ rpmalloc_span_small_deallocate(span_t* span, void* block) {
 		uint32_t block_align_offset = (uint32_t)pointer_diff(block, blocks_start);
 		block = pointer_offset(block, -(int32_t)(block_align_offset % span->block_size));
 	}
-	if (defer)
-		rpmalloc_span_small_deallocate_defer(span, block);
-	else
+	if (!defer)
 		rpmalloc_span_small_deallocate_direct(span, block);
+	else
+		rpmalloc_span_small_deallocate_defer(span, block);
 }
 
 static void
 rpmalloc_span_large_deallocate(span_t* span, void* block) {
 	(void)sizeof(block);
+	int defer = (span->thread != rpmalloc_thread_id());
 	chunk_t* chunk = rpmalloc_chunk_from_span(span);
-	rpmalloc_chunk_add_free_span(chunk, span);
+	if (!defer)
+		rpmalloc_chunk_add_free_span(chunk, span);
+	else
+		rpmalloc_heap_defer_free_span(chunk->heap, span);
 }
 
 static void
@@ -898,11 +887,14 @@ rpmalloc_heap_initialize_large_span(heap_t* heap, span_t* span, size_t chunk_ind
 	span->chunk_index = (uint16_t)chunk_index;
 	span->type = SPAN_TYPE_LARGE;
 	span->span_count = span_count;
+	span->thread = rpmalloc_thread_id();
 }
 
 //! Allocate a new small span (SPAN_TYPE_SMALL) from heap and allocate the first memory block from the span
 static void*
 rpmalloc_heap_allocate_small_span_and_block(heap_t* heap, uint32_t class_idx) {
+	rpmalloc_heap_collect_free_span(heap);
+
 	chunk_t* chunk = heap->partial_chunk;
 	if (chunk) {
 		span_t* span;
@@ -947,6 +939,8 @@ rpmalloc_heap_allocate_small_span_and_block(heap_t* heap, uint32_t class_idx) {
 //! Allocate a large span (SPAN_TYPE_LARGE) from heap
 static span_t*
 rpmalloc_heap_allocate_large_span_and_block(heap_t* heap, size_t size) {
+	rpmalloc_heap_collect_free_span(heap);
+
 	uint32_t span_count = (uint32_t)((size + SPAN_HEADER_SIZE + SPAN_SIZE - 1) >> SPAN_SHIFT);
 	chunk_t* chunk = heap->partial_chunk;
 	while (chunk) {
@@ -1158,6 +1152,27 @@ rpmalloc_deallocate_block(void* block) {
 	}
 }
 
+static void
+rpmalloc_heap_collect_free_span(heap_t* heap) {
+	//This list does not need ABA protection, no mutable side state
+	span_t* span = atomicptr_exchange(&heap->free_span_deferred, 0);
+	while (span) {
+		chunk_t* chunk = rpmalloc_chunk_from_span(span);
+		span_t* next = span->next_deferred_span;	
+		rpmalloc_chunk_add_free_span(chunk, span);
+		span = next;
+	}
+}
+
+static void
+rpmalloc_heap_defer_free_span(heap_t* heap, span_t* span) {
+	//This list does not need ABA protection, no mutable side state
+	do {
+		span->next_deferred_span = atomicptr_load(&heap->free_span_deferred);
+	} while (!atomicptr_cas(&heap->free_span_deferred, span, span->next_deferred_span));
+}
+
+//! Allocate block with alignment
 static void*
 rpmalloc_heap_aligned_allocate_block(heap_t* heap, size_t alignment, size_t size) {
 	if (alignment <= SMALL_GRANULARITY)
@@ -1585,12 +1600,12 @@ rpmalloc_usable_size(void* block) {
 	}
 	if (span->type == SPAN_TYPE_LARGE) {
 		//Large block
-		return (span->span_count * SPAN_SIZE) - (size_t)pointer_diff(block, span);
+		void* blocks_start = rpmalloc_span_block_start(span);
+		return (span->span_count * SPAN_SIZE) - (size_t)pointer_diff(block, blocks_start);
 	}
-	//TODO: Oversized block, page count is stored in span_count
-	/*size_t current_pages = span->span_count;
-	return (current_pages * _memory_page_size) - (size_t)pointer_diff(p, span);*/
-	return 0;
+	chunk_t* chunk = (chunk_t*)span;
+	void* blocks_start = rpmalloc_span_block_start(span);
+	return chunk->mapped_size - (size_t)pointer_diff(block, blocks_start);
 }
 
 #if ENABLE_PRELOAD || ENABLE_OVERRIDE
