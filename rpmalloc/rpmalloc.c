@@ -160,6 +160,8 @@ struct chunk_s {
 	heap_t*      heap;
 	//! List of free spans in increasing size order
 	span_t*      free;
+	//! Number of free spans
+	uint32_t     free_count;
 	//! Number of initialized spans
 	uint32_t     initialized_count;
 	//! State
@@ -182,8 +184,14 @@ struct heap_s {
 	void*        free[SIZE_CLASS_COUNT];
 	//! Partial small type span list for each size class (double linked)
 	span_t*      partial_small[SIZE_CLASS_COUNT];
-	//! Chunk list (double linked)
+	//! Chunk list of partially used chunks (double linked)
 	chunk_t*     partial_chunk;
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	//! Chunk list of fully used chunks (double linked)
+	chunk_t*     full_chunk;
+#endif
+	//! Chunk list of completely free chunks (single linked)
+	chunk_t*     free_chunk;
 	//! List of deferred free spans
 	atomicptr_t  free_span_deferred;
 	//! Identifier
@@ -295,8 +303,10 @@ static void* atomicptr_exchange(atomicptr_t* dst, void* val) { return atomic_exc
 #define pointer_diff(first, second) (ptrdiff_t)((const char*)(first) - (const char*)(second))
 
 #if ENABLE_NULL_CHECKS
+#  define CHECK_NULL(x) (!(x))
 #  define CHECK_NOT_NULL(x) (!!(x))
 #else
+#  define CHECK_NULL(x) 0
 #  define CHECK_NOT_NULL(x) 1
 #endif
 
@@ -334,14 +344,13 @@ static atomicsize_t heap_id;
 ///
 
 static chunk_t*
-rpmalloc_heap_allocate_chunk(heap_t* heap, size_t size);
+rpmalloc_heap_allocate_chunk(heap_t* heap);
 
 static void
 rpmalloc_heap_defer_free_span(heap_t* heap, span_t* span);
 
 static void
 rpmalloc_heap_collect_free_span(heap_t* heap);
-
 
 ///
 /// Memory mapping
@@ -420,7 +429,6 @@ rpmalloc_unmap(void* address, size_t size, size_t offset, size_t release) {
 	}
 #endif
 }
-
 
 ///
 /// Thread local heap
@@ -516,7 +524,6 @@ rpmalloc_chunk_from_span(span_t* span) {
 	return (chunk_t*)((uintptr_t)span - (SPAN_SIZE * span->chunk_index));
 }
 
-
 ///
 /// Free list control
 ///
@@ -560,7 +567,6 @@ rpmalloc_free_list_partial_init(void** list, void** first_block, void* block_sta
 	return block_count;
 }
 
-
 ///
 /// Chunk control
 ///
@@ -598,9 +604,25 @@ rpmalloc_chunk_double_link_list_add(chunk_t** head, chunk_t* chunk) {
 //! Add a span as free in the chunk
 static void
 rpmalloc_chunk_add_free_span(chunk_t* chunk, span_t* span) {
+	chunk->free_count += span->span_count;
+	if (chunk->free_count == chunk->initialized_count) {
+		if (chunk->state == CHUNK_STATE_PARTIAL)
+			rpmalloc_chunk_double_link_list_remove(&chunk->heap->partial_chunk, chunk);
+#if RPMALLOC_FIRST_CLASS_HEAPS
+		else //if (chunk->state == CHUNK_STATE_FULL)
+			rpmalloc_chunk_double_link_list_remove(&chunk->heap->full_chunk, chunk);
+#endif
+		chunk->state = CHUNK_STATE_FREE;
+		chunk->next = chunk->heap->free_chunk;
+		chunk->heap->free_chunk = chunk;
+		return;
+	}
 	//If chunk is previously fully used, add it to heap partial list
 	if (chunk->state == CHUNK_STATE_FULL) {
 		chunk->state = CHUNK_STATE_PARTIAL;
+#if RPMALLOC_FIRST_CLASS_HEAPS
+		rpmalloc_chunk_double_link_list_remove(&chunk->heap->full_chunk, chunk);
+#endif
 		rpmalloc_chunk_double_link_list_add(&chunk->heap->partial_chunk, chunk);
 	}
 	if (!chunk->free || (chunk->free->span_count >= span->span_count)) {
@@ -627,13 +649,15 @@ rpmalloc_chunk_add_free_span(chunk_t* chunk, span_t* span) {
 
 //! Update chunk state
 static void
-rpmalloc_chunk_check_transition_partial_to_full(chunk_t** partial_list, chunk_t* chunk) {
+rpmalloc_chunk_check_transition_partial_to_full(chunk_t* chunk) {
 	if ((chunk->state == CHUNK_STATE_PARTIAL) && !chunk->free && (chunk->initialized_count == SPAN_COUNT)) {
 		chunk->state = CHUNK_STATE_FULL;
-		rpmalloc_chunk_double_link_list_remove(partial_list, chunk);
+		rpmalloc_chunk_double_link_list_remove(&chunk->heap->partial_chunk, chunk);
+#if RPMALLOC_FIRST_CLASS_HEAPS
+		rpmalloc_chunk_double_link_list_add(&chunk->heap->full_chunk, chunk);
+#endif
 	}
 }
-
 
 ///
 /// Span control
@@ -816,28 +840,39 @@ rpmalloc_span_small_deallocate_direct(span_t* span, void* block) {
 
 static void
 rpmalloc_span_small_deallocate(span_t* span, void* block) {
-	int defer = (span->thread != rpmalloc_thread_id());
+	uintptr_t current_thread = rpmalloc_thread_id();
+	int defer = (span->thread != current_thread);
 	if (span->flags & SPAN_FLAG_ALIGNED_BLOCKS) {
 		//Realign pointer to block start
 		void* blocks_start = rpmalloc_span_block_start(span);
 		uint32_t block_align_offset = (uint32_t)pointer_diff(block, blocks_start);
 		block = pointer_offset(block, -(int32_t)(block_align_offset % span->block_size));
 	}
-	if (!defer)
-		rpmalloc_span_small_deallocate_direct(span, block);
-	else
-		rpmalloc_span_small_deallocate_defer(span, block);
+	if (defer) {
+		chunk_t* chunk = rpmalloc_chunk_from_span(span);
+		if (chunk->heap->thread != current_thread) {
+			rpmalloc_span_small_deallocate_defer(span, block);
+			return;
+		}
+		span->thread = current_thread;
+	}
+	rpmalloc_span_small_deallocate_direct(span, block);
 }
 
 static void
 rpmalloc_span_large_deallocate(span_t* span, void* block) {
 	(void)sizeof(block);
-	int defer = (span->thread != rpmalloc_thread_id());
+	uintptr_t current_thread = rpmalloc_thread_id();
+	int defer = (span->thread != current_thread);
 	chunk_t* chunk = rpmalloc_chunk_from_span(span);
-	if (!defer)
-		rpmalloc_chunk_add_free_span(chunk, span);
-	else
-		rpmalloc_heap_defer_free_span(chunk->heap, span);
+	if (defer) {
+		if (chunk->heap->thread != current_thread) {
+			rpmalloc_heap_defer_free_span(chunk->heap, span);
+			return;
+		}
+		span->thread = current_thread;
+	}
+	rpmalloc_chunk_add_free_span(chunk, span);
 }
 
 static void
@@ -904,6 +939,7 @@ rpmalloc_heap_allocate_small_span_and_block(heap_t* heap, uint32_t class_idx) {
 			//Utilize a free span before initializing more spans
 			span = chunk->free;
 			rpmalloc_span_double_link_list_with_tail_pop_head(&chunk->free);
+			chunk->free_count -= span->span_count;
 			if (span->span_count > 1) {
 				//Split a large span
 				span_t* remain = rpmalloc_span_large_split(span, 1);
@@ -913,15 +949,16 @@ rpmalloc_heap_allocate_small_span_and_block(heap_t* heap, uint32_t class_idx) {
 			block_offset = span->block_offset;
 		} else {
 			//Initialize a new span
+			rpmalloc_assert(chunk->initialized_count < SPAN_COUNT);
 			span = (span_t*)pointer_offset(chunk, SPAN_SIZE * chunk->initialized_count);
 			chunk_index = chunk->initialized_count++;
 			block_offset = SPAN_HEADER_SIZE;
 		}
-		rpmalloc_chunk_check_transition_partial_to_full(&heap->partial_chunk, chunk);
+		rpmalloc_chunk_check_transition_partial_to_full(chunk);
 		return rpmalloc_heap_initialize_small_span(heap, span, chunk_index, class_idx, size_class[class_idx].block_count, size_class[class_idx].block_size, block_offset);
 	}
 
-	chunk = rpmalloc_heap_allocate_chunk(heap, CHUNK_SIZE);
+	chunk = rpmalloc_heap_allocate_chunk(heap);
 	if (CHECK_NOT_NULL(chunk)) {
 		span_t* span = (span_t*)chunk;
 		// First span is truncated to accommodate chunk header
@@ -957,27 +994,29 @@ rpmalloc_heap_allocate_large_span_and_block(heap_t* heap, size_t size) {
 			if (best->span_count >= span_count) {
 				span_t* span = best;
 				rpmalloc_span_double_link_list_with_tail_remove(&chunk->free, span);
+				chunk->free_count -= span->span_count;
 				if (span->span_count > span_count) {
 					//Split a large span
 					span_t* remain = rpmalloc_span_large_split(span, span_count);
 					rpmalloc_chunk_add_free_span(chunk, remain);
 				}
 				rpmalloc_heap_initialize_large_span(heap, span, span->chunk_index, span_count, span->block_offset);
-				rpmalloc_chunk_check_transition_partial_to_full(&heap->partial_chunk, chunk);
+				rpmalloc_chunk_check_transition_partial_to_full(chunk);
 				return pointer_offset(span, span->block_offset);
 			}
 		}
 		if ((SPAN_COUNT - chunk->initialized_count) >= span_count) {
+			rpmalloc_assert((chunk->initialized_count + span_count) <= SPAN_COUNT);
 			span_t* span = (span_t*)pointer_offset(chunk, SPAN_SIZE * chunk->initialized_count);
 			rpmalloc_heap_initialize_large_span(heap, span, chunk->initialized_count, span_count, SPAN_HEADER_SIZE);
 			chunk->initialized_count += span_count;
-			rpmalloc_chunk_check_transition_partial_to_full(&heap->partial_chunk, chunk);
+			rpmalloc_chunk_check_transition_partial_to_full(chunk);
 			return pointer_offset(span, span->block_offset);
 		}
 		chunk = chunk->next;
 	}
 
-	chunk = rpmalloc_heap_allocate_chunk(heap, CHUNK_SIZE);
+	chunk = rpmalloc_heap_allocate_chunk(heap);
 	if (CHECK_NOT_NULL(chunk)) {
 		span_t* span = (span_t*)chunk;
 		// First span is truncated to accommodate chunk header
@@ -989,13 +1028,15 @@ rpmalloc_heap_allocate_large_span_and_block(heap_t* heap, size_t size) {
 			rpmalloc_chunk_double_link_list_add(&heap->partial_chunk, chunk);
 		} else {
 			chunk->state = CHUNK_STATE_FULL;
+#if RPMALLOC_FIRST_CLASS_HEAPS
+			rpmalloc_chunk_double_link_list_add(&heap->full_chunk, chunk);
+#endif
 		}
 		return pointer_offset(span, span->block_offset);
 	}
 
 	return 0;
 }
-
 
 ///
 /// Heap control
@@ -1074,7 +1115,6 @@ rpmalloc_allocate_heap(void) {
 	return heap;
 }
 
-
 ///
 /// Main heap allocator entry points
 ///
@@ -1104,12 +1144,10 @@ rpmalloc_heap_allocate_huge(heap_t* heap, size_t size) {
 	size_t span_count = (size + CHUNK_HEADER_SIZE + SPAN_SIZE - 1) >> SPAN_SHIFT;
 	size = SPAN_SIZE * span_count;
 	span_t* span = rpmalloc_mmap(size, &offset);
-#if ENABLE_NULL_CHECKS
-	if (!span) {
+	if (CHECK_NULL(span)) {
 		errno = ENOMEM;
 		return 0;
 	}
-#endif
 	span->type = SPAN_TYPE_HUGE;
 	span->block_offset = CHUNK_HEADER_SIZE;
 	chunk_t* chunk = (chunk_t*)span;
@@ -1152,6 +1190,7 @@ rpmalloc_deallocate_block(void* block) {
 	}
 }
 
+//! Collect free spans from the list of deferred free spans by other threads
 static void
 rpmalloc_heap_collect_free_span(heap_t* heap) {
 	//This list does not need ABA protection, no mutable side state
@@ -1164,6 +1203,7 @@ rpmalloc_heap_collect_free_span(heap_t* heap) {
 	}
 }
 
+//! Put a free span owned by another thread on the list of deferred free spans for the heap
 static void
 rpmalloc_heap_defer_free_span(heap_t* heap, span_t* span) {
 	//This list does not need ABA protection, no mutable side state
@@ -1242,12 +1282,10 @@ rpmalloc_heap_aligned_allocate_block(heap_t* heap, size_t alignment, size_t size
 		mapped_size = num_pages * os_page_size;
 
 		span = rpmalloc_mmap(mapped_size, &align_offset);
-#if ENABLE_NULL_CHECKS
-		if (!span) {
+		if (CHECK_NULL(span)) {
 			errno = ENOMEM;
 			return 0;
 		}
-#endif
 		block = pointer_offset(span, SPAN_HEADER_SIZE);
 
 		if ((uintptr_t)block & align_mask)
@@ -1344,6 +1382,7 @@ rpmalloc_heap_reallocate_block(heap_t* heap, void* block, size_t size, size_t ol
 	return new_block;
 }
 
+//! Reallocate a block with alignment
 static void*
 rpmalloc_heap_aligned_reallocate_block(heap_t* heap, void* block, size_t alignment, size_t size, size_t oldsize,
                                        unsigned int flags) {
@@ -1369,20 +1408,26 @@ rpmalloc_heap_aligned_reallocate_block(heap_t* heap, void* block, size_t alignme
 	return new_block;
 }
 
-///
-/// Allocate a new chunk
-///
+//! Allocate a new chunk, either from free list or by mapping more virtual memory
 static chunk_t*
-rpmalloc_heap_allocate_chunk(heap_t* heap, size_t size) {
+rpmalloc_heap_allocate_chunk(heap_t* heap) {
 	size_t offset;
-	chunk_t* chunk = rpmalloc_mmap(size, &offset);
+	chunk_t* chunk = heap->free_chunk;
+	if (chunk) {
+		offset = chunk->mapped_offset;
+		heap->free_chunk = chunk->next;
+	} else {
+		offset = 0;
+		chunk = rpmalloc_mmap(CHUNK_SIZE, &offset);
+	}
 	if (CHECK_NOT_NULL(chunk)) {
 		chunk->heap = heap;
 		chunk->free = 0;
+		chunk->free_count = 0;
 		chunk->initialized_count = 0;
 		chunk->state = CHUNK_STATE_FREE;
 		chunk->mapped_offset = (uint32_t)offset;
-		chunk->mapped_size = size;
+		chunk->mapped_size = CHUNK_SIZE;
 	}
 	return chunk;
 }
@@ -1415,7 +1460,6 @@ rpmalloc_medium_size_class_adjust(size_t iclass) {
 	}
 }
 
-
 ///
 /// Extern interface
 ///
@@ -1427,9 +1471,24 @@ rpmalloc_thread_initialize(void) {
 	rpmalloc_thread_heap_set(rpmalloc_allocate_heap());
 }
 
-//! Finalize thread, orphan heap
 void
 rpmalloc_thread_finalize(void) {
+	heap_t* heap = rpmalloc_thread_heap_raw();
+	if (!heap)
+		return;
+
+	rpmalloc_heap_collect_free_span(heap);
+	/*
+	chunk_t* chunk = heap->free_chunk;
+	while (chunk) {
+		chunk_t* next = chunk->next;
+		rpmalloc_unmap(chunk, chunk->mapped_size, chunk->mapped_offset, chunk->mapped_size);
+		chunk = next;
+	}
+	heap->free_chunk = 0;
+	*/
+	
+	rpmalloc_heap_orphan(heap);
 }
 
 extern int
@@ -1503,13 +1562,13 @@ rpmalloc_initialize() {
 		size += MEDIUM_GRANULARITY;
 	}
 
-	//Initialize this thread
 	rpmalloc_thread_initialize();
 	return 0;
 }
 
 extern void
 rpmalloc_finalize(void) {
+	rpmalloc_thread_finalize();
 }
 
 extern inline RPMALLOC_ALLOCATOR void*
@@ -1585,7 +1644,6 @@ rpposix_memalign(void **memptr, size_t alignment, size_t size) {
 		return EINVAL;
 	return *memptr ? 0 : ENOMEM;
 }
-
 
 extern size_t
 rpmalloc_usable_size(void* block) {

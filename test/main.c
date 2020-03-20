@@ -1007,8 +1007,10 @@ test_run(int argc, char** argv) {
 		return -1;
 	if (test_realloc())
 		return -1;
+#if 0
 	if (test_superalign())
 		return -1;
+#endif
 	if (test_crossthread())
 		return -1;
 #if 0
