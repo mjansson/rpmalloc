@@ -1,0 +1,90 @@
+{
+  /* Begin 64-bit x86 configurations
+	 * See: https://docs.microsoft.com/en-us/cpp/build/cmake-predefined-configuration-reference?view=vs-2017
+	 */
+  "environments": [
+    {
+      "DebugBuildDir": "${projectDir}\\CMakeBuilds\\Debug\\${name}\\${workspaceHash}",
+      "installRoot": "${projectDir}\\bin\\${name}",
+      "buildRoot": "${projectDir}\\CMakeBuilds\\${workspaceHash}\\build\\${name}",
+      //"installRoot": "${projectDir}\\CMakeBuilds\\${workspaceHash}\\install\\${name}"
+    }
+  ],
+  "configurations": [
+
+    {
+      "name": "x64-Debug",
+      "generator": "Ninja",
+      "configurationType": "Debug",
+      "inheritEnvironments": [
+        "msvc_x64_x64"
+      ],
+      "cmakeCommandArgs": "",
+      "buildRoot": "${env.DebugBuildDir}",
+      "installRoot": "${env.installRoot}",
+      "buildCommandArgs": "-v",
+      "ctestCommandArgs": ""
+    },
+    {
+      "name": "x64-Release",
+      "generator": "Ninja",
+      "configurationType": "Release",
+      "inheritEnvironments": [
+        "msvc_x64_x64"
+      ],
+      "cmakeCommandArgs": "",
+      "buildRoot": "${env.DebugBuildDir}",
+      "installRoot": "${env.installRoot}",
+      "buildCommandArgs": "-v",
+      "ctestCommandArgs": ""
+    },
+    {
+      "name": "x64-DebugRelease",
+      "generator": "Ninja",
+      "configurationType": "RelWithDebInfo",
+      "inheritEnvironments": [
+        "msvc_x64_x64"
+      ],
+      "cmakeCommandArgs": "",
+      "buildRoot": "${env.DebugBuildDir}",
+      "installRoot": "${env.installRoot}",
+      "buildCommandArgs": "-v",
+      "ctestCommandArgs": ""
+    },
+    {
+      "name": "x86-Debug",
+      "generator": "Ninja",
+      "configurationType": "Debug",
+      "inheritEnvironments": [
+        "msvc_x86"
+      ],
+      "cmakeCommandArgs": "",
+      "buildRoot": "${env.DebugBuildDir}",
+      "installRoot": "${env.installRoot}",
+      "buildCommandArgs": "-v",
+      "ctestCommandArgs": ""
+    },
+    {
+      "name": "x86-Release",
+      "generator": "Ninja",
+      "configurationType": "Release",
+      "inheritEnvironments": [
+        "msvc_x86"
+      ],
+      "cmakeCommandArgs": "",
+      "buildCommandArgs": "-v",
+      "ctestCommandArgs": ""
+    },
+    {
+      "name": "x86-DebugRelease",
+      "generator": "Ninja",
+      "configurationType": "RelWithDebInfo",
+      "inheritEnvironments": [
+        "msvc_x86"
+      ],
+      "cmakeCommandArgs": "",
+      "buildCommandArgs": "-v",
+      "ctestCommandArgs": ""
+    }
+  ]
+}
