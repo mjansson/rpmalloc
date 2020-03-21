@@ -61,6 +61,7 @@ cov-int.*
 [Rr]elease/
 [Pp]rofile/
 [Dd]eploy/
+CMakeBuilds/
 *_i.c
 *_p.c
 *.ilk
