@@ -5,8 +5,9 @@
   "environments": [
     {
       "DebugBuildDir": "${projectDir}\\CMakeBuilds\\Debug\\${name}\\${workspaceHash}",
+      "ReleaseBuildDir": "${projectDir}\\CMakeBuilds\\Release\\${name}\\${workspaceHash}",
       "installRoot": "${projectDir}\\bin\\${name}",
-      "buildRoot": "${projectDir}\\CMakeBuilds\\${workspaceHash}\\build\\${name}",
+      "buildRoot": "${projectDir}\\CMakeBuilds\\${workspaceHash}\\build\\${name}"
       //"installRoot": "${projectDir}\\CMakeBuilds\\${workspaceHash}\\install\\${name}"
     }
   ],
@@ -33,7 +34,7 @@
         "msvc_x64_x64"
       ],
       "cmakeCommandArgs": "",
-      "buildRoot": "${env.DebugBuildDir}",
+      "buildRoot": "${env.ReleaseBuildDir}",
       "installRoot": "${env.installRoot}",
       "buildCommandArgs": "-v",
       "ctestCommandArgs": ""
@@ -46,7 +47,7 @@
         "msvc_x64_x64"
       ],
       "cmakeCommandArgs": "",
-      "buildRoot": "${env.DebugBuildDir}",
+      "buildRoot": "${env.ReleaseBuildDir}",
       "installRoot": "${env.installRoot}",
       "buildCommandArgs": "-v",
       "ctestCommandArgs": ""
@@ -72,6 +73,8 @@
         "msvc_x86"
       ],
       "cmakeCommandArgs": "",
+      "buildRoot": "${env.ReleaseBuildDir}",
+      "installRoot": "${env.installRoot}",
       "buildCommandArgs": "-v",
       "ctestCommandArgs": ""
     },
@@ -83,6 +86,8 @@
         "msvc_x86"
       ],
       "cmakeCommandArgs": "",
+      "buildRoot": "${env.ReleaseBuildDir}",
+      "installRoot": "${env.installRoot}",
       "buildCommandArgs": "-v",
       "ctestCommandArgs": ""
     }
