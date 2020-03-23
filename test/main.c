@@ -69,6 +69,8 @@ test_alloc(void) {
 
 	//Verify medium block sizes (until class merging kicks in)
 	for (iloop = 1025; iloop <= 6000; ++iloop) {
+		if (iloop == 4097)
+			iloop = iloop;
 		testptr = rpmalloc(iloop);
 		size_t wanted_usable_size = 512 * ((iloop / 512) + ((iloop % 512) ? 1 : 0));
 		if (rpmalloc_usable_size(testptr) != wanted_usable_size)
@@ -1007,17 +1009,15 @@ test_run(int argc, char** argv) {
 		return -1;
 	if (test_realloc())
 		return -1;
-#if 0
 	if (test_superalign())
 		return -1;
-#endif
 	if (test_crossthread())
 		return -1;
-#if 0
 	if (test_threadspam())
 		return -1;
 	if (test_threaded())
 		return -1;
+#if 0
 	if (test_first_class_heaps())
 		return -1;
 #endif

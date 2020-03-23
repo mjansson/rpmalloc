@@ -28,8 +28,12 @@
 ///
 /// Implementation controls
 ///
+
 #ifndef ENABLE_NULL_CHECKS
 #define ENABLE_NULL_CHECKS 0
+#endif
+#ifndef ENABLE_ASSERTS
+#define ENABLE_ASSERTS 0
 #endif
 
 ///
@@ -351,6 +355,9 @@ rpmalloc_heap_defer_free_span(heap_t* heap, span_t* span);
 
 static void
 rpmalloc_heap_collect_free_span(heap_t* heap);
+
+extern void
+rpmalloc_heap_validate_integrity();
 
 ///
 /// Memory mapping
@@ -1160,20 +1167,24 @@ rpmalloc_heap_allocate_huge(heap_t* heap, size_t size) {
 static void*
 rpmalloc_heap_allocate_block(heap_t* heap, size_t size) {
 	rpmalloc_assert(heap);
+	void* block;
 	if (size <= SMALL_SIZE_LIMIT) {
 		//Small sizes have unique size classes
 		const uint32_t class_idx = (uint32_t)((size + (SMALL_GRANULARITY - 1)) >> SMALL_GRANULARITY_SHIFT);
-		return rpmalloc_heap_allocate_small_medium(heap, class_idx);
+		block = rpmalloc_heap_allocate_small_medium(heap, class_idx);
 	}
 	else if (size <= MEDIUM_SIZE_LIMIT) {
 		//Calculate the size class index and do a dependent lookup of the final class index (in case of merged classes)
 		const uint32_t class_idx = medium_class_map[(size - (SMALL_SIZE_LIMIT + 1)) >> MEDIUM_GRANULARITY_SHIFT];
-		return rpmalloc_heap_allocate_small_medium(heap, class_idx);
+		block = rpmalloc_heap_allocate_small_medium(heap, class_idx);
 	}
 	else if (size <= LARGE_SIZE_LIMIT) {
-		return rpmalloc_heap_allocate_large(heap, size);
+		block = rpmalloc_heap_allocate_large(heap, size);
 	}
-	return rpmalloc_heap_allocate_huge(heap, size);
+	else {
+		block = rpmalloc_heap_allocate_huge(heap, size);
+	}
+	return block;
 }
 
 //! Deallocate the given block
@@ -1478,7 +1489,7 @@ rpmalloc_thread_finalize(void) {
 		return;
 
 	rpmalloc_heap_collect_free_span(heap);
-	/*
+
 	chunk_t* chunk = heap->free_chunk;
 	while (chunk) {
 		chunk_t* next = chunk->next;
@@ -1486,9 +1497,9 @@ rpmalloc_thread_finalize(void) {
 		chunk = next;
 	}
 	heap->free_chunk = 0;
-	*/
-	
+
 	rpmalloc_heap_orphan(heap);
+	rpmalloc_thread_heap_set(0);
 }
 
 extern int
@@ -1669,15 +1680,6 @@ rpmalloc_usable_size(void* block) {
 #if ENABLE_PRELOAD || ENABLE_OVERRIDE
 #include "malloc.c"
 #endif
-
-
-
-
-
-
-
-
-
 
 
 
