@@ -1489,6 +1489,17 @@ rpmalloc_thread_finalize(void) {
 		return;
 
 	rpmalloc_heap_collect_free_span(heap);
+	rpmalloc_thread_collect();
+
+	rpmalloc_heap_orphan(heap);
+	rpmalloc_thread_heap_set(0);
+}
+
+extern void
+rpmalloc_thread_collect() {
+	heap_t* heap = rpmalloc_thread_heap_raw();
+	if (!heap)
+		return;
 
 	chunk_t* chunk = heap->free_chunk;
 	while (chunk) {
@@ -1497,9 +1508,6 @@ rpmalloc_thread_finalize(void) {
 		chunk = next;
 	}
 	heap->free_chunk = 0;
-
-	rpmalloc_heap_orphan(heap);
-	rpmalloc_thread_heap_set(0);
 }
 
 extern int
