@@ -789,8 +789,13 @@ test_threaded(void) {
 	arg.datasize[14] = 38934;
 	arg.datasize[15] = 234;
 	arg.num_datasize = 16;
+#if defined(__LLP64__) || defined(__LP64__) || defined(_WIN64)
 	arg.loops = 100;
 	arg.passes = 4000;
+#else
+	arg.loops = 30;
+	arg.passes = 2000;
+#endif
 	arg.init_fini_each_loop = 0;
 
 	thread_arg targ;
@@ -837,7 +842,7 @@ test_crossthread(void) {
 		arg[ithread].passes = 1024;
 #else
 		arg[ithread].loops = 10;
-		arg[ithread].passes = 128;
+		arg[ithread].passes = 100;
 #endif
 		arg[ithread].pointers = rpmalloc(sizeof(void*) * arg[ithread].loops * arg[ithread].passes);
 		memset(arg[ithread].pointers, 0, sizeof(void*) * arg[ithread].loops * arg[ithread].passes);
