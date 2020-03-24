@@ -305,6 +305,7 @@ test_alloc(void) {
 	rpmalloc_finalize();
 
 	// Test that a full span with deferred block is finalized properly
+	// Also test that a deferred huge span is finalized properly
 	rpmalloc_initialize();
 	{
 		addr[0] = rpmalloc(23457);
@@ -313,6 +314,14 @@ test_alloc(void) {
 		targ.fn = defer_free_thread;
 		targ.arg = addr[0];
 		uintptr_t thread = thread_run(&targ);
+		thread_sleep(100);
+		thread_join(thread);
+
+		addr[0] = rpmalloc(12345678);
+
+		targ.fn = defer_free_thread;
+		targ.arg = addr[0];
+		thread = thread_run(&targ);
 		thread_sleep(100);
 		thread_join(thread);
 	}
