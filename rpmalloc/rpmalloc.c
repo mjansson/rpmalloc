@@ -935,8 +935,7 @@ rpmalloc_heap_initialize_large_span(heap_t* heap, span_t* span, size_t chunk_ind
 //! Allocate a new small span (SPAN_TYPE_SMALL) from heap and allocate the first memory block from the span
 static void*
 rpmalloc_heap_allocate_small_span_and_block(heap_t* heap, uint32_t class_idx) {
-	rpmalloc_heap_collect_free_span(heap);
-
+retry:
 	chunk_t* chunk = heap->partial_chunk;
 	if (chunk) {
 		span_t* span;
@@ -969,6 +968,10 @@ rpmalloc_heap_allocate_small_span_and_block(heap_t* heap, uint32_t class_idx) {
 		return rpmalloc_heap_initialize_small_span(heap, span, chunk_index, class_idx, block_count, size_class[class_idx].block_size, block_offset);
 	}
 
+	rpmalloc_heap_collect_free_span(heap);
+	if (heap->partial_chunk)
+		goto retry;
+
 	chunk = rpmalloc_heap_allocate_chunk(heap);
 	if (CHECK_NOT_NULL(chunk)) {
 		span_t* span = (span_t*)chunk;
@@ -987,9 +990,10 @@ rpmalloc_heap_allocate_small_span_and_block(heap_t* heap, uint32_t class_idx) {
 //! Allocate a large span (SPAN_TYPE_LARGE) from heap
 static span_t*
 rpmalloc_heap_allocate_large_span_and_block(heap_t* heap, size_t size) {
+	uint32_t span_count = (uint32_t)((size + SPAN_HEADER_SIZE + SPAN_SIZE - 1) >> SPAN_SHIFT);
+
 	rpmalloc_heap_collect_free_span(heap);
 
-	uint32_t span_count = (uint32_t)((size + SPAN_HEADER_SIZE + SPAN_SIZE - 1) >> SPAN_SHIFT);
 	chunk_t* chunk = heap->partial_chunk;
 	while (chunk) {
 		if (chunk->free) {
@@ -1171,24 +1175,19 @@ rpmalloc_heap_allocate_huge(heap_t* heap, size_t size) {
 static void*
 rpmalloc_heap_allocate_block(heap_t* heap, size_t size) {
 	rpmalloc_assert(heap);
-	void* block;
 	if (size <= SMALL_SIZE_LIMIT) {
 		//Small sizes have unique size classes
 		const uint32_t class_idx = (uint32_t)((size + (SMALL_GRANULARITY - 1)) >> SMALL_GRANULARITY_SHIFT);
-		block = rpmalloc_heap_allocate_small_medium(heap, class_idx);
+		return rpmalloc_heap_allocate_small_medium(heap, class_idx);
 	}
-	else if (size <= MEDIUM_SIZE_LIMIT) {
+	if (size <= MEDIUM_SIZE_LIMIT) {
 		//Calculate the size class index and do a dependent lookup of the final class index (in case of merged classes)
 		const uint32_t class_idx = medium_class_map[(size - (SMALL_SIZE_LIMIT + 1)) >> MEDIUM_GRANULARITY_SHIFT];
-		block = rpmalloc_heap_allocate_small_medium(heap, class_idx);
+		return rpmalloc_heap_allocate_small_medium(heap, class_idx);
 	}
-	else if (size <= LARGE_SIZE_LIMIT) {
-		block = rpmalloc_heap_allocate_large(heap, size);
-	}
-	else {
-		block = rpmalloc_heap_allocate_huge(heap, size);
-	}
-	return block;
+	if (size <= LARGE_SIZE_LIMIT)
+		return rpmalloc_heap_allocate_large(heap, size);
+	return rpmalloc_heap_allocate_huge(heap, size);
 }
 
 //! Deallocate the given block
@@ -1208,13 +1207,15 @@ rpmalloc_deallocate_block(void* block) {
 //! Collect free spans from the list of deferred free spans by other threads
 static void
 rpmalloc_heap_collect_free_span(heap_t* heap) {
-	//This list does not need ABA protection, no mutable side state
-	span_t* span = atomicptr_exchange(&heap->free_span_deferred, 0);
-	while (span) {
-		chunk_t* chunk = rpmalloc_chunk_from_span(span);
-		span_t* next = span->next_deferred_span;	
-		rpmalloc_chunk_add_free_span(chunk, span);
-		span = next;
+	if (heap->free_span_deferred) {
+		//This list does not need ABA protection, no mutable side state
+		span_t* span = atomicptr_exchange(&heap->free_span_deferred, 0);
+		while (span) {
+			chunk_t* chunk = rpmalloc_chunk_from_span(span);
+			span_t* next = span->next_deferred_span;	
+			rpmalloc_chunk_add_free_span(chunk, span);
+			span = next;
+		}
 	}
 }
 
@@ -1440,7 +1441,6 @@ rpmalloc_heap_allocate_chunk(heap_t* heap) {
 		chunk->free = 0;
 		chunk->free_count = 0;
 		chunk->initialized_count = 0;
-		chunk->state = CHUNK_STATE_FREE;
 		chunk->mapped_offset = (uint32_t)offset;
 		chunk->mapped_size = CHUNK_SIZE;
 	}
