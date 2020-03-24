@@ -942,6 +942,7 @@ rpmalloc_heap_allocate_small_span_and_block(heap_t* heap, uint32_t class_idx) {
 		span_t* span;
 		uint32_t chunk_index;
 		uint32_t block_offset;
+		uint32_t block_count;
 		if (chunk->free) {
 			//Utilize a free span before initializing more spans
 			span = chunk->free;
@@ -954,15 +955,18 @@ rpmalloc_heap_allocate_small_span_and_block(heap_t* heap, uint32_t class_idx) {
 			}
 			chunk_index = span->chunk_index;
 			block_offset = span->block_offset;
+			size_t span_size = SPAN_SIZE - block_offset;
+			block_count = (uint32_t)(span_size / size_class[class_idx].block_size);
 		} else {
 			//Initialize a new span
 			rpmalloc_assert(chunk->initialized_count < SPAN_COUNT);
 			span = (span_t*)pointer_offset(chunk, SPAN_SIZE * chunk->initialized_count);
 			chunk_index = chunk->initialized_count++;
 			block_offset = SPAN_HEADER_SIZE;
+			block_count = size_class[class_idx].block_count;
 		}
 		rpmalloc_chunk_check_transition_partial_to_full(chunk);
-		return rpmalloc_heap_initialize_small_span(heap, span, chunk_index, class_idx, size_class[class_idx].block_count, size_class[class_idx].block_size, block_offset);
+		return rpmalloc_heap_initialize_small_span(heap, span, chunk_index, class_idx, block_count, size_class[class_idx].block_size, block_offset);
 	}
 
 	chunk = rpmalloc_heap_allocate_chunk(heap);
