@@ -865,35 +865,6 @@ _rpmalloc_span_mark_as_subspan_unless_master(span_t* master, span_t* subspan, si
 	subspan->span_count = (uint32_t)span_count;
 }
 
-//! Unpack a span with span_count > 1 to a list of spans
-static span_t*
-_rpmalloc_span_unpack(span_t* span, span_t** last) {
-	span_t* last_span = span;
-	span->list_size = span->span_count;
-	if (span->span_count == 1) {
-		*last = span;
-		return span;
-	}
-
-	int is_master = !!(span->flags & SPAN_FLAG_MASTER);
-	uint32_t offset_from_master = is_master ? 0 : span->offset_from_master;
-	uint32_t list_size = span->list_size;
-	span->span_count = 1;
-	while (list_size > 1) {
-		last_span->next = (span_t*)pointer_offset(last_span, _memory_span_size);
-		
-		last_span = last_span->next;
-		last_span->span_count = 1;
-		last_span->list_size = list_size--;
-		last_span->flags = SPAN_FLAG_SUBSPAN;
-		last_span->offset_from_master = ++offset_from_master;
-		last_span->align_offset = 0;
-	}
-	last_span->next = 0;
-	*last = last_span;
-	return span;
-}
-
 
 ////////////
 ///
@@ -1193,9 +1164,16 @@ _rpmalloc_global_cache_extract_span_list(size_t span_count) {
 
 #endif
 
+
+////////////
+///
+/// Heap (thread local) cache
+///
+//////
+
 //! Adopt the deferred span cache list, optionally extracting the first single span for immediate re-use
 static void
-_memory_heap_cache_adopt_deferred(heap_t* heap, span_t** single_span) {
+_rpmalloc_heap_cache_adopt_deferred(heap_t* heap, span_t** single_span) {
 	span_t* span = (span_t*)atomic_load_ptr(&heap->span_free_deferred);
 	if (!span)
 		return;
@@ -1237,41 +1215,6 @@ _memory_heap_cache_adopt_deferred(heap_t* heap, span_t** single_span) {
 			}
 		}
 		span = next_span;
-	}
-}
-
-static void
-_rpmalloc_heap_unlink_orphan(heap_t* heap, atomicptr_t* list) {
-	void* raworphan = atomic_load_ptr(list);
-	heap_t* orphan = (heap_t*)((uintptr_t)raworphan & ~(uintptr_t)(HEAP_ORPHAN_ABA_SIZE - 1));
-	if (orphan == heap) {
-		//We're now in single-threaded finalization phase, no need to ABA protect or CAS
-		atomic_store_ptr(list, heap->next_orphan);
-	} else if (orphan) {
-		heap_t* last = orphan;
-		while (orphan && (orphan != heap)) {
-			last = orphan;
-			orphan = orphan->next_orphan;
-		}
-		if (orphan == heap)
-			last->next_orphan = heap->next_orphan;
-	}
-}
-
-static void
-_rpmalloc_heap_unmap(heap_t* heap) {
-	if (!heap->master_heap) {
-		if (!atomic_load32(&heap->child_count)) {
-			_rpmalloc_heap_unlink_orphan(heap, &_memory_orphan_heaps);
-#if RPMALLOC_FIRST_CLASS_HEAPS
-			_rpmalloc_heap_unlink_orphan(heap, &_memory_first_class_orphan_heaps);
-#endif
-			size_t block_size = (1 + (sizeof(heap_t) >> _memory_page_size_shift)) * _memory_page_size;
-			_rpmalloc_unmap(heap, block_size, heap->align_offset, block_size);
-		}
-	} else {
-		if (atomic_decr32(&heap->master_heap->child_count) == 0)
-			_rpmalloc_finalize_heap(heap->master_heap);
 	}
 }
 
@@ -1322,13 +1265,12 @@ _rpmalloc_heap_cache_insert(heap_t* heap, span_t* span) {
 #endif
 }
 
-//! Extract the given number of spans from the different cache levels
+//! Extract the given number of spans from the heap cache, while emptying deferred free spans
 static span_t*
 _memory_heap_cache_extract(heap_t* heap, size_t span_count) {
 	span_t* span = 0;
 	size_t idx = span_count - 1;
-	if (!idx)
-		_memory_heap_cache_adopt_deferred(heap, &span);
+	_rpmalloc_heap_cache_adopt_deferred(heap, !idx ? &span : 0);
 #if ENABLE_THREAD_CACHE
 	if (!span && heap->span_cache[idx]) {
 		_rpmalloc_stat_inc(&heap->span_use[idx].spans_from_cache);
@@ -1336,6 +1278,41 @@ _memory_heap_cache_extract(heap_t* heap, size_t span_count) {
 	}
 #endif
 	return span;
+}
+
+static void
+_rpmalloc_heap_unlink_orphan(heap_t* heap, atomicptr_t* list) {
+	void* raworphan = atomic_load_ptr(list);
+	heap_t* orphan = (heap_t*)((uintptr_t)raworphan & ~(uintptr_t)(HEAP_ORPHAN_ABA_SIZE - 1));
+	if (orphan == heap) {
+		//We're now in single-threaded finalization phase, no need to ABA protect or CAS
+		atomic_store_ptr(list, heap->next_orphan);
+	} else if (orphan) {
+		heap_t* last = orphan;
+		while (orphan && (orphan != heap)) {
+			last = orphan;
+			orphan = orphan->next_orphan;
+		}
+		if (orphan == heap)
+			last->next_orphan = heap->next_orphan;
+	}
+}
+
+static void
+_rpmalloc_heap_unmap(heap_t* heap) {
+	if (!heap->master_heap) {
+		if (!atomic_load32(&heap->child_count)) {
+			_rpmalloc_heap_unlink_orphan(heap, &_memory_orphan_heaps);
+#if RPMALLOC_FIRST_CLASS_HEAPS
+			_rpmalloc_heap_unlink_orphan(heap, &_memory_first_class_orphan_heaps);
+#endif
+			size_t block_size = (1 + (sizeof(heap_t) >> _memory_page_size_shift)) * _memory_page_size;
+			_rpmalloc_unmap(heap, block_size, heap->align_offset, block_size);
+		}
+	} else {
+		if (atomic_decr32(&heap->master_heap->child_count) == 0)
+			_rpmalloc_finalize_heap(heap->master_heap);
+	}
 }
 
 static span_t*
@@ -2167,7 +2144,7 @@ _memory_heap_release(void* heapptr, int first_class) {
 	if (!heap)
 		return;
 	//Release thread cache spans back to global cache
-	_memory_heap_cache_adopt_deferred(heap, 0);
+	_rpmalloc_heap_cache_adopt_deferred(heap, 0);
 #if ENABLE_THREAD_CACHE
 	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
 		span_t* span = heap->span_cache[iclass];
@@ -2458,7 +2435,7 @@ _rpmalloc_finalize_heap_spans(heap_t* heap) {
 		heap->spans_reserved = 0;
 	}
 
-	_memory_heap_cache_adopt_deferred(heap, 0);
+	_rpmalloc_heap_cache_adopt_deferred(heap, 0);
 
 	for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
 		span_t* span = heap->partial_span[iclass];
@@ -3027,7 +3004,7 @@ rpmalloc_heap_free_all(rpmalloc_heap_t* heap) {
 	span_t* span;
 	span_t* next_span;
 
-	_memory_heap_cache_adopt_deferred(heap, 0);
+	_rpmalloc_heap_cache_adopt_deferred(heap, 0);
 
 	for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
 		span = heap->partial_span[iclass];
