@@ -318,7 +318,7 @@ test_alloc(void) {
 		thread_join(thread);
 
 		addr[0] = rpmalloc(12345678);
-	
+
 		targ.fn = defer_free_thread;
 		targ.arg = addr[0];
 		thread = thread_run(&targ);
