@@ -18,6 +18,7 @@
 #define pointer_diff(first, second) (ptrdiff_t)((const char*)(first) - (const char*)(second))
 
 static size_t _hardware_threads;
+static int _test_failed;
 
 static void
 test_initialize(void);
@@ -25,6 +26,8 @@ test_initialize(void);
 static int
 test_fail_cb(const char* reason, const char* file, int line) {
 	fprintf(stderr, "FAIL: %s @ %s:%d\n", reason, file, line);
+	fflush(stderr);
+	_test_failed = 1;
 	return -1;
 }
 
@@ -650,7 +653,7 @@ crossallocator_thread(void* argp) {
 
 	rpfree(extra_pointers);
 
-	while (next_crossthread < end_crossthread) {
+	while ((next_crossthread < end_crossthread) && !_test_failed) {
 		if (arg.crossthread_pointers[next_crossthread]) {
 			rpfree(arg.crossthread_pointers[next_crossthread]);
 			arg.crossthread_pointers[next_crossthread] = 0;
@@ -794,7 +797,7 @@ test_threaded(void) {
 	arg.passes = 4000;
 #else
 	arg.loops = 30;
-	arg.passes = 2000;
+	arg.passes = 1000;
 #endif
 	arg.init_fini_each_loop = 0;
 
@@ -841,8 +844,8 @@ test_crossthread(void) {
 		arg[ithread].loops = 50;
 		arg[ithread].passes = 1024;
 #else
-		arg[ithread].loops = 10;
-		arg[ithread].passes = 100;
+		arg[ithread].loops = 20;
+		arg[ithread].passes = 200;
 #endif
 		arg[ithread].pointers = rpmalloc(sizeof(void*) * arg[ithread].loops * arg[ithread].passes);
 		memset(arg[ithread].pointers, 0, sizeof(void*) * arg[ithread].loops * arg[ithread].passes);

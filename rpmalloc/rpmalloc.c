@@ -745,7 +745,7 @@ _rpmalloc_mmap_os(size_t size, size_t* offset) {
 	//Ok to MEM_COMMIT - according to MSDN, "actual physical pages are not allocated unless/until the virtual addresses are actually accessed"
 	void* ptr = VirtualAlloc(0, size + padding, (_memory_huge_pages ? MEM_LARGE_PAGES : 0) | MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 	if (!ptr) {
-		assert(!"Failed to map virtual memory block");
+		assert(ptr && "Failed to map virtual memory block");
 		return 0;
 	}
 #else
@@ -1378,17 +1378,14 @@ _rpmalloc_heap_unlink_orphan(atomicptr_t* list, heap_t* heap) {
 static void
 _rpmalloc_heap_unmap(heap_t* heap) {
 	if (!heap->master_heap) {
-		if (!atomic_load32(&heap->child_count)) {
-			_rpmalloc_heap_unlink_orphan(&_memory_orphan_heaps, heap);
-#if RPMALLOC_FIRST_CLASS_HEAPS
-			_rpmalloc_heap_unlink_orphan(&_memory_first_class_orphan_heaps, heap);
-#endif
-			size_t block_size = (1 + (sizeof(heap_t) >> _memory_page_size_shift)) * _memory_page_size;
+		if ((heap->finalize > 1) && !atomic_load32(&heap->child_count)) {
+			size_t heap_size = sizeof(heap_t);
+			size_t block_size = _memory_page_size * ((heap_size + _memory_page_size - 1) >> _memory_page_size_shift);
 			_rpmalloc_unmap(heap, block_size, heap->align_offset, block_size);
 		}
 	} else {
 		if (atomic_decr32(&heap->master_heap->child_count) == 0) {
-			_rpmalloc_heap_global_finalize(heap->master_heap);
+			_rpmalloc_heap_unmap(heap->master_heap);
 		}
 	}
 }
@@ -1594,7 +1591,8 @@ static heap_t*
 _rpmalloc_heap_allocate_new(void) {
 	//Map in pages for a new heap
 	size_t align_offset = 0;
-	size_t block_size = (1 + (sizeof(heap_t) >> _memory_page_size_shift)) * _memory_page_size;
+	size_t heap_size = sizeof(heap_t);
+	size_t block_size = _memory_page_size* ((heap_size + _memory_page_size - 1) >> _memory_page_size_shift);
 	heap_t* heap = (heap_t*)_rpmalloc_mmap(block_size, &align_offset);
 	if (!heap)
 		return heap;
@@ -1603,9 +1601,7 @@ _rpmalloc_heap_allocate_new(void) {
 	heap->align_offset = align_offset;
 
 	//Put extra heaps as orphans, aligning to make sure ABA protection bits fit in pointer low bits
-	size_t aligned_heap_size = sizeof(heap_t);
-	if (aligned_heap_size % HEAP_ORPHAN_ABA_SIZE)
-		aligned_heap_size += HEAP_ORPHAN_ABA_SIZE - (aligned_heap_size % HEAP_ORPHAN_ABA_SIZE);
+	size_t aligned_heap_size = HEAP_ORPHAN_ABA_SIZE * ((heap_size + HEAP_ORPHAN_ABA_SIZE - 1) / HEAP_ORPHAN_ABA_SIZE);
 	size_t num_heaps = block_size / aligned_heap_size;
 	atomic_store32(&heap->child_count, (int32_t)num_heaps - 1);
 	heap_t* extra_heap = (heap_t*)pointer_offset(heap, aligned_heap_size);
@@ -2525,6 +2521,12 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		_rpmalloc_adjust_size_class(SMALL_CLASS_COUNT + iclass);
 	}
 
+	atomic_store_ptr(&_memory_orphan_heaps, 0);
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	atomic_store_ptr(&_memory_first_class_orphan_heaps, 0);
+#endif
+	memset((void*)_memory_heaps, 0, sizeof(_memory_heaps));
+
 	//Initialize this thread
 	rpmalloc_thread_initialize();
 	return 0;
@@ -2591,6 +2593,7 @@ rpmalloc_thread_finalize(void) {
 	heap_t* heap = get_thread_heap_raw();
 	if (heap)
 		_rpmalloc_heap_release_raw(heap);
+	set_thread_heap(0);
 #if defined(_MSC_VER) && !defined(__clang__) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
 	FlsSetValue(fls_key, 0);
 #endif
