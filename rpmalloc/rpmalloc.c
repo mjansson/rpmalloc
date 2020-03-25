@@ -129,10 +129,7 @@
 #  ifndef WIN32_LEAN_AND_MEAN
 #    define WIN32_LEAN_AND_MEAN
 #  endif
-#  ifndef __USE_MINGW_ANSI_STDIO
-#  define __USE_MINGW_ANSI_STDIO 1
-#  endif
-#  include <windows.h>
+#  include <Windows.h>
 #  if ENABLE_VALIDATE_ARGS
 #    include <Intsafe.h>
 #  endif
@@ -665,7 +662,7 @@ get_thread_heap(void) {
 static inline uintptr_t 
 get_thread_id(void) {
 #if defined(_WIN32)
-	return (uintptr_t)NtCurrentTeb();
+	return (uintptr_t)((void*)NtCurrentTeb());
 #elif defined(__GNUC__) || defined(__clang__)
 	uintptr_t tid;
 #  if defined(__i386__)
@@ -795,7 +792,7 @@ _rpmalloc_unmap_os(void* address, size_t size, size_t offset, size_t release) {
 #if !DISABLE_UNMAP
 #if PLATFORM_WINDOWS
 	if (!VirtualFree(address, release ? 0 : size, release ? MEM_RELEASE : MEM_DECOMMIT)) {
-		assert(!"Failed to unmap virtual memory block");
+		assert(address && "Failed to unmap virtual memory block");
 	}
 #else
 	if (release) {
@@ -1355,27 +1352,6 @@ _rpmalloc_heap_cache_adopt_deferred(heap_t* heap, span_t** single_span) {
 }
 
 static void
-_rpmalloc_heap_global_finalize(heap_t* heap);
-
-static void
-_rpmalloc_heap_unlink_orphan(atomicptr_t* list, heap_t* heap) {
-	void* raworphan = atomic_load_ptr(list);
-	heap_t* orphan = (heap_t*)((uintptr_t)raworphan & ~(uintptr_t)(HEAP_ORPHAN_ABA_SIZE - 1));
-	if (orphan == heap) {
-		//We're now in single-threaded finalization phase, no need to ABA protect or CAS
-		atomic_store_ptr(list, heap->next_orphan);
-	} else if (orphan) {
-		heap_t* last = orphan;
-		while (orphan && (orphan != heap)) {
-			last = orphan;
-			orphan = orphan->next_orphan;
-		}
-		if (orphan == heap)
-			last->next_orphan = heap->next_orphan;
-	}
-}
-
-static void
 _rpmalloc_heap_unmap(heap_t* heap) {
 	if (!heap->master_heap) {
 		if ((heap->finalize > 1) && !atomic_load32(&heap->child_count)) {
@@ -1592,7 +1568,7 @@ _rpmalloc_heap_allocate_new(void) {
 	//Map in pages for a new heap
 	size_t align_offset = 0;
 	size_t heap_size = sizeof(heap_t);
-	size_t block_size = _memory_page_size* ((heap_size + _memory_page_size - 1) >> _memory_page_size_shift);
+	size_t block_size = _memory_page_size * ((heap_size + _memory_page_size - 1) >> _memory_page_size_shift);
 	heap_t* heap = (heap_t*)_rpmalloc_mmap(block_size, &align_offset);
 	if (!heap)
 		return heap;
@@ -2525,7 +2501,8 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 #if RPMALLOC_FIRST_CLASS_HEAPS
 	atomic_store_ptr(&_memory_first_class_orphan_heaps, 0);
 #endif
-	memset((void*)_memory_heaps, 0, sizeof(_memory_heaps));
+	for (size_t ilist = 0, lsize = (sizeof(_memory_heaps) / sizeof(_memory_heaps[0])); ilist < lsize; ++ilist)
+		atomic_store_ptr(&_memory_heaps[ilist], 0);
 
 	//Initialize this thread
 	rpmalloc_thread_initialize();

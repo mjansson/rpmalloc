@@ -229,7 +229,10 @@ pvalloc(size_t size) {
 
 #if defined(BUILD_DYNAMIC_LINK) && BUILD_DYNAMIC_LINK
 
-__declspec(dllexport) BOOL WINAPI
+extern __declspec(dllexport) BOOL WINAPI
+DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved);
+
+extern __declspec(dllexport) BOOL WINAPI
 DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
 	(void)sizeof(reserved);
 	(void)sizeof(instance);
