@@ -30,10 +30,38 @@
 ///
 
 #ifndef ENABLE_NULL_CHECKS
-#define ENABLE_NULL_CHECKS 0
+//! Enable checking for null when mapping new memory
+#define ENABLE_NULL_CHECKS        0
 #endif
 #ifndef ENABLE_ASSERTS
-#define ENABLE_ASSERTS 0
+//! Enable asserts (for debugging)
+#define ENABLE_ASSERTS            1
+#endif
+#ifndef ENABLE_THREAD_CACHE
+//! Enable per-thread cache
+#define ENABLE_THREAD_CACHE       1
+#endif
+#ifndef ENABLE_GLOBAL_CACHE
+//! Enable global cache shared between all threads, requires thread cache
+#define ENABLE_GLOBAL_CACHE       1
+#endif
+
+#if ENABLE_THREAD_CACHE
+#ifndef ENABLE_UNLIMITED_CACHE
+//! Unlimited thread and global cache
+#define ENABLE_UNLIMITED_CACHE    0
+#endif
+#ifndef ENABLE_UNLIMITED_THREAD_CACHE
+//! Unlimited cache disables any thread cache limitations
+#define ENABLE_UNLIMITED_THREAD_CACHE ENABLE_UNLIMITED_CACHE
+#endif
+#if !ENABLE_UNLIMITED_THREAD_CACHE && !defined(THREAD_CACHE_MAX_CHUNKS)
+//! Maximum number of chunks in thread cache
+#define THREAD_CACHE_MAX_CHUNKS   4
+#else
+#undef THREAD_CACHE_MAX_CHUNKS
+#define THREAD_CACHE_MAX_CHUNKS   ((size_t)-1)
+#endif
 #endif
 
 ///
@@ -78,8 +106,8 @@
 #define SIZE_CLASS_COUNT          (SMALL_CLASS_COUNT + MEDIUM_CLASS_COUNT)
 //! Maximum size of a large block
 #define LARGE_SIZE_LIMIT          (CHUNK_SIZE - CHUNK_HEADER_SIZE)
-//! ABA protection size in orhpan heap list (also becomes limit of smallest page size)
-#define HEAP_ORPHAN_ABA_SIZE      512
+//! ABA protection size in lists (also becomes limit of smallest page size)
+#define ABA_SIZE                  512
 
 #if defined(__x86_64__) || defined(__x86_64) || defined(__amd64) || defined(__aarch64__) || defined(__arm64__) \
  || defined(__powerpc64__) || defined(__POWERPC64__) || defined(_WIN64) || defined(__LP64__) || defined(_LP64)
@@ -201,8 +229,12 @@ struct heap_s {
 	//! Chunk list of fully used chunks (double linked)
 	chunk_t*     full_chunk;
 #endif
+#if ENABLE_THREAD_CACHE
 	//! Chunk list of completely free chunks (single linked)
 	chunk_t*     free_chunk;
+	//! Number of free chunks
+	size_t       free_chunk_count;
+#endif
 	//! List of deferred free spans
 	atomicptr_t  free_span_deferred;
 	//! Identifier
@@ -223,7 +255,7 @@ struct heap_s {
 struct size_class_s {
 	//! Size of blocks in this class
 	uint16_t block_size;
-	//! Number of blocks in each chunk
+	//! Number of blocks in each span
 	uint16_t block_count;
 };
 
@@ -351,12 +383,22 @@ static atomicsize_t heap_orphan_counter;
 //! Heap ID counter
 static atomicsize_t heap_id;
 
+#if ENABLE_GLOBAL_CACHE
+//! Global cache
+static atomicptr_t global_cache;
+//! Global cache counter
+static atomicsize_t global_cache_counter;
+#endif
+
 ///
 /// Forward declarations
 ///
 
 static chunk_t*
 rpmalloc_heap_allocate_chunk(heap_t* heap);
+
+static void
+rpmalloc_heap_free_chunk(heap_t* heap, chunk_t* chunk);
 
 static void
 rpmalloc_heap_defer_free_span(heap_t* heap, span_t* span);
@@ -444,6 +486,43 @@ rpmalloc_unmap(void* address, size_t size, size_t offset, size_t release) {
 	}
 #endif
 }
+
+///
+/// Global cache
+///
+#if ENABLE_GLOBAL_CACHE
+
+static chunk_t*
+rpmalloc_global_cache_pop(void) {
+	uintptr_t chunkptr;
+	do {
+		void* old_cache = atomicptr_load(&global_cache);
+		chunkptr = (uintptr_t)old_cache & ~(ABA_SIZE - 1);
+		if (chunkptr) {
+			chunk_t* chunk = (chunk_t*)chunkptr;
+			//By accessing the chunk before it is swapped out of list we assume that a contending thread
+			//does not manage to traverse the chunk to being unmapped before we access it
+			void* new_cache = (void*)((uintptr_t)chunk->next | ((uintptr_t)atomicsize_incr(&global_cache_counter) & (ABA_SIZE - 1)));
+			if (atomicptr_cas(&global_cache, new_cache, old_cache))
+				return chunk;
+		}
+	} while (chunkptr);
+	return 0;
+}
+
+static void
+rpmalloc_global_cache_push(chunk_t* chunk) {
+	void* old_cache;
+	void* new_cache;
+	do {
+		old_cache = atomicptr_load(&global_cache);
+		chunk->next = (chunk_t*)((uintptr_t)old_cache & ~(ABA_SIZE - 1));
+		new_cache = (void*)((uintptr_t)chunk | ((uintptr_t)atomicsize_incr(&global_cache_counter) & (ABA_SIZE - 1)));
+	} while (!atomicptr_cas(&global_cache, new_cache, old_cache));
+	//rpmalloc_unmap(chunk, chunk->mapped_size, chunk->mapped_offset, chunk->mapped_size);
+}
+
+#endif
 
 ///
 /// Thread local heap
@@ -627,9 +706,7 @@ rpmalloc_chunk_add_free_span(chunk_t* chunk, span_t* span) {
 		else //if (chunk->state == CHUNK_STATE_FULL)
 			rpmalloc_chunk_double_link_list_remove(&chunk->heap->full_chunk, chunk);
 #endif
-		chunk->state = CHUNK_STATE_FREE;
-		chunk->next = chunk->heap->free_chunk;
-		chunk->heap->free_chunk = chunk;
+		rpmalloc_heap_free_chunk(chunk->heap, chunk);
 		return;
 	}
 	//If chunk is previously fully used, add it to heap partial list
@@ -1075,9 +1152,9 @@ rpmalloc_heap_orphan(heap_t* heap) {
 	void* raw_heap;
 	do {
 		last_heap = (heap_t*)atomicptr_load(&heap_orphan);
-		heap->next_orphan = (heap_t*)((uintptr_t)last_heap & ~(uintptr_t)(HEAP_ORPHAN_ABA_SIZE - 1));
+		heap->next_orphan = (heap_t*)((uintptr_t)last_heap & ~(uintptr_t)(ABA_SIZE - 1));
 		uintptr_t orphan_counter = (uintptr_t)atomicsize_incr(&heap_orphan_counter);
-		raw_heap = (void*)((uintptr_t)heap | (orphan_counter & (uintptr_t)(HEAP_ORPHAN_ABA_SIZE - 1)));
+		raw_heap = (void*)((uintptr_t)heap | (orphan_counter & (uintptr_t)(ABA_SIZE - 1)));
 	} while (!atomicptr_cas(&heap_orphan, raw_heap, last_heap));
 }
 
@@ -1094,7 +1171,7 @@ rpmalloc_mmap_heap(void) {
 	heap->align_offset = align_offset;
 
 	//Put extra heaps as orphans
-	size_t aligned_heap_size = HEAP_ORPHAN_ABA_SIZE * ((sizeof(heap_t) + HEAP_ORPHAN_ABA_SIZE - 1) / HEAP_ORPHAN_ABA_SIZE);
+	size_t aligned_heap_size = ABA_SIZE * ((sizeof(heap_t) + ABA_SIZE - 1) / ABA_SIZE);
 	size_t num_heaps = block_size / aligned_heap_size;
 	atomicsize_store(&heap->child_count, num_heaps ? num_heaps - 1 : 0);
 	heap_t* extra_heap = (heap_t*)pointer_offset(heap, aligned_heap_size);
@@ -1116,11 +1193,11 @@ rpmalloc_allocate_heap(void) {
 	heap_t* heap;
 	do {
 		raw_heap = atomicptr_load(&heap_orphan);
-		heap = (heap_t*)((uintptr_t)raw_heap & ~(uintptr_t)(HEAP_ORPHAN_ABA_SIZE - 1));
+		heap = (heap_t*)((uintptr_t)raw_heap & ~(uintptr_t)(ABA_SIZE - 1));
 		if (!heap)
 			return rpmalloc_mmap_heap();
 		uintptr_t orphan_counter = (uintptr_t)atomicsize_incr(&heap_orphan_counter);
-		next_raw_heap = (void*)((uintptr_t)heap->next_orphan | (orphan_counter & (uintptr_t)(HEAP_ORPHAN_ABA_SIZE - 1)));
+		next_raw_heap = (void*)((uintptr_t)heap->next_orphan | (orphan_counter & (uintptr_t)(ABA_SIZE - 1)));
 	} while (!atomicptr_cas(&heap_orphan, next_raw_heap, raw_heap));
 	return heap;
 }
@@ -1423,14 +1500,30 @@ rpmalloc_heap_aligned_reallocate_block(heap_t* heap, void* block, size_t alignme
 static chunk_t*
 rpmalloc_heap_allocate_chunk(heap_t* heap) {
 	size_t offset;
-	chunk_t* chunk = heap->free_chunk;
+	chunk_t* chunk;
+#if ENABLE_THREAD_CACHE
+	chunk = heap->free_chunk;
 	if (chunk) {
 		offset = chunk->mapped_offset;
 		heap->free_chunk = chunk->next;
+		--heap->free_chunk_count;
+		rpmalloc_assert(heap->free_chunk || !heap->free_chunk_count);
 	} else {
-		offset = 0;
-		chunk = rpmalloc_mmap(CHUNK_SIZE, &offset);
+#endif
+#if ENABLE_GLOBAL_CACHE
+		chunk = rpmalloc_global_cache_pop();
+		if (chunk) {
+			offset = chunk->mapped_offset;
+		} else {
+#endif
+			offset = 0;
+			chunk = rpmalloc_mmap(CHUNK_SIZE, &offset);
+#if ENABLE_GLOBAL_CACHE
+		}
+#endif
+#if ENABLE_THREAD_CACHE
 	}
+#endif
 	if (CHECK_NOT_NULL(chunk)) {
 		chunk->heap = heap;
 		chunk->free = 0;
@@ -1440,6 +1533,27 @@ rpmalloc_heap_allocate_chunk(heap_t* heap) {
 		chunk->mapped_size = CHUNK_SIZE;
 	}
 	return chunk;
+}
+
+//! Free a chunk
+static void
+rpmalloc_heap_free_chunk(heap_t* heap, chunk_t* chunk) {
+	(void)sizeof(heap);
+#if ENABLE_THREAD_CACHE
+	rpmalloc_assert(heap->free_chunk || !heap->free_chunk_count);
+	if (heap->free_chunk_count < THREAD_CACHE_MAX_CHUNKS) {
+		chunk->state = CHUNK_STATE_FREE;
+		chunk->next = heap->free_chunk;
+		heap->free_chunk = chunk;
+		++heap->free_chunk_count;
+		return;
+	}
+#endif
+#if ENABLE_GLOBAL_CACHE
+	rpmalloc_global_cache_push(chunk);
+#else
+	rpmalloc_unmap(chunk, chunk->mapped_size, chunk->mapped_offset, chunk->mapped_size);
+#endif
 }
 
 ///
@@ -1500,13 +1614,20 @@ rpmalloc_thread_collect() {
 	if (!heap)
 		return;
 
+#if ENABLE_THREAD_CACHE
 	chunk_t* chunk = heap->free_chunk;
 	while (chunk) {
 		chunk_t* next = chunk->next;
+#if ENABLE_GLOBAL_CACHE
+		rpmalloc_global_cache_push(chunk);
+#else
 		rpmalloc_unmap(chunk, chunk->mapped_size, chunk->mapped_offset, chunk->mapped_size);
+#endif
 		chunk = next;
 	}
 	heap->free_chunk = 0;
+	heap->free_chunk_count = 0;
+#endif
 }
 
 extern int
@@ -1521,8 +1642,8 @@ rpmalloc_initialize() {
 	os_page_size = (size_t)sysconf(_SC_PAGESIZE);
 	os_mmap_granularity = os_page_size;
 #endif
-	if (os_page_size < HEAP_ORPHAN_ABA_SIZE)
-		os_page_size = HEAP_ORPHAN_ABA_SIZE;
+	if (os_page_size < ABA_SIZE)
+		os_page_size = ABA_SIZE;
 	if (os_mmap_granularity < os_page_size)
 		os_mmap_granularity = os_page_size;
 
