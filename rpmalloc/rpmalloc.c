@@ -1375,12 +1375,14 @@ _rpmalloc_heap_global_finalize(heap_t* heap) {
 
 	_rpmalloc_heap_finalize(heap);
 
+#if ENABLE_THREAD_CACHE
 	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
 		span_t* span = heap->span_cache[iclass];
 		heap->span_cache[iclass] = 0;
 		if (span)
 			_rpmalloc_span_list_unmap_all(span);
 	}
+#endif
 
 	if (heap->full_span_count) {
 		--heap->finalize;
