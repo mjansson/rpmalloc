@@ -99,6 +99,7 @@ typedef volatile _Atomic(size_t) atomicsize_t;
 
 typedef struct span_s span_t;
 typedef struct chunk_s chunk_t;
+typedef struct free_s free_t;
 typedef struct heap_s heap_t;
 typedef struct size_class_s size_class_t;
 
@@ -180,14 +181,20 @@ struct chunk_s {
 	chunk_t*     next;
 };
 
+//! Free lists for a size class
+struct free_s {
+	//! Free list
+	void*   free;
+	//! Partial small type span list
+	span_t* partial;
+};
+
 //! A heap maintains ownership of all chunks allocated by the heap
 struct heap_s {
 	//! Owning thread ID
 	uintptr_t    thread;
 	//! Free list for each size class
-	void*        free[SIZE_CLASS_COUNT];
-	//! Partial small type span list for each size class (double linked)
-	span_t*      partial_small[SIZE_CLASS_COUNT];
+	free_t       free[SIZE_CLASS_COUNT];
 	//! Chunk list of partially used chunks (double linked)
 	chunk_t*     partial_chunk;
 #if RPMALLOC_FIRST_CLASS_HEAPS
@@ -226,6 +233,7 @@ struct size_class_s {
 
 _Static_assert(sizeof(chunk_t) <= CHUNK_HEADER_SIZE, "Invalid chunk header size");
 _Static_assert(sizeof(span_t) <= SPAN_HEADER_SIZE, "Invalid span header size");
+_Static_assert(MEDIUM_SIZE_LIMIT < ((SPAN_SIZE - CHUNK_HEADER_SIZE) / 2), "Invalid block size configuration");
 _Static_assert(sizeof(size_class_t) == 4, "Size class size mismatch");
 #ifdef ARCH_64BIT
 _Static_assert(sizeof(atomicsize_t) == 8, "Atomic size mismatch");
@@ -779,20 +787,20 @@ rpmalloc_span_small_allocate(span_t* span, heap_t* heap) {
 		rpmalloc_span_adopt_deferred_free(span);
 	if (span->free) {
 		block = rpmalloc_free_list_pop(&span->free);
-		heap->free[span->size_class] = span->free;
+		heap->free[span->size_class].free = span->free;
 		span->free = 0;
 	} else {
 		//If the span did not fully initialize free list, link up another page worth of blocks
 		void* block_start = pointer_offset(rpmalloc_span_block_start(span), ((size_t)span->initialized_count * span->block_size));
 		span->initialized_count += (uint16_t)rpmalloc_free_list_partial_init(
-			&heap->free[span->size_class], &block, block_start,
+			&heap->free[span->size_class].free, &block, block_start,
 			span->block_count - span->initialized_count, span->block_size);
 	}
 	span->used_count = span->initialized_count;
 
 	//If the span is fully utilized, unlink it from partial list
 	if (rpmalloc_span_is_fully_utilized(span))
-		rpmalloc_span_double_link_list_pop_head(&heap->partial_small[span->size_class]);
+		rpmalloc_span_double_link_list_pop_head(&heap->free[span->size_class].partial);
 	return block;
 }
 
@@ -830,7 +838,7 @@ rpmalloc_span_small_deallocate_direct(span_t* span, void* block) {
 	//If span is fully utilized and free floating, add to list of partial spans for the size class
 	if (rpmalloc_span_is_fully_utilized(span)) {
 		chunk_t* chunk = rpmalloc_chunk_from_span(span);
-		rpmalloc_span_double_link_list_add(&chunk->heap->partial_small[span->size_class], span);
+		rpmalloc_span_double_link_list_add(&chunk->heap->free[span->size_class].partial, span);
 	}
 	//Add block to free list
 	--span->used_count;
@@ -839,7 +847,7 @@ rpmalloc_span_small_deallocate_direct(span_t* span, void* block) {
 	//If span is completely free, remove from partial list for size class and add it to list of free spans
 	if (span->used_count == span->defer_size) {
 		chunk_t* chunk = rpmalloc_chunk_from_span(span);
-		rpmalloc_span_double_link_list_remove(&chunk->heap->partial_small[span->size_class], span);
+		rpmalloc_span_double_link_list_remove(&chunk->heap->free[span->size_class].partial, span);
 		rpmalloc_chunk_add_free_span(chunk, span);
 	}
 }
@@ -898,7 +906,7 @@ rpmalloc_heap_initialize_small_span(heap_t* heap, span_t* span, size_t chunk_ind
 	void* block;
 	span->free = 0;
 	span->used_count = (uint16_t)rpmalloc_free_list_partial_init(
-		&heap->free[class_idx], &block, rpmalloc_span_block_start(span),
+		&heap->free[class_idx].free, &block, rpmalloc_span_block_start(span),
 		block_count, block_size);
 	span->defer_size = 0;
 	span->block_count = (uint16_t)block_count;
@@ -914,7 +922,7 @@ rpmalloc_heap_initialize_small_span(heap_t* heap, span_t* span, size_t chunk_ind
 	span->prev = 0;
 	span->next = 0;
 	if (span->initialized_count < span->block_count)
-		rpmalloc_span_double_link_list_add(&heap->partial_small[class_idx], span);
+		rpmalloc_span_double_link_list_add(&heap->free[class_idx].partial, span);
 	return block;
 }
 
@@ -1124,10 +1132,11 @@ rpmalloc_allocate_heap(void) {
 //! Allocate a small or medium sized memory block from the given heap
 static void*
 rpmalloc_heap_allocate_small_medium(heap_t* heap, uint32_t class_idx) {
-	if (heap->free[class_idx])
-		return rpmalloc_free_list_pop(&heap->free[class_idx]);
-	if (heap->partial_small[class_idx])
-		return rpmalloc_span_small_allocate(heap->partial_small[class_idx], heap);
+	free_t* free_data = heap->free + class_idx;
+	if (free_data->free)
+		return rpmalloc_free_list_pop(&free_data->free);
+	if (free_data->partial)
+		return rpmalloc_span_small_allocate(free_data->partial, heap);
 	return rpmalloc_heap_allocate_small_span_and_block(heap, class_idx);
 }
 
