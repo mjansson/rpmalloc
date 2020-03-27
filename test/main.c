@@ -676,13 +676,13 @@ initfini_thread(void* argp) {
 	unsigned int ipass = 0;
 	unsigned int icheck = 0;
 	unsigned int id = 0;
-	void* addr[4096];
+	uint32_t* addr[4096];
 	char data[8192];
 	unsigned int cursize;
 	unsigned int iwait = 0;
 	int ret = 0;
 
-	for (id = 0; id < 8192; ++id)
+	for (id = 0; id < sizeof(data); ++id)
 		data[id] = (char)id;
 
 	thread_yield();
@@ -702,12 +702,12 @@ initfini_thread(void* argp) {
 				goto end;
 			}
 
-			*(uint32_t*)addr[ipass] = (uint32_t)cursize;
-			memcpy(pointer_offset(addr[ipass], 4), data, cursize);
+			addr[ipass][0] = (uint32_t)cursize;
+			memcpy(addr[ipass] + 1, data, cursize);
 
 			for (icheck = 0; icheck < ipass; ++icheck) {
-				size_t this_size = *(uint32_t*)addr[ipass];
-				size_t check_size = *(uint32_t*)addr[icheck];
+				size_t this_size = addr[ipass][0];
+				size_t check_size = addr[icheck][0];
 				if (this_size != cursize) {
 					ret = test_fail("Data corrupted in this block (size)");
 					goto end;
@@ -721,13 +721,13 @@ initfini_thread(void* argp) {
 					goto end;
 				}
 				if (addr[icheck] < addr[ipass]) {
-					if (pointer_offset(addr[icheck], check_size + 4) > addr[ipass]) {
+					if (pointer_offset(addr[icheck], check_size + 4) > (void*)addr[ipass]) {
 						ret = test_fail("Invalid pointer inside another block returned from allocation");
 						goto end;
 					}
 				}
 				else if (addr[icheck] > addr[ipass]) {
-					if (pointer_offset(addr[ipass], cursize + 4) > addr[icheck]) {
+					if (pointer_offset(addr[ipass], cursize + 4) > (void*)addr[icheck]) {
 						ret = test_fail("Invalid pointer inside another block returned from allocation");
 						goto end;
 					}
@@ -736,13 +736,13 @@ initfini_thread(void* argp) {
 		}
 
 		for (ipass = 0; ipass < arg.passes; ++ipass) {
-			cursize = *(uint32_t*)addr[ipass];
+			cursize = addr[ipass][0];
 			if (cursize > max_datasize) {
 				ret = test_fail("Data corrupted (size)");
 				goto end;
 			}
 
-			if (memcmp(pointer_offset(addr[ipass], 4), data, cursize)) {
+			if (memcmp(addr[ipass] + 1, data, cursize)) {
 				ret = test_fail("Data corrupted");
 				goto end;
 			}
