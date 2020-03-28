@@ -1662,7 +1662,8 @@ _rpmalloc_heap_release(void* heapptr, int first_class) {
 	//Orphan the heap
 	_rpmalloc_heap_orphan(heap, first_class);
 
-	set_thread_heap(0);
+	if (get_thread_heap_raw() == heap)
+		set_thread_heap(0);
 #if ENABLE_STATISTICS
 	atomic_decr32(&_memory_active_heaps);
 	assert(atomic_load32(&_memory_active_heaps) >= 0);
