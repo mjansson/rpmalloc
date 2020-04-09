@@ -2006,7 +2006,7 @@ retry:
 static void
 _rpmalloc_deallocate_direct_small_or_medium(span_t* span, void* block) {
 	heap_t* heap = span->heap;
-	assert(heap->owner_thread == get_thread_id() || heap->finalize);
+	assert(heap->owner_thread == get_thread_id() || !heap->owner_thread || heap->finalize);
 	//Add block to free list
 	if (UNEXPECTED(_rpmalloc_span_is_fully_utilized(span))) {
 		span->used_count = span->block_count;
@@ -2065,7 +2065,7 @@ _rpmalloc_deallocate_small_or_medium(span_t* span, void* p) {
 		p = pointer_offset(p, -(int32_t)(block_offset % span->block_size));
 	}
 	//Check if block belongs to this heap or if deallocation should be deferred
-	if ((span->heap->owner_thread == get_thread_id()) || span->heap->finalize)
+	if ((span->heap->owner_thread == get_thread_id()) || !span->heap->owner_thread || span->heap->finalize)
 		_rpmalloc_deallocate_direct_small_or_medium(span, p);
 	else
 		_rpmalloc_deallocate_defer_small_or_medium(span, p);
@@ -2078,7 +2078,7 @@ _rpmalloc_deallocate_large(span_t* span) {
 	assert(!(span->flags & SPAN_FLAG_MASTER) || !(span->flags & SPAN_FLAG_SUBSPAN));
 	assert((span->flags & SPAN_FLAG_MASTER) || (span->flags & SPAN_FLAG_SUBSPAN));
 	//We must always defer (unless finalizing) if from another heap since we cannot touch the list or counters of another heap
-	int defer = (span->heap->owner_thread != get_thread_id()) && !span->heap->finalize;
+	int defer = (span->heap->owner_thread != get_thread_id()) && span->heap->owner_thread && !span->heap->finalize;
 	if (defer) {
 		_rpmalloc_deallocate_defer_free_span(span->heap, span);
 		return;
@@ -2118,7 +2118,7 @@ _rpmalloc_deallocate_large(span_t* span) {
 static void
 _rpmalloc_deallocate_huge(span_t* span) {
 	assert(span->heap);
-	if ((span->heap->owner_thread != get_thread_id()) && !span->heap->finalize) {
+	if ((span->heap->owner_thread != get_thread_id()) && span->heap->owner_thread && !span->heap->finalize) {
 		_rpmalloc_deallocate_defer_free_span(span->heap, span);
 		return;
 	}
@@ -2907,8 +2907,10 @@ extern inline rpmalloc_heap_t*
 rpmalloc_heap_acquire(void) {
 	// Must be a pristine heap from newly mapped memory pages, or else memory blocks
 	// could already be allocated from the heap which would (wrongly) be released when
-	// heap is cleared with rpmalloc_heap_free_all()
+	// heap is cleared with rpmalloc_heap_free_all(). Also heaps guaranteed to be
+	// pristine from the dedicated orphan list can be used.
 	heap_t* heap = _rpmalloc_heap_allocate(1);
+	heap->owner_thread = 0;
 	_rpmalloc_stat_inc(&_memory_active_heaps);
 	return heap;
 }

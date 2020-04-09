@@ -1024,7 +1024,7 @@ test_first_class_heaps(void) {
 			return -1;
 	}
 
-	printf("Heap threaded tests passed\n");
+	printf("First class heap tests passed\n");
 #endif
 	return 0;
 }
