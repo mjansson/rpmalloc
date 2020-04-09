@@ -2065,7 +2065,12 @@ _rpmalloc_deallocate_small_or_medium(span_t* span, void* p) {
 		p = pointer_offset(p, -(int32_t)(block_offset % span->block_size));
 	}
 	//Check if block belongs to this heap or if deallocation should be deferred
-	if ((span->heap->owner_thread == get_thread_id()) || !span->heap->owner_thread || span->heap->finalize)
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	int defer = (span->heap->owner_thread && (span->heap->owner_thread != get_thread_id()) && !span->heap->finalize);
+#else
+	int defer = ((span->heap->owner_thread != get_thread_id()) && !span->heap->finalize);
+#endif
+	if (!defer)
 		_rpmalloc_deallocate_direct_small_or_medium(span, p);
 	else
 		_rpmalloc_deallocate_defer_small_or_medium(span, p);
@@ -2078,7 +2083,11 @@ _rpmalloc_deallocate_large(span_t* span) {
 	assert(!(span->flags & SPAN_FLAG_MASTER) || !(span->flags & SPAN_FLAG_SUBSPAN));
 	assert((span->flags & SPAN_FLAG_MASTER) || (span->flags & SPAN_FLAG_SUBSPAN));
 	//We must always defer (unless finalizing) if from another heap since we cannot touch the list or counters of another heap
-	int defer = (span->heap->owner_thread != get_thread_id()) && span->heap->owner_thread && !span->heap->finalize;
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	int defer = (span->heap->owner_thread && (span->heap->owner_thread != get_thread_id()) && !span->heap->finalize);
+#else
+	int defer = ((span->heap->owner_thread != get_thread_id()) && !span->heap->finalize);
+#endif
 	if (defer) {
 		_rpmalloc_deallocate_defer_free_span(span->heap, span);
 		return;
@@ -2118,7 +2127,12 @@ _rpmalloc_deallocate_large(span_t* span) {
 static void
 _rpmalloc_deallocate_huge(span_t* span) {
 	assert(span->heap);
-	if ((span->heap->owner_thread != get_thread_id()) && span->heap->owner_thread && !span->heap->finalize) {
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	int defer = (span->heap->owner_thread && (span->heap->owner_thread != get_thread_id()) && !span->heap->finalize);
+#else
+	int defer = ((span->heap->owner_thread != get_thread_id()) && !span->heap->finalize);
+#endif
+	if (defer) {
 		_rpmalloc_deallocate_defer_free_span(span->heap, span);
 		return;
 	}
