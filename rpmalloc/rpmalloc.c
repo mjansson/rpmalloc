@@ -418,6 +418,8 @@ typedef struct size_class_use_t size_class_use_t;
 struct span_t {
 	//! Free list
 	void*       free_list;
+	//! Owner thread
+	uintptr_t   owner_thread;
 	//! Total block count of size class
 	uint32_t    block_count;
 	//! Size class
@@ -982,6 +984,7 @@ _rpmalloc_span_align_count(size_t span_count) {
 //! Setup a newly mapped span
 static void
 _rpmalloc_span_initialize(span_t* span, size_t total_span_count, size_t span_count, size_t align_offset) {
+	span->owner_thread = get_thread_id();
 	span->total_spans = (uint32_t)total_span_count;
 	span->span_count = (uint32_t)span_count;
 	span->align_offset = (uint32_t)align_offset;
@@ -1112,6 +1115,7 @@ static void*
 _rpmalloc_span_initialize_new(heap_t* heap, span_t* span, uint32_t class_idx) {
 	assert(span->span_count == 1);
 	size_class_t* size_class = _memory_size_class + class_idx;
+	span->owner_thread = get_thread_id();
 	span->size_class = class_idx;
 	span->heap = heap;
 	span->flags &= ~SPAN_FLAG_ALIGNED_BLOCKS;
@@ -1828,6 +1832,7 @@ _rpmalloc_allocate_large(heap_t* heap, size_t size) {
 
 	//Mark span as owned by this heap and set base data
 	assert(span->span_count == span_count);
+	span->owner_thread = get_thread_id();
 	span->size_class = SIZE_CLASS_LARGE;
 	span->heap = heap;
 
@@ -1853,6 +1858,7 @@ _rpmalloc_allocate_huge(heap_t* heap, size_t size) {
 		return span;
 
 	//Store page count in span_count
+	span->owner_thread = get_thread_id();
 	span->size_class = SIZE_CLASS_HUGE;
 	span->span_count = (uint32_t)num_pages;
 	span->align_offset = (uint32_t)align_offset;
@@ -1981,6 +1987,7 @@ retry:
 	}
 
 	//Store page count in span_count
+	span->owner_thread = get_thread_id();
 	span->size_class = SIZE_CLASS_HUGE;
 	span->span_count = (uint32_t)num_pages;
 	span->align_offset = (uint32_t)align_offset;
@@ -2065,11 +2072,17 @@ _rpmalloc_deallocate_small_or_medium(span_t* span, void* p) {
 		p = pointer_offset(p, -(int32_t)(block_offset % span->block_size));
 	}
 	//Check if block belongs to this heap or if deallocation should be deferred
+	uintptr_t current_thread = get_thread_id();
+	int defer = (span->owner_thread != current_thread);
+	if (defer) {
 #if RPMALLOC_FIRST_CLASS_HEAPS
-	int defer = (span->heap->owner_thread && (span->heap->owner_thread != get_thread_id()) && !span->heap->finalize);
+		defer = (span->heap->owner_thread && (span->heap->owner_thread != current_thread) && !span->heap->finalize);
 #else
-	int defer = ((span->heap->owner_thread != get_thread_id()) && !span->heap->finalize);
+		defer = ((span->heap->owner_thread != current_thread) && !span->heap->finalize);
 #endif
+		if (!defer)
+			span->owner_thread = current_thread;
+	}
 	if (!defer)
 		_rpmalloc_deallocate_direct_small_or_medium(span, p);
 	else
@@ -2083,11 +2096,17 @@ _rpmalloc_deallocate_large(span_t* span) {
 	assert(!(span->flags & SPAN_FLAG_MASTER) || !(span->flags & SPAN_FLAG_SUBSPAN));
 	assert((span->flags & SPAN_FLAG_MASTER) || (span->flags & SPAN_FLAG_SUBSPAN));
 	//We must always defer (unless finalizing) if from another heap since we cannot touch the list or counters of another heap
+	uintptr_t current_thread = get_thread_id();
+	int defer = (span->owner_thread != current_thread);
+	if (defer) {
 #if RPMALLOC_FIRST_CLASS_HEAPS
-	int defer = (span->heap->owner_thread && (span->heap->owner_thread != get_thread_id()) && !span->heap->finalize);
+		defer = (span->heap->owner_thread && (span->heap->owner_thread != current_thread) && !span->heap->finalize);
 #else
-	int defer = ((span->heap->owner_thread != get_thread_id()) && !span->heap->finalize);
+		defer = ((span->heap->owner_thread != current_thread) && !span->heap->finalize);
 #endif
+		if (!defer)
+			span->owner_thread = current_thread;
+	}
 	if (defer) {
 		_rpmalloc_deallocate_defer_free_span(span->heap, span);
 		return;
@@ -2127,11 +2146,17 @@ _rpmalloc_deallocate_large(span_t* span) {
 static void
 _rpmalloc_deallocate_huge(span_t* span) {
 	assert(span->heap);
+	uintptr_t current_thread = get_thread_id();
+	int defer = (span->owner_thread != current_thread);
+	if (defer) {
 #if RPMALLOC_FIRST_CLASS_HEAPS
-	int defer = (span->heap->owner_thread && (span->heap->owner_thread != get_thread_id()) && !span->heap->finalize);
+		defer = (span->heap->owner_thread && (span->heap->owner_thread != current_thread) && !span->heap->finalize);
 #else
-	int defer = ((span->heap->owner_thread != get_thread_id()) && !span->heap->finalize);
+		defer = ((span->heap->owner_thread != current_thread) && !span->heap->finalize);
 #endif
+		if (!defer)
+			span->owner_thread = current_thread;
+	}
 	if (defer) {
 		_rpmalloc_deallocate_defer_free_span(span->heap, span);
 		return;
@@ -2530,7 +2555,14 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 void
 rpmalloc_finalize(void) {
 	rpmalloc_thread_finalize();
-	//rpmalloc_dump_statistics(stderr);
+
+#if ENABLE_STATISTICS
+	/*FILE* dumpfile = fopen("F:\\stage2\\rpdump.txt", "wb+");
+	if (dumpfile) {
+		rpmalloc_dump_statistics(dumpfile);
+		fclose(dumpfile);
+	}*/
+#endif
 
 	//Free all thread caches and fully free spans
 	for (size_t list_idx = 0; list_idx < HEAP_ARRAY_SIZE; ++list_idx) {
