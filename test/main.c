@@ -47,8 +47,14 @@ test_alloc(void) {
 	void* addr[8142];
 	char data[20000];
 	unsigned int datasize[7] = { 473, 39, 195, 24, 73, 376, 245 };
+	size_t wanted_usable_size;
 
 	rpmalloc_initialize();
+
+	//Query the small granularity
+	void* zero_alloc = rpmalloc(0);
+	size_t small_granularity = rpmalloc_usable_size(zero_alloc);
+	rpfree(zero_alloc);
 
 	for (id = 0; id < 20000; ++id)
 		data[id] = (char)(id % 139 + id % 17);
@@ -68,16 +74,18 @@ test_alloc(void) {
 	rpfree(testptr);
 	for (iloop = 0; iloop <= 1024; ++iloop) {
 		testptr = rpmalloc(iloop);
-		/*size_t wanted_usable_size = 16 * ((iloop / 16) + ((!iloop || (iloop % 16)) ? 1 : 0));
-		if (rpmalloc_usable_size(testptr) != wanted_usable_size)
-			return test_fail("Bad base alloc usable size");*/
+		wanted_usable_size = iloop ? small_granularity * ((iloop + (small_granularity - 1)) / small_granularity) : small_granularity;
+		if (rpmalloc_usable_size(testptr) != wanted_usable_size) {
+			printf("For %u wanted %zu got %zu\n", iloop, wanted_usable_size, rpmalloc_usable_size(testptr));
+			return test_fail("Bad base alloc usable size");
+		}
 		rpfree(testptr);
 	}
 
 	//Verify medium block sizes (until class merging kicks in)
 	for (iloop = 1025; iloop <= 6000; ++iloop) {
 		testptr = rpmalloc(iloop);
-		size_t wanted_usable_size = 512 * ((iloop / 512) + ((iloop % 512) ? 1 : 0));
+		wanted_usable_size = 512 * ((iloop / 512) + ((iloop % 512) ? 1 : 0));
 		if (rpmalloc_usable_size(testptr) != wanted_usable_size)
 			return test_fail("Bad medium alloc usable size");
 		rpfree(testptr);
@@ -86,10 +94,11 @@ test_alloc(void) {
 	//Large reallocation test
 	testptr = rpmalloc(253000);
 	testptr = rprealloc(testptr, 151);
-	/*if (rpmalloc_usable_size(testptr) != 160)
-		return test_fail("Bad usable size");*/
-	/*if (rpmalloc_usable_size(pointer_offset(testptr, 16)) != 144)
-		return test_fail("Bad offset usable size");*/
+	wanted_usable_size = (small_granularity * ((151 + (small_granularity - 1)) / small_granularity));
+	if (rpmalloc_usable_size(testptr) != wanted_usable_size)
+		return test_fail("Bad usable size");
+	if (rpmalloc_usable_size(pointer_offset(testptr, 16)) != (wanted_usable_size - 16))
+		return test_fail("Bad offset usable size");
 	rpfree(testptr);
 
 	//Reallocation tests
@@ -97,26 +106,26 @@ test_alloc(void) {
 		size_t size = 37 * iloop;
 		testptr = rpmalloc(size);
 		*((uintptr_t*)testptr) = 0x12345678;
-		/*size_t wanted_usable_size = 16 * ((size / 16) + ((size % 16) ? 1 : 0));
+		wanted_usable_size = small_granularity * ((size / small_granularity) + ((size % small_granularity) ? 1 : 0));
 		if (rpmalloc_usable_size(testptr) != wanted_usable_size)
-			return test_fail("Bad usable size (alloc)");*/
+			return test_fail("Bad usable size (alloc)");
 		testptr = rprealloc(testptr, size + 16);
-		/*if (rpmalloc_usable_size(testptr) < (wanted_usable_size + 16))
-			return test_fail("Bad usable size (realloc)");*/
+		if (rpmalloc_usable_size(testptr) < (wanted_usable_size + 16))
+			return test_fail("Bad usable size (realloc)");
 		if (*((uintptr_t*)testptr) != 0x12345678)
 			return test_fail("Data not preserved on realloc");
 		rpfree(testptr);
 
 		testptr = rpaligned_alloc(128, size);
 		*((uintptr_t*)testptr) = 0x12345678;
-		/*wanted_usable_size = 16 * ((size / 16) + ((size % 16) ? 1 : 0));
+		wanted_usable_size = small_granularity * ((size / small_granularity) + ((size % small_granularity) ? 1 : 0));
 		if (rpmalloc_usable_size(testptr) < wanted_usable_size)
 			return test_fail("Bad usable size (aligned alloc)");
 		if (rpmalloc_usable_size(testptr) > (wanted_usable_size + 128))
-			return test_fail("Bad usable size (aligned alloc)");*/
+			return test_fail("Bad usable size (aligned alloc)");
 		testptr = rpaligned_realloc(testptr, 128, size + 32, 0, 0);
-		/*if (rpmalloc_usable_size(testptr) < (wanted_usable_size + 32))
-			return test_fail("Bad usable size (aligned realloc)");*/
+		if (rpmalloc_usable_size(testptr) < (wanted_usable_size + 32))
+			return test_fail("Bad usable size (aligned realloc)");
 		if (*((uintptr_t*)testptr) != 0x12345678)
 			return test_fail("Data not preserved on realloc");
 		if (rpaligned_realloc(testptr, 128, size * 1024 * 4, 0, RPMALLOC_GROW_OR_FAIL))

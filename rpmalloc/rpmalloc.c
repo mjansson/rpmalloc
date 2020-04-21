@@ -2311,14 +2311,16 @@ _rpmalloc_adjust_size_class(size_t iclass) {
 	_memory_size_class[iclass].class_idx = (uint16_t)iclass;
 
 	//Check if previous size classes can be merged
-	size_t prevclass = iclass;
-	while (prevclass > 0) {
-		--prevclass;
-		//A class can be merged if number of pages and number of blocks are equal
-		if (_memory_size_class[prevclass].block_count == _memory_size_class[iclass].block_count)
-			memcpy(_memory_size_class + prevclass, _memory_size_class + iclass, sizeof(_memory_size_class[iclass]));
-		else
-			break;
+	if (iclass >= SMALL_CLASS_COUNT) {
+		size_t prevclass = iclass;
+		while (prevclass > 0) {
+			--prevclass;
+			//A class can be merged if number of pages and number of blocks are equal
+			if (_memory_size_class[prevclass].block_count == _memory_size_class[iclass].block_count)
+				memcpy(_memory_size_class + prevclass, _memory_size_class + iclass, sizeof(_memory_size_class[iclass]));
+			else
+				break;
+		}
 	}
 }
 
