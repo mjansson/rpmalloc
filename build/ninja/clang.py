@@ -390,6 +390,9 @@ class ClangToolchain(toolchain.Toolchain):
     else:
       if targettype == 'sharedlib':
         flags += ['-shared', '-fPIC']
+    if config != 'debug':
+      if targettype == 'bin' or targettype == 'sharedlib':
+        flags += ['-flto']
     return flags
 
   def make_linkarchlibs(self, arch, targettype):
