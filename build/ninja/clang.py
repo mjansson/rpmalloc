@@ -345,11 +345,11 @@ class ClangToolchain(toolchain.Toolchain):
     if config == 'debug':
       flags += ['-DBUILD_DEBUG=1']
     elif config == 'release':
-      flags += ['-DBUILD_RELEASE=1', '-O3', '-funroll-loops', '-flto']
+      flags += ['-DBUILD_RELEASE=1', '-O3', '-funroll-loops']
     elif config == 'profile':
-      flags += ['-DBUILD_PROFILE=1', '-O3', '-funroll-loops', '-flto']
+      flags += ['-DBUILD_PROFILE=1', '-O3', '-funroll-loops']
     elif config == 'deploy':
-      flags += ['-DBUILD_DEPLOY=1', '-O3', '-funroll-loops', '-flto']
+      flags += ['-DBUILD_DEPLOY=1', '-O3', '-funroll-loops']
     return flags
 
   def make_ararchflags(self, arch, targettype):
