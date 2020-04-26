@@ -37,6 +37,10 @@
 //! Enable asserts (for debugging)
 #define ENABLE_ASSERTS            1
 #endif
+#ifndef ENABLE_STATISTICS
+//! Enable statistics collection
+#define ENABLE_STATISTICS         1
+#endif
 #ifndef ENABLE_THREAD_CACHE
 //! Enable per-thread cache
 #define ENABLE_THREAD_CACHE       1
@@ -518,6 +522,20 @@ rpmalloc_global_cache_push(chunk_t* chunk) {
 		new_cache = (void*)((uintptr_t)chunk | ((uintptr_t)atomicsize_incr(&global_cache_counter) & (ABA_SIZE - 1)));
 	} while (!atomicptr_cas(&global_cache, new_cache, old_cache));
 	//rpmalloc_unmap(chunk, chunk->mapped_size, chunk->mapped_offset, chunk->mapped_size);
+}
+
+static void
+rpmalloc_global_cache_clear(void) {
+	void* cache = atomicptr_exchange(&global_cache, 0);
+	uintptr_t chunkptr = (uintptr_t)cache & ~(ABA_SIZE - 1);
+	if (chunkptr) {
+		chunk_t* chunk = (chunk_t*)chunkptr;
+		while (chunk) {
+			chunk_t* next = chunk->next;
+			rpmalloc_unmap(chunk, chunk->mapped_size, chunk->mapped_offset, chunk->mapped_size);
+			chunk = next;
+		}
+	}
 }
 
 #endif
@@ -1712,6 +1730,7 @@ rpmalloc_initialize() {
 extern void
 rpmalloc_finalize(void) {
 	rpmalloc_thread_finalize();
+	rpmalloc_global_cache_clear();
 }
 
 extern inline RPMALLOC_ALLOCATOR void*
