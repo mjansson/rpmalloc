@@ -138,8 +138,11 @@
 #  include <stdio.h>
 #  include <stdlib.h>
 #  if defined(__APPLE__)
+#    include <TargetConditionals.h>
+#    if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 #    include <mach/mach_vm.h>
 #    include <mach/vm_statistics.h>
+#    endif
 #    include <pthread.h>
 #  endif
 #  if defined(__HAIKU__)
@@ -667,7 +670,7 @@ get_thread_id(void) {
 	uintptr_t tid;
 #  if defined(__i386__)
 	__asm__("movl %%gs:0, %0" : "=r" (tid) : : );
-#  elif defined(__MACH__)
+#  elif defined(__MACH__) && !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 	__asm__("movq %%gs:0, %0" : "=r" (tid) : : );
 #  elif defined(__x86_64__)
 	__asm__("movq %%fs:0, %0" : "=r" (tid) : : );
@@ -747,7 +750,7 @@ _rpmalloc_mmap_os(size_t size, size_t* offset) {
 	}
 #else
 	int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED;
-#  if defined(__APPLE__)
+#  if defined(__APPLE__) && !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 	int fd = (int)VM_MAKE_TAG(240U);
 	if (_memory_huge_pages)
 		fd |= VM_FLAGS_SUPERPAGE_SIZE_2MB;
