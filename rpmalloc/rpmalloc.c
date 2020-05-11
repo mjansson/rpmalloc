@@ -43,11 +43,11 @@
 #endif
 #ifndef ENABLE_THREAD_CACHE
 //! Enable per-thread cache
-#define ENABLE_THREAD_CACHE       1
+#define ENABLE_THREAD_CACHE       0
 #endif
 #ifndef ENABLE_GLOBAL_CACHE
 //! Enable global cache shared between all threads, requires thread cache
-#define ENABLE_GLOBAL_CACHE       1
+#define ENABLE_GLOBAL_CACHE       0
 #endif
 
 #if ENABLE_THREAD_CACHE
@@ -261,6 +261,18 @@ struct size_class_s {
 	uint16_t block_count;
 };
 
+#if ENABLE_STATISTICS
+
+//! Counter for current/max tracking
+struct stat_t {
+	atomicsize_t current;
+	atomicsize_t max;
+};
+
+typedef struct stat_t stat_t;
+
+#endif
+
 ///
 /// Validation
 ///
@@ -321,13 +333,19 @@ static size_t atomicsize_incr(atomicsize_t* src) { return _InterlockedIncrement6
 static size_t atomicsize_incr(atomicsize_t* src) { return _InterlockedIncrement((volatile LONG*)src); }
 #endif
 static void   atomicsize_store(atomicsize_t* dst, size_t val) { *dst = val; }
+#if ENABLE_STATISTICS
+static size_t atomicsize_load(atomicsize_t* src) { return *src; }
+static void   atomicsize_store_release(atomicsize_t* dst, size_t val) { *dst = val; }
+static size_t atomicsize_add_acquire(atomicsize_t* dst, size_t val) { return InterlockedAdd64((volatile LONG64*)dst, (LONG64)val); }
+static size_t atomicsize_sub(atomicsize_t* dst, size_t val) { return InterlockedAdd64((volatile LONG64*)dst, -(LONG64)val); }
+#endif
 
 static void* atomicptr_load(atomicptr_t* src) { return (void*)*src; }
 static void  atomicptr_store(atomicptr_t* dst, void* val) { *dst = val; }
 static void  atomicptr_store_release(atomicptr_t* dst, void* val) { *dst = val; }
 static int   atomicptr_cas(atomicptr_t* dst, void* val, void* ref) { return (_InterlockedCompareExchangePointer((void* volatile*)dst, val, ref) == ref) ? 1 : 0; }
-static int   atomicptr_cas_acquire(atomicptr_t* dst, void* val, void* ref) { return atomicptr_cas(dst, val, ref); }
 static void* atomicptr_exchange(atomicptr_t* dst, void* val) { return InterlockedExchangePointer((void* volatile*)dst, val); }
+static void* atomicptr_exchange_acquire(atomicptr_t* dst, void* val) { return InterlockedExchangePointer((void* volatile*)dst, val); }
 
 #else
 
@@ -338,8 +356,8 @@ static void* atomicptr_load(atomicptr_t* src) { return atomic_load_explicit(src,
 static void  atomicptr_store(atomicptr_t* dst, void* val) { atomic_store_explicit(dst, val, memory_order_relaxed); }
 static void  atomicptr_store_release(atomicptr_t* dst, void* val) { atomic_store_explicit(dst, val, memory_order_release); }
 static int   atomicptr_cas(atomicptr_t* dst, void* val, void* ref) { return atomic_compare_exchange_weak_explicit(dst, &ref, val, memory_order_relaxed, memory_order_relaxed); }
-static int   atomicptr_cas_acquire(atomicptr_t* dst, void* val, void* ref) { return atomic_compare_exchange_weak_explicit(dst, &ref, val, memory_order_acquire, memory_order_relaxed); }
 static void* atomicptr_exchange(atomicptr_t* dst, void* val) { return atomic_exchange_explicit(dst, val, memory_order_relaxed); }
+static void* atomicptr_exchange_acquire(atomicptr_t* dst, void* val) { return atomic_exchange_explicit(dst, val, memory_order_acquire); }
 
 #endif
 
@@ -354,6 +372,23 @@ static void* atomicptr_exchange(atomicptr_t* dst, void* val) { return atomic_exc
 #else
 #  define CHECK_NULL(x) 0
 #  define CHECK_NOT_NULL(x) 1
+#endif
+
+#if ENABLE_STATISTICS
+
+static void
+stat_add(stat_t* stat, size_t size) {
+	size_t current = atomicsize_add_acquire(&stat->current, size);
+	size_t max = atomicsize_load(&stat->max);
+	if (current > max)
+		atomicsize_store_release(&stat->max, current);
+}
+
+static void
+stat_sub(stat_t* stat, size_t size) {
+	atomicsize_sub(&stat->current, size);
+}
+
 #endif
 
 ///
@@ -392,6 +427,11 @@ static atomicptr_t global_cache;
 static atomicsize_t global_cache_counter;
 #endif
 
+#if ENABLE_STATISTICS
+//! Mapped memory
+static stat_t stat_mmap;
+#endif
+
 ///
 /// Forward declarations
 ///
@@ -423,10 +463,11 @@ rpmalloc_mmap(size_t size, size_t* offset) {
 	size_t granularity = (use_huge_pages && (os_mmap_granularity < os_huge_page_size)) ? os_huge_page_size : os_mmap_granularity;
 	//Either size is a heap (a single memory page), a chunk or a huge block - we only need to align chunks and huge blocks to span granularity, and only if larger than mmap granularity
 	size_t padding = ((size >= CHUNK_SIZE) && (SPAN_SIZE > granularity)) ? SPAN_SIZE : 0;
+	size_t total = size + padding;
 	rpmalloc_assert(size >= os_page_size);
 #ifdef _WIN32
 	//Ok to MEM_COMMIT - according to MSDN, "actual physical pages are not allocated unless/until the virtual addresses are actually accessed"
-	void* ptr = VirtualAlloc(0, size + padding, (use_huge_pages ? MEM_LARGE_PAGES : 0) | MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	void* ptr = VirtualAlloc(0, total, (use_huge_pages ? MEM_LARGE_PAGES : 0) | MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 	if (!ptr) {
 		rpmalloc_assert_fail_return("Failed to map virtual memory block", 0);
 	}
@@ -436,11 +477,11 @@ rpmalloc_mmap(size_t size, size_t* offset) {
 	int fd = (int)VM_MAKE_TAG(240U);
 	if (use_huge_pages)
 		fd |= VM_FLAGS_SUPERPAGE_SIZE_2MB;
-	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, flags, fd, 0);
+	void* ptr = mmap(0, total, PROT_READ | PROT_WRITE, flags, fd, 0);
 #  elif defined(MAP_HUGETLB)
-	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, (use_huge_pages ? MAP_HUGETLB : 0) | flags, -1, 0);
+	void* ptr = mmap(0, total, PROT_READ | PROT_WRITE, (use_huge_pages ? MAP_HUGETLB : 0) | flags, -1, 0);
 #  else
-	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, flags, -1, 0);
+	void* ptr = mmap(0, total, PROT_READ | PROT_WRITE, flags, -1, 0);
 #  endif
 	if ((ptr == MAP_FAILED) || !ptr) {
 		rpmalloc_assert_fail("Failed to map virtual memory block");
@@ -455,6 +496,7 @@ rpmalloc_mmap(size_t size, size_t* offset) {
 		ptr = pointer_offset(ptr, final_padding);
 		*offset = final_padding >> 3;
 	}
+	stat_add(&stat_mmap, total);
 	rpmalloc_assert((size < SPAN_MASK) || !((uintptr_t)ptr & ~SPAN_MASK));
 	return ptr;
 }
@@ -465,8 +507,11 @@ rpmalloc_unmap(void* address, size_t size, size_t offset, size_t release) {
 	rpmalloc_assert(release || (offset == 0));
 	rpmalloc_assert(!release || (release >= size));
 	rpmalloc_assert(size >= os_page_size);
+	//We assume huge pages are aligned to addresses which are a multiple of huge page size
+	int use_huge_pages = (os_huge_pages && (size >= os_huge_page_size));
+	size_t granularity = (use_huge_pages && (os_mmap_granularity < os_huge_page_size)) ? os_huge_page_size : os_mmap_granularity;
 	//Padding is always one span size
-	if (release && (size >= CHUNK_SIZE))
+	if (release && (size >= CHUNK_SIZE) && (SPAN_SIZE > granularity))
 		release += SPAN_SIZE;
 	if (release && offset) {
 		offset <<= 3;
@@ -487,6 +532,7 @@ rpmalloc_unmap(void* address, size_t size, size_t offset, size_t release) {
 			rpmalloc_assert_fail("Failed to madvise virtual memory block as free");
 	}
 #endif
+	stat_sub(&stat_mmap, release);
 }
 
 ///
@@ -528,13 +574,11 @@ static void
 rpmalloc_global_cache_clear(void) {
 	void* cache = atomicptr_exchange(&global_cache, 0);
 	uintptr_t chunkptr = (uintptr_t)cache & ~(ABA_SIZE - 1);
-	if (chunkptr) {
-		chunk_t* chunk = (chunk_t*)chunkptr;
-		while (chunk) {
-			chunk_t* next = chunk->next;
-			rpmalloc_unmap(chunk, chunk->mapped_size, chunk->mapped_offset, chunk->mapped_size);
-			chunk = next;
-		}
+	chunk_t* chunk = (chunk_t*)chunkptr;
+	while (chunk) {
+		chunk_t* next = chunk->next;
+		rpmalloc_unmap(chunk, chunk->mapped_size, chunk->mapped_offset, chunk->mapped_size);
+		chunk = next;
 	}
 }
 
@@ -859,8 +903,8 @@ static void
 rpmalloc_span_adopt_deferred_free(span_t* span) {
 	// We need acquire semantics on the CAS operation since we are interested in the list size
 	do {
-		span->free = atomicptr_load(&span->free_defer);
-	} while ((span->free == INVALID_POINTER) || !atomicptr_cas_acquire(&span->free_defer, INVALID_POINTER, span->free));
+		span->free = atomicptr_exchange_acquire(&span->free_defer, INVALID_POINTER);
+	} while (span->free == INVALID_POINTER);
 	span->used_count -= span->defer_size;
 	span->defer_size = 0;
 	atomicptr_store_release(&span->free_defer, 0);
@@ -900,9 +944,9 @@ rpmalloc_span_small_deallocate_defer(span_t* span, void* block) {
 	// guarantee the list_size variable validity + release semantics on pointer store
 	void* free_list;
 	do {
-		free_list = atomicptr_load(&span->free_defer);
-		*((void**)block) = free_list;
-	} while ((free_list == INVALID_POINTER) || !atomicptr_cas_acquire(&span->free_defer, INVALID_POINTER, free_list));
+		free_list = atomicptr_exchange_acquire(&span->free_defer, INVALID_POINTER);
+	} while (free_list == INVALID_POINTER);
+	*((void**)block) = free_list;
 	uint32_t free_count = ++span->defer_size;
 	atomicptr_store_release(&span->free_defer, block);
 	if (free_count == span->block_count) {
@@ -1730,7 +1774,12 @@ rpmalloc_initialize() {
 extern void
 rpmalloc_finalize(void) {
 	rpmalloc_thread_finalize();
+#if ENABLE_GLOBAL_CACHE
 	rpmalloc_global_cache_clear();
+#endif
+#if ENABLE_STATISTICS
+	rpmalloc_assert(atomicsize_load(&stat_mmap.current) == 0);
+#endif
 }
 
 extern inline RPMALLOC_ALLOCATOR void*
