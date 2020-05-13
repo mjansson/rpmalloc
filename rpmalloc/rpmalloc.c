@@ -2204,7 +2204,7 @@ _rpmalloc_reallocate(heap_t* heap, void* p, size_t size, size_t oldsize, unsigne
 			void* block = pointer_offset(span, SPAN_HEADER_SIZE);
 			if (!oldsize)
 				oldsize = (current_spans * _memory_span_size) - (size_t)pointer_diff(p, block) - SPAN_HEADER_SIZE;
-			if ((current_spans >= num_spans) && (total_size >= (oldsize / 2)))
+			if ((current_spans >= num_spans) && (total_size >= (oldsize / 2))) {
 				//Still fits in block, never mind trying to save memory, but preserve data if alignment changed
 				if ((p != block) && !(flags & RPMALLOC_NO_PRESERVE))
 					memmove(block, p, oldsize);
