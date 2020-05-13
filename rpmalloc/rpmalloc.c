@@ -784,10 +784,10 @@ _rpmalloc_unmap_os(void* address, size_t size, size_t offset, size_t release) {
 	if (release && offset) {
 		offset <<= 3;
 		address = pointer_offset(address, -(int32_t)offset);
-#if PLATFORM_POSIX
-		//Padding is always one span size
-		release += _memory_span_size;
-#endif
+		if ((release >= _memory_span_size) && (_memory_span_size > _memory_map_granularity)) {
+			//Padding is always one span size
+			release += _memory_span_size;
+		}
 	}
 #if !DISABLE_UNMAP
 #if PLATFORM_WINDOWS
