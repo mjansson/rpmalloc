@@ -250,15 +250,15 @@ class ClangToolchain(toolchain.Toolchain):
       self.linkflags += ['-isysroot', '$sysroot']
     self.cflags += ['-fembed-bitcode-marker']
 
-    platformpath = subprocess.check_output(['xcrun', '--sdk', sdk, '--show-sdk-platform-path']).strip()
+    platformpath = toolchain.check_output(['xcrun', '--sdk', sdk, '--show-sdk-platform-path'])
     localpath = platformpath + "/Developer/usr/bin:/Applications/Xcode.app/Contents/Developer/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-    self.sysroot = subprocess.check_output(['xcrun', '--sdk', sdk, '--show-sdk-path']).strip()
+    self.sysroot = toolchain.check_output(['xcrun', '--sdk', sdk, '--show-sdk-path'])
 
-    self.ccompiler = "PATH=" + localpath + " " + subprocess.check_output(['xcrun', '--sdk', sdk, '-f', 'clang']).strip()
-    self.archiver = "PATH=" + localpath + " " + subprocess.check_output(['xcrun', '--sdk', sdk, '-f', 'libtool']).strip()
+    self.ccompiler = "PATH=" + localpath + " " + toolchain.check_output(['xcrun', '--sdk', sdk, '-f', 'clang'])
+    self.archiver = "PATH=" + localpath + " " + toolchain.check_output(['xcrun', '--sdk', sdk, '-f', 'libtool'])
     self.linker = deploytarget + " " + self.ccompiler
-    self.lipo = "PATH=" + localpath + " " + subprocess.check_output(['xcrun', '--sdk', sdk, '-f', 'lipo']).strip()
+    self.lipo = "PATH=" + localpath + " " + toolchain.check_output(['xcrun', '--sdk', sdk, '-f', 'lipo'])
 
     self.mflags += list(self.cflags) + ['-fobjc-arc', '-fno-objc-exceptions', '-x', 'objective-c']
     self.cflags += ['-x', 'c']
@@ -480,7 +480,7 @@ class ClangToolchain(toolchain.Toolchain):
       localframeworks += list(variables['frameworks'])
     if len(localframeworks) > 0:
       localvariables += [('frameworks', self.make_frameworks(list(localframeworks)))]
-      
+
     libpaths = []
     if 'libpaths' in variables:
       libpaths = variables['libpaths']

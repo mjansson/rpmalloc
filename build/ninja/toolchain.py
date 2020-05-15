@@ -14,6 +14,11 @@ import version
 import android
 import xcode
 
+
+def check_output(args):
+  import subprocess
+  return subprocess.check_output(args).decode().strip()
+
 def supported_toolchains():
   return ['msvc', 'gcc', 'clang', 'intel']
 
