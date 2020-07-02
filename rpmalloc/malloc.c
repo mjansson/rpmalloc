@@ -62,15 +62,18 @@ __attribute__ ((section("__DATA, __interpose"))) = MAC_INTERPOSE_PAIR(newf, oldf
 #undef malloc
 #undef free
 #undef calloc
+#define RPMALLOC_RESTRICT __declspec(restrict)
+#else
+#define RPMALLOC_RESTRICT
 #endif
 
 #if ENABLE_OVERRIDE
 
 #if USE_IMPLEMENT
 
-extern inline void* RPMALLOC_CDECL malloc(size_t size) { return rpmalloc(size); }
-extern inline void* RPMALLOC_CDECL calloc(size_t count, size_t size) { return rpcalloc(count, size); }
-extern inline void* RPMALLOC_CDECL realloc(void* ptr, size_t size) { return rprealloc(ptr, size); }
+extern inline RPMALLOC_RESTRICT void* RPMALLOC_CDECL malloc(size_t size) { return rpmalloc(size); }
+extern inline RPMALLOC_RESTRICT void* RPMALLOC_CDECL calloc(size_t count, size_t size) { return rpcalloc(count, size); }
+extern inline RPMALLOC_RESTRICT void* RPMALLOC_CDECL realloc(void* ptr, size_t size) { return rprealloc(ptr, size); }
 extern inline void* RPMALLOC_CDECL reallocf(void* ptr, size_t size) { return rprealloc(ptr, size); }
 extern inline void* RPMALLOC_CDECL aligned_alloc(size_t alignment, size_t size) { return rpaligned_alloc(alignment, size); }
 extern inline void* RPMALLOC_CDECL memalign(size_t alignment, size_t size) { return rpmemalign(alignment, size); }
