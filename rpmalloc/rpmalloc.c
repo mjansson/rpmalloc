@@ -2259,7 +2259,7 @@ _rpmalloc_aligned_reallocate(heap_t* heap, void* ptr, size_t alignment, size_t s
 		return _rpmalloc_reallocate(heap, ptr, size, oldsize, flags);
 
 	int no_alloc = !!(flags & RPMALLOC_GROW_OR_FAIL);
-	size_t usablesize = _rpmalloc_usable_size(ptr);
+	size_t usablesize = (ptr ? _rpmalloc_usable_size(ptr) : 0);
 	if ((usablesize >= size) && !((uintptr_t)ptr & (alignment - 1))) {
 		if (no_alloc || (size >= (usablesize / 2)))
 			return ptr;
