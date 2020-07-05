@@ -301,10 +301,10 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 #define MAX_THREAD_SPAN_CACHE     256
 //! Number of spans to transfer between thread and global cache
 #define THREAD_SPAN_CACHE_TRANSFER 64
-//! Number of spans in thread cache for large spans
+//! Number of spans in thread cache for large spans (must be greater than LARGE_CLASS_COUNT / 2)
 #define MAX_THREAD_SPAN_LARGE_CACHE 64
 //! Number of spans to transfer between thread and global cache for large spans
-#define THREAD_SPAN_LARGE_CACHE_TRANSFER 4
+#define THREAD_SPAN_LARGE_CACHE_TRANSFER 8
 
 _Static_assert((SMALL_GRANULARITY & (SMALL_GRANULARITY - 1)) == 0, "Small granularity must be power of two");
 _Static_assert((SPAN_HEADER_SIZE & (SPAN_HEADER_SIZE - 1)) == 0, "Span header size must be power of two");
@@ -1352,7 +1352,7 @@ _rpmalloc_heap_cache_insert(heap_t* heap, span_t* span) {
 		span_cache->span[span_cache->count++] = span;
 		const size_t cache_limit = (MAX_THREAD_SPAN_LARGE_CACHE - (span_count >> 1));
 		if (span_cache->count == cache_limit) {
-			const size_t transfer_limit = (cache_limit >> 1);
+			const size_t transfer_limit = 2 + (cache_limit >> 2);
 			const size_t transfer_count = (THREAD_SPAN_LARGE_CACHE_TRANSFER <= transfer_limit ? THREAD_SPAN_LARGE_CACHE_TRANSFER : transfer_limit);
 			const size_t remain_count = cache_limit - transfer_count;
 #if ENABLE_GLOBAL_CACHE
