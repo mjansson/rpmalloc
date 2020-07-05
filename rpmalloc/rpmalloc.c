@@ -549,7 +549,7 @@ struct global_cache_t {
 
 //! Default span size (64KiB)
 #define _memory_default_span_size (64 * 1024)
-#define _memory_default_span_size_shift 17
+#define _memory_default_span_size_shift 16
 #define _memory_default_span_mask (~((uintptr_t)(_memory_span_size - 1)))
 
 //! Initialized flag
