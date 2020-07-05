@@ -547,6 +547,11 @@ struct global_cache_t {
 ///
 //////
 
+//! Default span size (64KiB)
+#define _memory_default_span_size (64 * 1024)
+#define _memory_default_span_size_shift 17
+#define _memory_default_span_mask (~((uintptr_t)(_memory_span_size - 1)))
+
 //! Initialized flag
 static int _rpmalloc_initialized;
 //! Configuration
@@ -565,10 +570,10 @@ static size_t _memory_span_size_shift;
 //! Mask to get to start of a memory span
 static uintptr_t _memory_span_mask;
 #else
-//! Hardwired span size (64KiB)
-#define _memory_span_size (64 * 1024)
-#define _memory_span_size_shift 16
-#define _memory_span_mask (~((uintptr_t)(_memory_span_size - 1)))
+//! Hardwired span size
+#define _memory_span_size _memory_default_span_size
+#define _memory_span_size_shift _memory_default_span_size_shift
+#define _memory_span_mask _memory_default_span_mask
 #endif
 //! Number of spans to map in each map call
 static size_t _memory_span_map_count;
@@ -2397,7 +2402,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 #if RPMALLOC_CONFIGURABLE
 	size_t span_size = _memory_config.span_size;
 	if (!span_size)
-		span_size = (64 * 1024);
+		span_size = _memory_default_span_size;
 	if (span_size > (256 * 1024))
 		span_size = (256 * 1024);
 	_memory_span_size = 4096;
