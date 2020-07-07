@@ -1,4 +1,4 @@
-/* rpmalloc.c  -  Memory allocator  -  Public Domain  -  2016 Mattias Jansson
+/* rpmalloc.c  -  Memory allocator  -  Public Domain  -  2016-2020 Mattias Jansson
  *
  * This library provides a cross-platform lock free thread caching malloc implementation in C11.
  * The latest source code is always available at
@@ -459,15 +459,23 @@ struct span_large_cache_t {
 };
 typedef struct span_large_cache_t span_large_cache_t;
 
+struct heap_size_class_t {
+	//! Free list of active span
+	void*        free_list;
+	//! Double linked list of partially used spans with free blocks.
+	//  Previous span pointer in head points to tail span of list.
+	span_t*      partial_span;
+	//! Early level cache of fully free spans
+	span_t*      cache[2];
+};
+typedef heap_size_class_t heap_size_class_t;
+
 // Control structure for a heap, either a thread heap or a first class heap if enabled
 struct heap_t {
 	//! Owning thread ID
 	uintptr_t    owner_thread;
-	//! Free list of active span
-	void*        free_list[SIZE_CLASS_COUNT];
-	//! Double linked list of partially used spans with free blocks for each size class.
-	//  Previous span pointer in head points to tail span of list.
-	span_t*      partial_span[SIZE_CLASS_COUNT];
+	//! Free lists for each size class
+	heap_size_class_t size_class[SIZE_CLASS_COUNT];
 #if RPMALLOC_FIRST_CLASS_HEAPS
 	//! Double linked list of fully utilized spans with free blocks for each size class.
 	//  Previous span pointer in head points to tail span of list.
