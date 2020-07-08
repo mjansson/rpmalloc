@@ -5,7 +5,7 @@
 import sys
 
 def supported_platforms():
-  return [ 'windows', 'linux', 'macos', 'bsd', 'ios', 'android', 'raspberrypi', 'tizen' ]
+  return [ 'windows', 'linux', 'macos', 'bsd', 'ios', 'android', 'raspberrypi', 'tizen', 'sunos' ]
 
 class Platform(object):
   def __init__(self, platform):
@@ -30,6 +30,8 @@ class Platform(object):
       self.platform = 'raspberrypi'
     elif self.platform.startswith('tizen'):
       self.platform = 'tizen'
+    elif self.platform.startswith('sunos'):
+      self.platform = 'sunos'
 
   def platform(self):
     return self.platform
@@ -57,6 +59,9 @@ class Platform(object):
 
   def is_tizen(self):
     return self.platform == 'tizen'
+
+  def is_sunos(self):
+    return self.platform == 'sunos'
 
   def get(self):
     return self.platform

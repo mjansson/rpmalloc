@@ -757,6 +757,9 @@ _rpmalloc_mmap_os(size_t size, size_t* offset) {
 	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, flags, fd, 0);
 #  elif defined(MAP_HUGETLB)
 	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, (_memory_huge_pages ? MAP_HUGETLB : 0) | flags, -1, 0);
+#  elif defined(MAP_ALIGN)
+	caddr_t base = (_memory_huge_pages ? (caddr_t)(4 << 20) : 0);
+	void* ptr = mmap(base, size + padding, PROT_READ | PROT_WRITE, (_memory_huge_pages ? MAP_ALIGN : 0) | flags, -1, 0);
 #  else
 	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, flags, -1, 0);
 #  endif
