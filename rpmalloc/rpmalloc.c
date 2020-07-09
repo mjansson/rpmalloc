@@ -57,6 +57,10 @@
 //! Default number of spans to map in call to map more virtual memory (default values yield 4MiB here)
 #define DEFAULT_SPAN_MAP_COUNT    64
 #endif
+#ifndef ENABLE_ADAPTIVE_THREAD_CACHE
+//! Enable adaptive thread cache size based on use heuristics
+#define ENABLE_ADAPTIVE_THREAD_CACHE 0
+#endif
 
 #if ENABLE_GLOBAL_CACHE && ENABLE_THREAD_CACHE
 #if DISABLE_UNMAP
@@ -2430,18 +2434,22 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	_memory_page_size = ((size_t)1 << _memory_page_size_shift);
 
 #if RPMALLOC_CONFIGURABLE
-	size_t span_size = _memory_config.span_size;
-	if (!span_size)
-		span_size = _memory_default_span_size;
-	if (span_size > (256 * 1024))
-		span_size = (256 * 1024);
-	_memory_span_size = 4096;
-	_memory_span_size_shift = 12;
-	while (_memory_span_size < span_size) {
-		_memory_span_size <<= 1;
-		++_memory_span_size_shift;
+	if (!_memory_config.span_size) {
+		_memory_span_size = _memory_default_span_size;
+		_memory_span_size_shift = _memory_default_span_size_shift;
+		_memory_span_mask = _memory_default_span_mask;
+	} else {
+		size_t span_size = _memory_config.span_size;
+		if (span_size > (256 * 1024))
+			span_size = (256 * 1024);
+		_memory_span_size = 4096;
+		_memory_span_size_shift = 12;
+		while (_memory_span_size < span_size) {
+			_memory_span_size <<= 1;
+			++_memory_span_size_shift;
+		}
+		_memory_span_mask = ~(uintptr_t)(_memory_span_size - 1);
 	}
-	_memory_span_mask = ~(uintptr_t)(_memory_span_size - 1);
 #endif
 
 	_memory_span_map_count = ( _memory_config.span_map_count ? _memory_config.span_map_count : DEFAULT_SPAN_MAP_COUNT);
