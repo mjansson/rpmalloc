@@ -304,7 +304,7 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 //! Number of spans in thread cache for large spans (must be greater than LARGE_CLASS_COUNT / 2)
 #define MAX_THREAD_SPAN_LARGE_CACHE 64
 //! Number of spans to transfer between thread and global cache for large spans
-#define THREAD_SPAN_LARGE_CACHE_TRANSFER 8
+#define THREAD_SPAN_LARGE_CACHE_TRANSFER 6
 
 _Static_assert((SMALL_GRANULARITY & (SMALL_GRANULARITY - 1)) == 0, "Small granularity must be power of two");
 _Static_assert((SPAN_HEADER_SIZE & (SPAN_HEADER_SIZE - 1)) == 0, "Span header size must be power of two");
