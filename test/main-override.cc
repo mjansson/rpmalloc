@@ -4,6 +4,7 @@
 #endif
 
 #include <rpmalloc.h>
+#include <rpnew.h>
 #include <thread.h>
 #include <test.h>
 
@@ -46,6 +47,17 @@ test_alloc(void) {
 	if (rpmalloc_usable_size(p) != 16*sizeof(int))
 		return test_fail("usable size invalid (3)");
 	delete[] static_cast<int*>(p);
+
+	p = new int[32];
+	if (!p)
+		return test_fail("new[] failed");
+	if (rpmalloc_usable_size(p) != 32*sizeof(int))
+		return test_fail("usable size invalid (4)");
+#if (__cplusplus >= 201402L || _MSC_VER >= 1916)
+	::operator delete[] (static_cast<int*>(p), sizeof(int) * 32);
+#else
+	delete[] static_cast<int*>(p);
+#endif
 
 	printf("Allocation tests passed\n");
 	return 0;

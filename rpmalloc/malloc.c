@@ -85,28 +85,32 @@ extern inline void RPMALLOC_CDECL cfree(void* ptr) { rpfree(ptr); }
 extern inline size_t RPMALLOC_CDECL malloc_usable_size(void* ptr) { return rpmalloc_usable_size(ptr); }
 extern inline size_t RPMALLOC_CDECL malloc_size(void* ptr) { return rpmalloc_usable_size(ptr); }
 
+#ifdef _WIN32
+// For Windows, #include <rpnew.h> in one source file to get the C++ operator overrides implemented in your module
+#else
 // Overload the C++ operators using the mangled names (https://itanium-cxx-abi.github.io/cxx-abi/abi.html#mangling)
 // operators delete and delete[]
 extern void _ZdlPv(void* p); void _ZdlPv(void* p) { rpfree(p); }
 extern void _ZdaPv(void* p); void _ZdaPv(void* p) { rpfree(p); }
-extern void _ZdlPvm(void* p, size_t n); void _ZdlPvm(void* p, size_t n) { rpfree(p); (void)sizeof(n); }
-extern void _ZdaPvm(void* p, size_t n); void _ZdaPvm(void* p, size_t n) { rpfree(p); (void)sizeof(n); }
-extern void _ZdlPvSt11align_val_t(void* p, size_t a); void _ZdlPvSt11align_val_t(void* p, size_t a) { rpfree(p); (void)sizeof(a); }
-extern void _ZdaPvSt11align_val_t(void* p, size_t a); void _ZdaPvSt11align_val_t(void* p, size_t a) { rpfree(p); (void)sizeof(a); }
-extern void _ZdlPvmSt11align_val_t(void* p, size_t n, size_t a); void _ZdlPvmSt11align_val_t(void* p, size_t n, size_t a) { rpfree(p); (void)sizeof(n); (void)sizeof(a); }
-extern void _ZdaPvmSt11align_val_t(void* p, size_t n, size_t a); void _ZdaPvmSt11align_val_t(void* p, size_t n, size_t a) { rpfree(p); (void)sizeof(n); (void)sizeof(a); }
 #if ARCH_64BIT
 // 64-bit operators new and new[], normal and aligned
 extern void* _Znwm(uint64_t size); void* _Znwm(uint64_t size) { return rpmalloc(size); }
 extern void* _Znam(uint64_t size); void* _Znam(uint64_t size) { return rpmalloc(size); }
 extern void* _Znwmm(uint64_t size, uint64_t align); void* _Znwmm(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
 extern void* _Znamm(uint64_t size, uint64_t align); void* _Znamm(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
-extern void* _ZnwmSt11align_val_t(size_t size, size_t align); void* _ZnwmSt11align_val_t(size_t size, size_t align) { return rpaligned_alloc(align, size); }
-extern void* _ZnamSt11align_val_t(size_t size, size_t align); void* _ZnamSt11align_val_t(size_t size, size_t align) { return rpaligned_alloc(align, size); }
-extern void* _ZnwmRKSt9nothrow_t(size_t size, rp_nothrow_t t); void* _ZnwmRKSt9nothrow_t(size_t size, rp_nothrow_t t) { (void)sizeof(t); return rpmalloc(size); }
-extern void* _ZnamRKSt9nothrow_t(size_t size, rp_nothrow_t t); void* _ZnamRKSt9nothrow_t(size_t size, rp_nothrow_t t) { (void)sizeof(t); return rpmalloc(size); }
-extern void* _ZnwmSt11align_val_tRKSt9nothrow_t(size_t size, size_t align, rp_nothrow_t t); void* _ZnwmSt11align_val_tRKSt9nothrow_t(size_t size, size_t align, rp_nothrow_t t) { (void)sizeof(t); return rpaligned_alloc(align, size); }
-extern void* _ZnamSt11align_val_tRKSt9nothrow_t(size_t size, size_t align, rp_nothrow_t t); void* _ZnamSt11align_val_tRKSt9nothrow_t(size_t size, size_t align, rp_nothrow_t t) { (void)sizeof(t); return rpaligned_alloc(align, size); }
+extern void* _ZnwmSt11align_val_t(uint64_t size, uint64_t align); void* _ZnwmSt11align_val_t(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
+extern void* _ZnamSt11align_val_t(uint64_t size, uint64_t align); void* _ZnamSt11align_val_t(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
+extern void* _ZnwmRKSt9nothrow_t(uint64_t size, rp_nothrow_t t); void* _ZnwmRKSt9nothrow_t(uint64_t size, rp_nothrow_t t) { (void)sizeof(t); return rpmalloc(size); }
+extern void* _ZnamRKSt9nothrow_t(uint64_t size, rp_nothrow_t t); void* _ZnamRKSt9nothrow_t(uint64_t size, rp_nothrow_t t) { (void)sizeof(t); return rpmalloc(size); }
+extern void* _ZnwmSt11align_val_tRKSt9nothrow_t(uint64_t size, uint64_t align, rp_nothrow_t t); void* _ZnwmSt11align_val_tRKSt9nothrow_t(uint64_t size, uint64_t align, rp_nothrow_t t) { (void)sizeof(t); return rpaligned_alloc(align, size); }
+extern void* _ZnamSt11align_val_tRKSt9nothrow_t(uint64_t size, uint64_t align, rp_nothrow_t t); void* _ZnamSt11align_val_tRKSt9nothrow_t(uint64_t size, uint64_t align, rp_nothrow_t t) { (void)sizeof(t); return rpaligned_alloc(align, size); }
+// 64-bit operators sized delete and delete[], normal and aligned
+extern void _ZdlPvm(void* p, uint64_t size); void _ZdlPvm(void* p, uint64_t size) { rpfree(p); (void)sizeof(size); }
+extern void _ZdaPvm(void* p, uint64_t size); void _ZdaPvm(void* p, uint64_t size) { rpfree(p); (void)sizeof(size); }
+extern void _ZdlPvSt11align_val_t(void* p, uint64_t align); void _ZdlPvSt11align_val_t(void* p, uint64_t align) { rpfree(p); (void)sizeof(align); }
+extern void _ZdaPvSt11align_val_t(void* p, uint64_t align); void _ZdaPvSt11align_val_t(void* p, uint64_t align) { rpfree(p); (void)sizeof(align); }
+extern void _ZdlPvmSt11align_val_t(void* p, uint64_t size, uint64_t align); void _ZdlPvmSt11align_val_t(void* p, uint64_t size, uint64_t align) { rpfree(p); (void)sizeof(size); (void)sizeof(align); }
+extern void _ZdaPvmSt11align_val_t(void* p, uint64_t size, uint64_t align); void _ZdaPvmSt11align_val_t(void* p, uint64_t size, uint64_t align) { rpfree(p); (void)sizeof(size); (void)sizeof(align); }
 #else
 // 32-bit operators new and new[], normal and aligned
 extern void* _Znwj(uint32_t size); void* _Znwj(uint32_t size) { return rpmalloc(size); }
@@ -119,6 +123,14 @@ extern void* _ZnwjRKSt9nothrow_t(size_t size, rp_nothrow_t t); void* _ZnwjRKSt9n
 extern void* _ZnajRKSt9nothrow_t(size_t size, rp_nothrow_t t); void* _ZnajRKSt9nothrow_t(size_t size, rp_nothrow_t t) { (void)sizeof(t); return rpmalloc(size); }
 extern void* _ZnwjSt11align_val_tRKSt9nothrow_t(size_t size, size_t align, rp_nothrow_t t); void* _ZnwjSt11align_val_tRKSt9nothrow_t(size_t size, size_t align, rp_nothrow_t t) { (void)sizeof(t); return rpaligned_alloc(align, size); }
 extern void* _ZnajSt11align_val_tRKSt9nothrow_t(size_t size, size_t align, rp_nothrow_t t); void* _ZnajSt11align_val_tRKSt9nothrow_t(size_t size, size_t align, rp_nothrow_t t) { (void)sizeof(t); return rpaligned_alloc(align, size); }
+// 32-bit operators sized delete and delete[], normal and aligned
+extern void _ZdlPvj(void* p, uint64_t size); void _ZdlPvj(void* p, uint64_t size) { rpfree(p); (void)sizeof(size); }
+extern void _ZdaPvj(void* p, uint64_t size); void _ZdaPvj(void* p, uint64_t size) { rpfree(p); (void)sizeof(size); }
+extern void _ZdlPvSt11align_val_t(void* p, uint32_t align); void _ZdlPvSt11align_val_t(void* p, uint64_t a) { rpfree(p); (void)sizeof(align); }
+extern void _ZdaPvSt11align_val_t(void* p, uint32_t align); void _ZdaPvSt11align_val_t(void* p, uint64_t a) { rpfree(p); (void)sizeof(align); }
+extern void _ZdlPvjSt11align_val_t(void* p, uint32_t size, uint32_t align); void _ZdlPvjSt11align_val_t(void* p, uint64_t size, uint64_t align) { rpfree(p); (void)sizeof(size); (void)sizeof(a); }
+extern void _ZdaPvjSt11align_val_t(void* p, uint32_t size, uint32_t align); void _ZdaPvjSt11align_val_t(void* p, uint64_t size, uint64_t align) { rpfree(p); (void)sizeof(size); (void)sizeof(a); }
+#endif
 #endif
 
 #endif
