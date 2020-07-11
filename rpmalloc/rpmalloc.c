@@ -1458,12 +1458,6 @@ _rpmalloc_heap_global_cache_extract(heap_t* heap, size_t span_count) {
 static span_t*
 _rpmalloc_heap_extract_new_span(heap_t* heap, size_t span_count, uint32_t class_idx) {
 	span_t* span;
-	if ((class_idx < SIZE_CLASS_COUNT) && heap->size_class[class_idx].cache[0]) {
-		span = heap->size_class[class_idx].cache[0];
-		heap->size_class[class_idx].cache[0] = heap->size_class[class_idx].cache[1];
-		heap->size_class[class_idx].cache[1] = 0;
-		return span;
-	}
 #if ENABLE_ADAPTIVE_THREAD_CACHE || ENABLE_STATISTICS
 	uint32_t idx = (uint32_t)span_count - 1;
 	uint32_t current_count = (uint32_t)atomic_incr32(&heap->span_use[idx].current);
@@ -1471,6 +1465,21 @@ _rpmalloc_heap_extract_new_span(heap_t* heap, size_t span_count, uint32_t class_
 		atomic_store32(&heap->span_use[idx].high, (int32_t)current_count);
 	_rpmalloc_stat_add_peak(&heap->size_class_use[class_idx].spans_current, 1, heap->size_class_use[class_idx].spans_peak);
 #endif
+	if (class_idx < SIZE_CLASS_COUNT) {
+		if (heap->size_class[class_idx].cache[0]) {
+			span = heap->size_class[class_idx].cache[0];
+			span_t* new_cache = 0;
+			if (heap->span_cache.count)
+				new_cache = heap->span_cache.span[--heap->span_cache.count];
+			if (heap->size_class[class_idx].cache[1]) {
+				heap->size_class[class_idx].cache[0] = heap->size_class[class_idx].cache[1];
+				heap->size_class[class_idx].cache[1] = new_cache;
+			} else {
+				heap->size_class[class_idx].cache[0] = new_cache;
+			}
+			return span;
+		}
+	}
 	span = _rpmalloc_heap_thread_cache_extract(heap, span_count);
 	if (EXPECTED(span != 0)) {
 		_rpmalloc_stat_inc(&heap->size_class_use[class_idx].spans_from_cache);
