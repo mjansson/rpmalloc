@@ -3032,6 +3032,7 @@ rpmalloc_heap_free_all(rpmalloc_heap_t* heap) {
 		}
 	}
 	memset(heap->size_class, 0, sizeof(heap->size_class));
+	memset(heap->full_span, 0, sizeof(heap->full_span));
 
 	span = heap->large_huge_span;
 	while (span) {
