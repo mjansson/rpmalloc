@@ -53,40 +53,40 @@
 //! Disable unmapping memory pages
 #define DISABLE_UNMAP             0
 #endif
-#ifndef DEFAULT_SPAN_MAP_COUNT
-//! Default number of spans to map in call to map more virtual memory (default values yield 4MiB here)
-#define DEFAULT_SPAN_MAP_COUNT    64
+#ifndef ENABLE_UNLIMITED_CACHE
+//! Enable unlimited global cache (no unmapping until finalization)
+#define ENABLE_UNLIMITED_CACHE    0
 #endif
 #ifndef ENABLE_ADAPTIVE_THREAD_CACHE
 //! Enable adaptive thread cache size based on use heuristics
 #define ENABLE_ADAPTIVE_THREAD_CACHE 0
 #endif
-
-#if ENABLE_GLOBAL_CACHE && ENABLE_THREAD_CACHE
-#if DISABLE_UNMAP
-#undef ENABLE_UNLIMITED_GLOBAL_CACHE
-#define ENABLE_UNLIMITED_GLOBAL_CACHE 1
+#ifndef DEFAULT_SPAN_MAP_COUNT
+//! Default number of spans to map in call to map more virtual memory (default values yield 4MiB here)
+#define DEFAULT_SPAN_MAP_COUNT    64
 #endif
-#ifndef ENABLE_UNLIMITED_GLOBAL_CACHE
-//! Unlimited cache disables any global cache limitations
-#define ENABLE_UNLIMITED_GLOBAL_CACHE 0
-#endif
-#if !ENABLE_UNLIMITED_GLOBAL_CACHE
-//! Multiplier for global cache 
-#define GLOBAL_CACHE_MULTIPLIER 8
-#endif
-#else
-#  undef ENABLE_GLOBAL_CACHE
-#  define ENABLE_GLOBAL_CACHE 0
-#endif
-
-#if !ENABLE_THREAD_CACHE
-#  undef ENABLE_ADAPTIVE_THREAD_CACHE
-#  define ENABLE_ADAPTIVE_THREAD_CACHE 0
+#ifndef GLOBAL_CACHE_MULTIPLIER
+//! Multiplier for global cache
+#define GLOBAL_CACHE_MULTIPLIER   8
 #endif
 
 #if DISABLE_UNMAP && !ENABLE_GLOBAL_CACHE
-#  error Must use global cache if unmap is disabled
+#error Must use global cache if unmap is disabled
+#endif
+
+#if DISABLE_UNMAP
+#undef ENABLE_UNLIMITED_CACHE
+#define ENABLE_UNLIMITED_CACHE 1
+#endif
+
+#if !ENABLE_GLOBAL_CACHE
+#undef ENABLE_UNLIMITED_CACHE
+#define ENABLE_UNLIMITED_CACHE 0
+#endif
+
+#if !ENABLE_THREAD_CACHE
+#undef ENABLE_ADAPTIVE_THREAD_CACHE
+#define ENABLE_ADAPTIVE_THREAD_CACHE 0
 #endif
 
 #if defined( _WIN32 ) || defined( __WIN32__ ) || defined( _WIN64 )
@@ -98,7 +98,7 @@
 #endif
 
 /// Platform and arch specifics
-#if defined(_MSC_VER) && !defined(__clang__)
+#if defined(_MSC_VER)
 #  ifndef FORCEINLINE
 #    define FORCEINLINE inline __forceinline
 #  endif
@@ -551,6 +551,10 @@ struct global_cache_t {
 	size_t count;
 	//! Cached spans
 	span_t* span[GLOBAL_CACHE_MULTIPLIER * MAX_THREAD_SPAN_CACHE];
+#if ENABLE_UNLIMITED_CACHE
+	//! Unlimited cache overflow
+	span_t* overflow;
+#endif
 };
 
 ////////////
@@ -1176,6 +1180,15 @@ _rpmalloc_global_cache_finalize(global_cache_t* cache) {
 	for (size_t ispan = 0; ispan < cache->count; ++ispan)
 		_rpmalloc_span_unmap(cache->span[ispan]);
 	cache->count = 0;
+
+#if ENABLE_UNLIMITED_CACHE
+	while (cache->overflow) {
+		span_t* span = cache->overflow;
+		cache->overflow = span->next;
+		_rpmalloc_span_unmap(span);
+	}
+#endif
+
 	atomic_store32_release(&cache->lock, 0);
 }
 
@@ -1188,33 +1201,49 @@ _rpmalloc_global_cache_insert_spans(span_t** span, size_t span_count, size_t cou
 	global_cache_t* cache = &_memory_span_cache[span_count - 1];
 
 	size_t insert_count = count;
-	while (!atomic_cas32_acquire(&cache->lock, 1, 0));
+	while (!atomic_cas32_acquire(&cache->lock, 1, 0))
+		/* Spin */;
 
 	if ((cache->count + insert_count) > cache_limit)
 		insert_count = cache_limit - cache->count;
 
 	memcpy(cache->span + cache->count, span, sizeof(span_t*) * insert_count);
 	cache->count += insert_count;
-	atomic_store32_release(&cache->lock, 0);
 
+#if ENABLE_UNLIMITED_CACHE
+	while (insert_count < count) {
+		span_t* current_span = span[insert_count++];
+		current_span->next = cache->overflow;
+		cache->overflow = current_span;
+	}
+	atomic_store32_release(&cache->lock, 0);
+#else
+	atomic_store32_release(&cache->lock, 0);
 	for (size_t ispan = insert_count; ispan < count; ++ispan)
 		_rpmalloc_span_unmap(span[ispan]);
+#endif
 }
 
 static size_t
 _rpmalloc_global_cache_extract_spans(span_t** span, size_t span_count, size_t count) {
 	global_cache_t* cache = &_memory_span_cache[span_count - 1];
-	if (!cache->count)
-		return 0;
 
 	size_t extract_count = count;
-	while (!atomic_cas32_acquire(&cache->lock, 1, 0));
+	while (!atomic_cas32_acquire(&cache->lock, 1, 0))
+		/* Spin */;
 
 	if (extract_count > cache->count)
 		extract_count = cache->count;
 
 	memcpy(span, cache->span + (cache->count - extract_count), sizeof(span_t*) * extract_count);
 	cache->count -= extract_count;
+#if ENABLE_UNLIMITED_CACHE
+	while ((extract_count < count) && cache->overflow) {
+		span_t* current_span = cache->overflow;
+		span[extract_count++] = current_span;
+		cache->overflow = current_span->next;
+	}
+#endif
 	atomic_store32_release(&cache->lock, 0);
 
 	return extract_count;

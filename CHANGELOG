@@ -1,5 +1,7 @@
 1.4.1
 
+Dual license as both released to public domain or under MIT license
+
 Allow up to 4GiB page sizes
 
 Fix an issue where large page sizes in conjunction with many threads waste a lot of memory (previously
@@ -20,6 +22,11 @@ with alignment less or equal to 128 bytes by utilizing natural block alignments
 
 Refactor finalization to be compatible with global scope data causing dynamic allocations and frees, like
 C++ objects with custom ctors/dtors.
+
+Refactor thread and global cache to be array based instead of list based for improved performance
+and cache size control.
+
+Added missing C++ operator overloads with ENABLE_OVERRIDE when using Microsoft C++ runtimes
 
 
 1.4.0
