@@ -222,6 +222,11 @@ size_t malloc_size(void* ptr) RPALIAS(rpmalloc_usable_size)
 
 #endif
 
+static inline size_t
+_rpmalloc_page_size(void) {
+	return _memory_page_size;
+}
+
 extern inline void* RPMALLOC_CDECL
 reallocarray(void* ptr, size_t count, size_t size) {
 	size_t total;
@@ -248,9 +253,10 @@ reallocarray(void* ptr, size_t count, size_t size) {
 extern inline void* RPMALLOC_CDECL
 valloc(size_t size) {
 	get_thread_heap();
+	const size_t page_size = _rpmalloc_page_size();
 	if (!size)
-		size = _memory_page_size;
-	size_t total_size = size + _memory_page_size;
+		size = page_size;
+	size_t total_size = size + page_size;
 #if ENABLE_VALIDATE_ARGS
 	if (total_size < size) {
 		errno = EINVAL;
@@ -258,8 +264,8 @@ valloc(size_t size) {
 	}
 #endif
 	void* buffer = rpmalloc(total_size);
-	if ((uintptr_t)buffer & (_memory_page_size - 1))
-		return (void*)(((uintptr_t)buffer & ~(_memory_page_size - 1)) + _memory_page_size);
+	if ((uintptr_t)buffer & (page_size - 1))
+		return (void*)(((uintptr_t)buffer & ~(page_size - 1)) + page_size);
 	return buffer;
 }
 
@@ -267,8 +273,9 @@ extern inline void* RPMALLOC_CDECL
 pvalloc(size_t size) {
 	get_thread_heap();
 	size_t aligned_size = size;
-	if (aligned_size % _memory_page_size)
-		aligned_size = (1 + (aligned_size / _memory_page_size)) * _memory_page_size;
+	const size_t page_size = _rpmalloc_page_size();
+	if (aligned_size % page_size)
+		aligned_size = (1 + (aligned_size / page_size)) * page_size;
 #if ENABLE_VALIDATE_ARGS
 	if (aligned_size < size) {
 		errno = EINVAL;
