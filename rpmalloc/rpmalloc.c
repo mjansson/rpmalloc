@@ -50,7 +50,7 @@
 #define ENABLE_PRELOAD            0
 #endif
 #ifndef DISABLE_UNMAP
-//! Disable unmapping memory pages
+//! Disable unmapping memory pages (also enables unlimited cache)
 #define DISABLE_UNMAP             0
 #endif
 #ifndef ENABLE_UNLIMITED_CACHE
@@ -1462,6 +1462,7 @@ _rpmalloc_heap_reserved_extract(heap_t* heap, size_t span_count) {
 static span_t*
 _rpmalloc_heap_global_cache_extract(heap_t* heap, size_t span_count) {
 #if ENABLE_GLOBAL_CACHE
+#if ENABLE_THREAD_CACHE
 	span_cache_t* span_cache;
 	size_t wanted_count;
 	if (span_count == 1) {
@@ -1477,6 +1478,15 @@ _rpmalloc_heap_global_cache_extract(heap_t* heap, size_t span_count) {
 		_rpmalloc_stat_add(&heap->span_use[span_count - 1].spans_from_global, span_cache->count);
 		return span_cache->span[--span_cache->count];
 	}
+#else
+	span_t* span = 0;
+	size_t count = _rpmalloc_global_cache_extract_spans(&span, span_count, 1);
+	if (count) {
+		_rpmalloc_stat_add64(&heap->global_to_thread, span_count * count * _memory_span_size);
+		_rpmalloc_stat_add(&heap->span_use[span_count - 1].spans_from_global, count);
+		return span;
+	}
+#endif
 #endif
 	(void)sizeof(heap);
 	(void)sizeof(span_count);
@@ -1494,6 +1504,7 @@ _rpmalloc_heap_extract_new_span(heap_t* heap, size_t span_count, uint32_t class_
 		atomic_store32(&heap->span_use[idx].high, (int32_t)current_count);
 	_rpmalloc_stat_add_peak(&heap->size_class_use[class_idx].spans_current, 1, heap->size_class_use[class_idx].spans_peak);
 #endif
+#if ENABLE_THREAD_CACHE
 	if (class_idx < SIZE_CLASS_COUNT) {
 		if (heap->size_class[class_idx].cache[0]) {
 			span = heap->size_class[class_idx].cache[0];
@@ -1509,6 +1520,9 @@ _rpmalloc_heap_extract_new_span(heap_t* heap, size_t span_count, uint32_t class_
 			return span;
 		}
 	}
+#else
+	(void)sizeof(class_idx);
+#endif
 	span = _rpmalloc_heap_thread_cache_extract(heap, span_count);
 	if (EXPECTED(span != 0)) {
 		_rpmalloc_stat_inc(&heap->size_class_use[class_idx].spans_from_cache);
@@ -3090,7 +3104,7 @@ rpmalloc_heap_free_all(rpmalloc_heap_t* heap) {
 		_rpmalloc_global_cache_insert_spans(span_cache->span, iclass + 1, span_cache->count);
 #else
 		for (size_t ispan = 0; ispan < span_cache->count; ++ispan)
-			_rpmalloc_span_list_unmap(span_cache->span[ispan]);
+			_rpmalloc_span_unmap(span_cache->span[ispan]);
 #endif
 		span_cache->count = 0;
 	}
