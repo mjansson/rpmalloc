@@ -696,12 +696,17 @@ initfini_thread(void* argp) {
 
 	thread_yield();
 
+	if (arg.passes > (sizeof(addr) / sizeof(addr[0])))
+		arg.passes = sizeof(addr) / sizeof(addr[0]);
+
 	for (iloop = 0; iloop < arg.loops; ++iloop) {
 		rpmalloc_thread_initialize();
 
 		unsigned int max_datasize = 0;
 		for (ipass = 0; ipass < arg.passes; ++ipass) {
 			cursize = arg.datasize[(iloop + ipass + iwait) % arg.num_datasize] + ((iloop + ipass) % 1024);
+			if (cursize > sizeof(data))
+				cursize = sizeof(data);
 			if (cursize > max_datasize)
 				max_datasize = cursize;
 
