@@ -53,11 +53,7 @@ test_alloc(void) {
 		return test_fail("new[] failed");
 	if (rpmalloc_usable_size(p) != 32*sizeof(int))
 		return test_fail("usable size invalid (4)");
-#if (__cplusplus >= 201402L || _MSC_VER >= 1916)
-	::operator delete[] (static_cast<int*>(p), sizeof(int) * 32);
-#else
 	delete[] static_cast<int*>(p);
-#endif
 
 	printf("Allocation tests passed\n");
 	return 0;
