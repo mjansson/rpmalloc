@@ -89,7 +89,7 @@
 #define ENABLE_ADAPTIVE_THREAD_CACHE 0
 #endif
 
-#if defined( _WIN32 ) || defined( __WIN32__ ) || defined( _WIN64 )
+#if defined(_WIN32) || defined(__WIN32__) || defined(_WIN64)
 #  define PLATFORM_WINDOWS 1
 #  define PLATFORM_POSIX 0
 #else
@@ -98,7 +98,7 @@
 #endif
 
 /// Platform and arch specifics
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && !defined(__clang__)
 #  ifndef FORCEINLINE
 #    define FORCEINLINE inline __forceinline
 #  endif
@@ -924,7 +924,7 @@ _rpmalloc_span_map_from_reserve(heap_t* heap, size_t span_count) {
 	//Update the heap span reserve
 	span_t* span = heap->span_reserve;
 	heap->span_reserve = (span_t*)pointer_offset(span, span_count * _memory_span_size);
-	heap->spans_reserved -= span_count;
+	heap->spans_reserved -= (uint32_t)span_count;
 
 	_rpmalloc_span_mark_as_subspan_unless_master(heap->span_reserve_master, span, span_count);
 	if (span_count <= LARGE_CLASS_COUNT)
@@ -1215,7 +1215,7 @@ _rpmalloc_global_cache_insert_spans(span_t** span, size_t span_count, size_t cou
 		insert_count = cache_limit - cache->count;
 
 	memcpy(cache->span + cache->count, span, sizeof(span_t*) * insert_count);
-	cache->count += insert_count;
+	cache->count += (uint32_t)insert_count;
 
 #if ENABLE_UNLIMITED_CACHE
 	while (insert_count < count) {
@@ -1243,7 +1243,7 @@ _rpmalloc_global_cache_extract_spans(span_t** span, size_t span_count, size_t co
 		extract_count = cache->count;
 
 	memcpy(span, cache->span + (cache->count - extract_count), sizeof(span_t*) * extract_count);
-	cache->count -= extract_count;
+	cache->count -= (uint32_t)extract_count;
 #if ENABLE_UNLIMITED_CACHE
 	while ((extract_count < count) && cache->overflow) {
 		span_t* current_span = cache->overflow;

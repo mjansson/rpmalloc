@@ -51,7 +51,7 @@ class ClangToolchain(toolchain.Toolchain):
                    '-fomit-frame-pointer', '-fno-math-errno','-ffinite-math-only', '-funsafe-math-optimizations',
                    '-fno-trapping-math', '-ffast-math']
     self.cwarnflags = ['-W', '-Werror', '-pedantic', '-Wall', '-Weverything',
-                       '-Wno-padded', '-Wno-documentation-unknown-command',
+                       '-Wno-c++98-compat', '-Wno-padded', '-Wno-documentation-unknown-command',
                        '-Wno-implicit-fallthrough', '-Wno-static-in-inline', '-Wno-reserved-id-macro']
     self.cmoreflags = []
     self.mflags = []
@@ -99,7 +99,7 @@ class ClangToolchain(toolchain.Toolchain):
     if self.target.is_macos() or self.target.is_ios():
       self.cxxflags += ['-std=c++14', '-stdlib=libc++']
     else:
-      self.cxxflags += ['-std=gnu++14']
+      self.cxxflags += ['-std=c++14']
 
     #Overrides
     self.objext = '.o'
