@@ -705,11 +705,11 @@ get_thread_id(void) {
 #  elif defined(__aarch64__)
 	__asm__ volatile ("mrs %0, tpidr_el0" : "=r" (tid));
 #  else
-	tid = (uintptr_t)get_thread_heap_raw();
+	tid = (uintptr_t)((void*)get_thread_heap_raw());
 #  endif
 	return tid;
 #else
-	return (uintptr_t)get_thread_heap_raw();
+	return (uintptr_t)((void*)get_thread_heap_raw());
 #endif
 }
 
@@ -1177,9 +1177,12 @@ _rpmalloc_span_finalize(heap_t* heap, size_t iclass, span_t* span, span_t** list
 
 #if ENABLE_GLOBAL_CACHE
 
-//! Finalize a global cache, only valid from allocator finalization (not thread safe)
+//! Finalize a global cache
 static void
 _rpmalloc_global_cache_finalize(global_cache_t* cache) {
+	while (!atomic_cas32_acquire(&cache->lock, 1, 0))
+		/* Spin */;
+
 	for (size_t ispan = 0; ispan < cache->count; ++ispan)
 		_rpmalloc_span_unmap(cache->span[ispan]);
 	cache->count = 0;
@@ -2882,7 +2885,7 @@ _memory_heap_dump_statistics(heap_t* heap, void* file) {
 			atomic_load32(&heap->span_use[iclass].high),
 			((size_t)atomic_load32(&heap->span_use[iclass].high) * (size_t)_memory_span_size * (iclass + 1)) / (size_t)(1024 * 1024),
 #if ENABLE_THREAD_CACHE
-			(unsigned int)(iclass ? heap->span_cache.count : heap->span_large_cache[iclass - 1].count),
+			(unsigned int)(!iclass ? heap->span_cache.count : heap->span_large_cache[iclass - 1].count),
 			((size_t)atomic_load32(&heap->span_use[iclass].spans_to_cache) * (iclass + 1) * _memory_span_size) / (size_t)(1024 * 1024),
 			((size_t)atomic_load32(&heap->span_use[iclass].spans_from_cache) * (iclass + 1) * _memory_span_size) / (size_t)(1024 * 1024),
 #else
