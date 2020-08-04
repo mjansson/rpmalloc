@@ -423,9 +423,9 @@ typedef struct _allocator_thread_arg {
 	unsigned int        passes; //max 4096
 	unsigned int        datasize[32];
 	unsigned int        num_datasize; //max 32
+	int                 init_fini_each_loop;
 	void**              pointers;
 	void**              crossthread_pointers;
-	int                 init_fini_each_loop;
 } allocator_thread_arg_t;
 
 static void
@@ -681,14 +681,17 @@ end:
 static void
 initfini_thread(void* argp) {
 	allocator_thread_arg_t arg = *(allocator_thread_arg_t*)argp;
-	unsigned int iloop = 0;
-	unsigned int ipass = 0;
-	unsigned int icheck = 0;
+	unsigned int iloop;
+	unsigned int ipass;
+	unsigned int icheck;
 	unsigned int id = 0;
 	uint32_t* addr[4096];
+	uint32_t blocksize[4096];
 	char data[8192];
 	unsigned int cursize;
-	unsigned int iwait = 0;
+	unsigned int max_datasize = 0;
+	uint32_t this_size;
+	uint32_t check_size;
 	int ret = 0;
 
 	for (id = 0; id < sizeof(data); ++id)
@@ -702,31 +705,33 @@ initfini_thread(void* argp) {
 	for (iloop = 0; iloop < arg.loops; ++iloop) {
 		rpmalloc_thread_initialize();
 
-		unsigned int max_datasize = 0;
+		max_datasize = 0;
 		for (ipass = 0; ipass < arg.passes; ++ipass) {
-			cursize = arg.datasize[(iloop + ipass + iwait) % arg.num_datasize] + ((iloop + ipass) % 1024);
+			cursize = arg.datasize[(iloop + ipass) % arg.num_datasize] + ((iloop + ipass) % 1024);
 			if (cursize > sizeof(data))
 				cursize = sizeof(data);
 			if (cursize > max_datasize)
 				max_datasize = cursize;
 
-			addr[ipass] = rpmalloc(4 + cursize);
+			addr[ipass] = rpmalloc(sizeof(uint32_t) + cursize);
 			if (addr[ipass] == 0) {
 				ret = test_fail("Allocation failed");
 				goto end;
 			}
 
+			blocksize[ipass] = (uint32_t)cursize;
 			addr[ipass][0] = (uint32_t)cursize;
 			memcpy(addr[ipass] + 1, data, cursize);
 
 			for (icheck = 0; icheck < ipass; ++icheck) {
-				size_t this_size = addr[ipass][0];
-				size_t check_size = addr[icheck][0];
+				this_size = addr[ipass][0];
+				check_size = addr[icheck][0];
 				if (this_size != cursize) {
 					ret = test_fail("Data corrupted in this block (size)");
 					goto end;
 				}
-				if (check_size > max_datasize) {
+				if (check_size != blocksize[icheck]) {
+					printf("For %u:%u got previous block size %u (%x) wanted %u (%x)\n", iloop, ipass, check_size, check_size, blocksize[icheck], blocksize[icheck]);
 					ret = test_fail("Data corrupted in previous block (size)");
 					goto end;
 				}
@@ -735,13 +740,12 @@ initfini_thread(void* argp) {
 					goto end;
 				}
 				if (addr[icheck] < addr[ipass]) {
-					if (pointer_offset(addr[icheck], check_size + 4) > (void*)addr[ipass]) {
+					if (pointer_offset(addr[icheck], check_size + sizeof(uint32_t)) > (void*)addr[ipass]) {
 						ret = test_fail("Invalid pointer inside another block returned from allocation");
 						goto end;
 					}
-				}
-				else if (addr[icheck] > addr[ipass]) {
-					if (pointer_offset(addr[ipass], cursize + 4) > (void*)addr[icheck]) {
+				} else {
+					if (pointer_offset(addr[ipass], this_size + sizeof(uint32_t)) > (void*)addr[icheck]) {
 						ret = test_fail("Invalid pointer inside another block returned from allocation");
 						goto end;
 					}
@@ -751,11 +755,17 @@ initfini_thread(void* argp) {
 
 		for (ipass = 0; ipass < arg.passes; ++ipass) {
 			cursize = addr[ipass][0];
-			if (cursize > max_datasize) {
+
+			if (cursize != blocksize[ipass]) {
+				printf("For %u:%u got size %u (%x) wanted %u (%x)\n", iloop, ipass, cursize, cursize, blocksize[ipass], blocksize[ipass]);
 				ret = test_fail("Data corrupted (size)");
 				goto end;
 			}
-
+			if (cursize > max_datasize) {
+				printf("For %u:%u got size %u (%x) >= %u\n", iloop, ipass, cursize, cursize, max_datasize);
+				ret = test_fail("Data corrupted (size)");
+				goto end;
+			}
 			if (memcmp(addr[ipass] + 1, data, cursize)) {
 				ret = test_fail("Data corrupted");
 				goto end;
@@ -925,8 +935,13 @@ test_threadspam(void) {
 	num_alloc_threads = _hardware_threads;
 	if (num_alloc_threads < 2)
 		num_alloc_threads = 2;
+#if defined(__LLP64__) || defined(__LP64__) || defined(_WIN64)
+	if (num_alloc_threads > 32)
+		num_alloc_threads = 32;
+#else
 	if (num_alloc_threads > 16)
 		num_alloc_threads = 16;
+#endif
 
 	arg.loops = 500;
 	arg.passes = 10;
@@ -946,7 +961,7 @@ test_threadspam(void) {
 		thread[i] = thread_run(&targ);
 
 	for (j = 0; j < num_passes; ++j) {
-		thread_sleep(10);
+		thread_sleep(100);
 
 		for (i = 0; i < num_alloc_threads; ++i) {
 			threadres[i] = thread_join(thread[i]);
@@ -1056,9 +1071,9 @@ test_run(int argc, char** argv) {
 		return -1;
 	if (test_crossthread())
 		return -1;
-	if (test_threadspam())
-		return -1;
 	if (test_threaded())
+		return -1;
+	if (test_threadspam())
 		return -1;
 	if (test_first_class_heaps())
 		return -1;

@@ -617,14 +617,14 @@ static global_cache_t _memory_span_cache[LARGE_CLASS_COUNT];
 #endif
 //! All heaps
 static atomicptr_t _memory_heaps[HEAP_ARRAY_SIZE];
+//! Orphan lock
+static atomic32_t _memory_orphan_lock;
 //! Orphaned heaps
-static atomicptr_t _memory_orphan_heaps;
+static heap_t* _memory_orphan_heaps;
 #if RPMALLOC_FIRST_CLASS_HEAPS
 //! Orphaned heaps (first class heaps)
-static atomicptr_t _memory_first_class_orphan_heaps;
+static heap_t* _memory_first_class_orphan_heaps;
 #endif
-//! Running orphan counter to avoid ABA issues in linked list
-static atomic32_t _memory_orphan_counter;
 #if ENABLE_STATISTICS
 //! Active heap count
 static atomic32_t _memory_active_heaps;
@@ -1574,22 +1574,18 @@ _rpmalloc_heap_initialize(heap_t* heap) {
 
 static void
 _rpmalloc_heap_orphan(heap_t* heap, int first_class) {
-	void* raw_heap;
-	uintptr_t orphan_counter;
-	heap_t* last_heap;
 	heap->owner_thread = (uintptr_t)-1;
 #if RPMALLOC_FIRST_CLASS_HEAPS
-	atomicptr_t* heap_list = (first_class ? &_memory_first_class_orphan_heaps : &_memory_orphan_heaps);
+	heap_t** heap_list = (first_class ? &_memory_first_class_orphan_heaps : &_memory_orphan_heaps);
 #else
 	(void)sizeof(first_class);
-	atomicptr_t* heap_list = &_memory_orphan_heaps;
+	heap_t** heap_list = &_memory_orphan_heaps;
 #endif
-	do {
-		last_heap = (heap_t*)atomic_load_ptr(heap_list);
-		heap->next_orphan = (heap_t*)((uintptr_t)last_heap & ~(uintptr_t)(HEAP_ORPHAN_ABA_SIZE - 1));
-		orphan_counter = (uintptr_t)atomic_incr32(&_memory_orphan_counter);
-		raw_heap = (void*)((uintptr_t)heap | (orphan_counter & (uintptr_t)(HEAP_ORPHAN_ABA_SIZE - 1)));
-	} while (!atomic_cas_ptr(heap_list, raw_heap, last_heap));
+	while (!atomic_cas32_acquire(&_memory_orphan_lock, 1, 0))
+		/* Spin */;
+	heap->next_orphan = *heap_list;
+	*heap_list = heap;
+	atomic_store32_release(&_memory_orphan_lock, 0);
 }
 
 //! Allocate a new heap from newly mapped memory pages
@@ -1598,7 +1594,8 @@ _rpmalloc_heap_allocate_new(void) {
 	//Map in pages for a new heap
 	size_t align_offset = 0;
 	size_t heap_size = sizeof(heap_t);
-	size_t block_size = _memory_page_size * ((heap_size + _memory_page_size - 1) >> _memory_page_size_shift);
+	size_t aligned_heap_size = 64 * ((heap_size + 63) / 64);
+	size_t block_size = _memory_page_size * ((aligned_heap_size + _memory_page_size - 1) >> _memory_page_size_shift);
 	heap_t* heap = (heap_t*)_rpmalloc_mmap(block_size, &align_offset);
 	if (!heap)
 		return heap;
@@ -1607,7 +1604,6 @@ _rpmalloc_heap_allocate_new(void) {
 	heap->align_offset = align_offset;
 
 	//Put extra heaps as orphans, aligning to make sure ABA protection bits fit in pointer low bits
-	size_t aligned_heap_size = HEAP_ORPHAN_ABA_SIZE * ((heap_size + HEAP_ORPHAN_ABA_SIZE - 1) / HEAP_ORPHAN_ABA_SIZE);
 	size_t num_heaps = block_size / aligned_heap_size;
 	atomic_store32(&heap->child_count, (int32_t)num_heaps - 1);
 	heap_t* extra_heap = (heap_t*)pointer_offset(heap, aligned_heap_size);
@@ -1622,21 +1618,12 @@ _rpmalloc_heap_allocate_new(void) {
 }
 
 static heap_t*
-_rpmalloc_heap_extract_orphan(atomicptr_t* heap_list) {
-	void* raw_heap;
-	void* next_raw_heap;
-	uintptr_t orphan_counter;
-	heap_t* heap;
-	heap_t* next_heap;
-	do {
-		raw_heap = atomic_load_ptr(heap_list);
-		heap = (heap_t*)((uintptr_t)raw_heap & ~(uintptr_t)(HEAP_ORPHAN_ABA_SIZE - 1));
-		if (!heap)
-			break;
-		next_heap = heap->next_orphan;
-		orphan_counter = (uintptr_t)atomic_incr32(&_memory_orphan_counter);
-		next_raw_heap = (void*)((uintptr_t)next_heap | (orphan_counter & (uintptr_t)(HEAP_ORPHAN_ABA_SIZE - 1)));
-	} while (!atomic_cas_ptr(heap_list, next_raw_heap, raw_heap));
+_rpmalloc_heap_extract_orphan(heap_t** heap_list) {
+	while (!atomic_cas32_acquire(&_memory_orphan_lock, 1, 0))
+		/* Spin */;
+	heap_t* heap = *heap_list;
+	*heap_list = (heap ? heap->next_orphan : 0);
+	atomic_store32_release(&_memory_orphan_lock, 0);
 	return heap;
 }
 
@@ -1688,15 +1675,15 @@ _rpmalloc_heap_release(void* heapptr, int first_class) {
 	}
 #endif
 
-	//Orphan the heap
-	_rpmalloc_heap_orphan(heap, first_class);
-
 	if (get_thread_heap_raw() == heap)
 		set_thread_heap(0);
+
 #if ENABLE_STATISTICS
 	atomic_decr32(&_memory_active_heaps);
 	assert(atomic_load32(&_memory_active_heaps) >= 0);
 #endif
+
+	_rpmalloc_heap_orphan(heap, first_class);
 }
 
 static void
@@ -2559,9 +2546,9 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		_rpmalloc_adjust_size_class(SMALL_CLASS_COUNT + iclass);
 	}
 
-	atomic_store_ptr(&_memory_orphan_heaps, 0);
+	_memory_orphan_heaps = 0;
 #if RPMALLOC_FIRST_CLASS_HEAPS
-	atomic_store_ptr(&_memory_first_class_orphan_heaps, 0);
+	_memory_first_class_orphan_heaps = 0;
 #endif
 	for (size_t ilist = 0, lsize = (sizeof(_memory_heaps) / sizeof(_memory_heaps[0])); ilist < lsize; ++ilist)
 		atomic_store_ptr(&_memory_heaps[ilist], 0);
@@ -2895,7 +2882,7 @@ _memory_heap_dump_statistics(heap_t* heap, void* file) {
 			((size_t)atomic_load32(&heap->span_use[iclass].spans_to_cache) * (iclass + 1) * _memory_span_size) / (size_t)(1024 * 1024),
 			((size_t)atomic_load32(&heap->span_use[iclass].spans_from_cache) * (iclass + 1) * _memory_span_size) / (size_t)(1024 * 1024),
 #else
-			0, 0ULL, 0ULL,
+			0, (size_t)0, (size_t)0,
 #endif
 			((size_t)atomic_load32(&heap->span_use[iclass].spans_to_reserved) * (iclass + 1) * _memory_span_size) / (size_t)(1024 * 1024),
 			((size_t)atomic_load32(&heap->span_use[iclass].spans_from_reserved) * (iclass + 1) * _memory_span_size) / (size_t)(1024 * 1024),
