@@ -401,6 +401,7 @@ struct size_class_use_t {
 	atomic32_t spans_from_reserved;
 	//! Number of spans mapped
 	atomic32_t spans_map_calls;
+	int32_t unused;
 };
 typedef struct size_class_use_t size_class_use_t;
 #endif
@@ -480,17 +481,12 @@ struct heap_t {
 	uintptr_t    owner_thread;
 	//! Free lists for each size class
 	heap_size_class_t size_class[SIZE_CLASS_COUNT];
-#if RPMALLOC_FIRST_CLASS_HEAPS
-	//! Double linked list of fully utilized spans with free blocks for each size class.
-	//  Previous span pointer in head points to tail span of list.
-	span_t*      full_span[SIZE_CLASS_COUNT];
+#if ENABLE_THREAD_CACHE
+	//! Arrays of fully freed spans, single span
+	span_cache_t span_cache;
 #endif
 	//! List of deferred free spans (single linked list)
 	atomicptr_t  span_free_deferred;
-#if RPMALLOC_FIRST_CLASS_HEAPS
-	//! Double linked list of large and huge spans allocated by this heap
-	span_t*      large_huge_span;
-#endif
 	//! Number of full spans
 	size_t       full_span_count;
 	//! Mapped but unused spans
@@ -498,7 +494,9 @@ struct heap_t {
 	//! Master span for mapped but unused spans
 	span_t*      span_reserve_master;
 	//! Number of mapped but unused spans
-	size_t       spans_reserved;
+	uint32_t     spans_reserved;
+	//! Child count
+	atomic32_t   child_count;
 	//! Next heap in id list
 	heap_t*      next_heap;
 	//! Next heap in orphan list
@@ -511,25 +509,28 @@ struct heap_t {
 	int          finalize;
 	//! Master heap owning the memory pages
 	heap_t*      master_heap;
-	//! Child count
-	atomic32_t   child_count;
 #if ENABLE_THREAD_CACHE
-	//! Arrays of fully freed spans, single span
-	span_cache_t span_cache;
 	//! Arrays of fully freed spans, large spans with > 1 span count
 	span_large_cache_t span_large_cache[LARGE_CLASS_COUNT - 1];
+#endif
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	//! Double linked list of fully utilized spans with free blocks for each size class.
+	//  Previous span pointer in head points to tail span of list.
+	span_t*      full_span[SIZE_CLASS_COUNT];
+	//! Double linked list of large and huge spans allocated by this heap
+	span_t*      large_huge_span;
 #endif
 #if ENABLE_ADAPTIVE_THREAD_CACHE || ENABLE_STATISTICS
 	//! Current and high water mark of spans used per span count
 	span_use_t   span_use[LARGE_CLASS_COUNT];
 #endif
 #if ENABLE_STATISTICS
+	//! Allocation stats per size class
+	size_class_use_t size_class_use[SIZE_CLASS_COUNT + 1];
 	//! Number of bytes transitioned thread -> global
 	atomic64_t   thread_to_global;
 	//! Number of bytes transitioned global -> thread
 	atomic64_t   global_to_thread;
-	//! Allocation stats per size class
-	size_class_use_t size_class_use[SIZE_CLASS_COUNT + 1];
 #endif
 };
 
@@ -548,7 +549,7 @@ struct global_cache_t {
 	//! Cache lock
 	atomic32_t lock;
 	//! Cache count
-	size_t count;
+	uint32_t count;
 	//! Cached spans
 	span_t* span[GLOBAL_CACHE_MULTIPLIER * MAX_THREAD_SPAN_CACHE];
 #if ENABLE_UNLIMITED_CACHE
@@ -1270,7 +1271,7 @@ static void
 _rpmalloc_heap_set_reserved_spans(heap_t* heap, span_t* master, span_t* reserve, size_t reserve_span_count) {
 	heap->span_reserve_master = master;
 	heap->span_reserve = reserve;
-	heap->spans_reserved = reserve_span_count;
+	heap->spans_reserved = (uint32_t)reserve_span_count;
 }
 
 //! Adopt the deferred span cache list, optionally extracting the first single span for immediate re-use
