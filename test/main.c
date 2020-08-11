@@ -1057,13 +1057,13 @@ test_run(int argc, char** argv) {
 	(void)sizeof(argc);
 	(void)sizeof(argv);
 	test_initialize();
+	if (test_crossthread())
+		return -1;
 	if (test_alloc())
 		return -1;
 	if (test_realloc())
 		return -1;
 	if (test_superalign())
-		return -1;
-	if (test_crossthread())
 		return -1;
 	if (test_threaded())
 		return -1;

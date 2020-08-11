@@ -555,10 +555,8 @@ struct global_cache_t {
 	uint32_t count;
 	//! Cached spans
 	span_t* span[GLOBAL_CACHE_MULTIPLIER * MAX_THREAD_SPAN_CACHE];
-#if ENABLE_UNLIMITED_CACHE
 	//! Unlimited cache overflow
 	span_t* overflow;
-#endif
 };
 
 ////////////
@@ -864,16 +862,12 @@ _rpmalloc_span_mark_as_subspan_unless_master(span_t* master, span_t* subspan, si
 static span_t*
 _rpmalloc_global_get_reserved_spans(size_t span_count) {
 	span_t* span = _memory_global_reserve;
-	span_t* next_span = span;
-	if (span && (_memory_global_reserve_count >= span_count)) {
-		_rpmalloc_span_mark_as_subspan_unless_master(_memory_global_reserve_master, span, span_count);
-		_memory_global_reserve_count -= span_count;
-		if (_memory_global_reserve_count)
-			next_span = (span_t*)pointer_offset(span, span_count << _memory_span_size_shift);
-		else
-			next_span = 0;
-	}
-	_memory_global_reserve = next_span;
+	_rpmalloc_span_mark_as_subspan_unless_master(_memory_global_reserve_master, span, span_count);
+	_memory_global_reserve_count -= span_count;
+	if (_memory_global_reserve_count)
+		_memory_global_reserve = (span_t*)pointer_offset(span, span_count << _memory_span_size_shift);
+	else
+		_memory_global_reserve = 0;
 	return span;
 }
 
@@ -1050,7 +1044,8 @@ _rpmalloc_span_map(heap_t* heap, size_t span_count) {
 					span_t* reserved_span = (span_t*)pointer_offset(span, span_count << _memory_span_size_shift);
 					_rpmalloc_heap_set_reserved_spans(heap, _memory_global_reserve_master, reserved_span, reserve_count - span_count);
 				}
-				_rpmalloc_span_mark_as_subspan_unless_master(_memory_global_reserve_master, span, span_count);
+				// Already marked as subspan in _rpmalloc_global_get_reserved_spans
+				span->span_count = (uint32_t)span_count;
 			}
 		}
 	}
@@ -1259,13 +1254,11 @@ _rpmalloc_global_cache_finalize(global_cache_t* cache) {
 		_rpmalloc_span_unmap(cache->span[ispan]);
 	cache->count = 0;
 
-#if ENABLE_UNLIMITED_CACHE
 	while (cache->overflow) {
 		span_t* span = cache->overflow;
 		cache->overflow = span->next;
 		_rpmalloc_span_unmap(span);
 	}
-#endif
 
 	atomic_store_release(&cache->lock, 0);
 }
@@ -1290,16 +1283,19 @@ _rpmalloc_global_cache_insert_spans(span_t** span, size_t span_count, size_t cou
 
 #if ENABLE_UNLIMITED_CACHE
 	while (insert_count < count) {
+#else
+	// Enable unlimited cache if huge pages, or we will leak since it is unlikely that an entire huge page
+	// will be unmapped, and we're unable to partially decommit a huge page
+	while ((_memory_page_size > _memory_span_size) && (insert_count < count)) {
+#endif
 		span_t* current_span = span[insert_count++];
 		current_span->next = cache->overflow;
 		cache->overflow = current_span;
 	}
-	atomic_store32_release(&cache->lock, 0);
-#else
 	atomic_store_release(&cache->lock, 0);
+
 	for (size_t ispan = insert_count; ispan < count; ++ispan)
 		_rpmalloc_span_unmap(span[ispan]);
-#endif
 }
 
 static size_t
@@ -1316,13 +1312,13 @@ _rpmalloc_global_cache_extract_spans(span_t** span, size_t span_count, size_t co
 
 	memcpy(span, cache->span + (cache->count - extract_count), sizeof(span_t*) * extract_count);
 	cache->count -= (uint32_t)extract_count;
-#if ENABLE_UNLIMITED_CACHE
+
 	while ((extract_count < count) && cache->overflow) {
 		span_t* current_span = cache->overflow;
 		span[extract_count++] = current_span;
 		cache->overflow = current_span->next;
 	}
-#endif
+
 	atomic_store_release(&cache->lock, 0);
 
 	return extract_count;
@@ -2566,7 +2562,6 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 #else
 	max_page_size = 4 * 1024 * 1024;
 #endif
-	//_memory_page_size = (size_t)4 * (size_t)1024 * (size_t)1024 * (size_t)1024;
 	if (_memory_page_size < min_span_size)
 		_memory_page_size = min_span_size;
 	if (_memory_page_size > max_page_size)
