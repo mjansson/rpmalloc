@@ -1640,19 +1640,19 @@ _rpmalloc_heap_release(void* heapptr, int first_class) {
 			span_cache = (span_cache_t*)(heap->span_large_cache + (iclass - 1));
 		if (!span_cache->count)
 			continue;
+#if ENABLE_GLOBAL_CACHE
 		if (heap->finalize) {
 			for (size_t ispan = 0; ispan < span_cache->count; ++ispan)
 				_rpmalloc_span_unmap(span_cache->span[ispan]);
 		} else {
-#if ENABLE_GLOBAL_CACHE
 			_rpmalloc_stat_add64(&heap->thread_to_global, span_cache->count * (iclass + 1) * _memory_span_size);
 			_rpmalloc_stat_add(&heap->span_use[iclass].spans_to_global, span_cache->count);
 			_rpmalloc_global_cache_insert_spans(span_cache->span, iclass + 1, span_cache->count);
-#else
-			for (size_t ispan = 0; ispan < span_cache->count; ++ispan)
-				_rpmalloc_span_unmap(span_cache->span[ispan]);
-#endif
 		}
+#else
+		for (size_t ispan = 0; ispan < span_cache->count; ++ispan)
+			_rpmalloc_span_unmap(span_cache->span[ispan]);
+#endif
 		span_cache->count = 0;
 	}
 #endif

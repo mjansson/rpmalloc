@@ -253,36 +253,21 @@ reallocarray(void* ptr, size_t count, size_t size) {
 extern inline void* RPMALLOC_CDECL
 valloc(size_t size) {
 	get_thread_heap();
-	const size_t page_size = _rpmalloc_page_size();
-	if (!size)
-		size = page_size;
-	size_t total_size = size + page_size;
-#if ENABLE_VALIDATE_ARGS
-	if (total_size < size) {
-		errno = EINVAL;
-		return 0;
-	}
-#endif
-	void* buffer = rpmalloc(total_size);
-	if ((uintptr_t)buffer & (page_size - 1))
-		return (void*)(((uintptr_t)buffer & ~(page_size - 1)) + page_size);
-	return buffer;
+	return rpaligned_alloc(_rpmalloc_page_size(), size);
 }
 
 extern inline void* RPMALLOC_CDECL
 pvalloc(size_t size) {
 	get_thread_heap();
-	size_t aligned_size = size;
 	const size_t page_size = _rpmalloc_page_size();
-	if (aligned_size % page_size)
-		aligned_size = (1 + (aligned_size / page_size)) * page_size;
+	const size_t aligned_size = ((size + page_size - 1) / page_size) * page_size;
 #if ENABLE_VALIDATE_ARGS
 	if (aligned_size < size) {
 		errno = EINVAL;
 		return 0;
 	}
 #endif
-	return valloc(size);
+	return rpaligned_alloc(_rpmalloc_page_size(), aligned_size);
 }
 
 #endif // ENABLE_OVERRIDE

@@ -14,6 +14,11 @@
 #include <string.h>
 #include <math.h>
 
+#if defined(_WIN32)
+extern "C" void* RPMALLOC_CDECL pvalloc(size_t size);
+extern "C" void* RPMALLOC_CDECL valloc(size_t size);
+#endif
+
 static size_t _hardware_threads;
 
 static void
@@ -27,6 +32,8 @@ test_fail(const char* reason) {
 
 static int
 test_alloc(void) {
+	const rpmalloc_config_t* config = rpmalloc_config();
+
 	void* p = malloc(371);
 	if (!p)
 		return test_fail("malloc failed");
@@ -54,6 +61,24 @@ test_alloc(void) {
 	if (rpmalloc_usable_size(p) != 32*sizeof(int))
 		return test_fail("usable size invalid (4)");
 	delete[] static_cast<int*>(p);
+
+	p = valloc(873);
+	if ((uintptr_t)p & (config->page_size - 1)) {
+		fprintf(stderr, "FAIL: pvalloc did not align address to page size (%p)\n", p);
+		return -1;
+	}
+	free(p);
+
+	p = pvalloc(275);
+	if ((uintptr_t)p & (config->page_size - 1)) {
+		fprintf(stderr, "FAIL: pvalloc did not align address to page size (%p)\n", p);
+		return -1;
+	}
+	if (rpmalloc_usable_size(p) < config->page_size) {
+		fprintf(stderr, "FAIL: pvalloc did not align size to page size (%llu)\n", rpmalloc_usable_size(p));
+		return -1;
+	}
+	free(p);
 
 	printf("Allocation tests passed\n");
 	return 0;
