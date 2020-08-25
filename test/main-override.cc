@@ -139,7 +139,7 @@ main(int argc, char** argv) {
 #endif
 
 #ifdef _WIN32
-#include <Windows.h>
+#include <windows.h>
 
 static void
 test_initialize(void) {
