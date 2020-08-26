@@ -2,12 +2,10 @@
 
 Dual license as both released to public domain or under MIT license
 
-Allow up to 4GiB page sizes
+Allow up to 4GiB memory page sizes
 
 Fix an issue where large page sizes in conjunction with many threads waste a lot of memory (previously
 each heap occupied an entire memory page, now heaps can now share a memory page)
-
-Added a missing null check in the non-hot allocation code paths
 
 Fixed compilation issue on macOS when ENABLE_PRELOAD is set but not ENABLE_OVERRIDE
 
@@ -17,18 +15,22 @@ Added rpaligned_calloc function for aligned and zero intialized allocations
 
 Fixed natural alignment check in rpaligned_realloc to 16 bytes (check was 32, which is wrong)
 
-Minor performance improvements for all code paths by simplified span handling, and for aligned allocations
-with alignment less or equal to 128 bytes by utilizing natural block alignments
+Minor performance improvements for all code paths by simplified span handling
+
+Minor performance improvements and for aligned allocations with alignment less or equal to 128 bytes
+by utilizing natural block alignments
 
 Refactor finalization to be compatible with global scope data causing dynamic allocations and frees, like
-C++ objects with custom ctors/dtors.
+C++ objects with custom ctors/dtors
 
 Refactor thread and global cache to be array based instead of list based for improved performance
-and cache size control.
+and cache size control
 
 Added missing C++ operator overloads with ENABLE_OVERRIDE when using Microsoft C++ runtimes
 
-Fixed issue in pvalloc override that could return less than a memory page in usable size.
+Fixed issue in pvalloc override that could return less than a memory page in usable size
+
+Added a missing null check in the non-hot allocation code paths
 
 
 1.4.0
