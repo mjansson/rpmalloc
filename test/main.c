@@ -370,7 +370,7 @@ test_realloc(void) {
 
 	size_t bigsize = 1024 * 1024;
 	void* bigptr = rpmalloc(bigsize);
-	while (bigsize < 3 * 1024 * 1024) {
+	while (bigsize < 3000000) {
 		++bigsize;
 		bigptr = rprealloc(bigptr, bigsize);
 		if (rpaligned_realloc(bigptr, 0, bigsize * 32, 0, RPMALLOC_GROW_OR_FAIL))
