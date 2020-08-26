@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <inttypes.h>
 
 extern "C" void* RPMALLOC_CDECL pvalloc(size_t size);
 extern "C" void* RPMALLOC_CDECL valloc(size_t size);
@@ -73,7 +74,7 @@ test_alloc(void) {
 		return -1;
 	}
 	if (reinterpret_cast<uintptr_t>(p) < config->page_size) {
-		fprintf(stderr, "FAIL: pvalloc did not align size to page size (%lu)\n", static_cast<uintptr_t>(rpmalloc_usable_size(p)));
+		fprintf(stderr, "FAIL: pvalloc did not align size to page size (%" PRIu64 ")\n", static_cast<uint64_t>(rpmalloc_usable_size(p)));
 		return -1;
 	}
 	rpfree(p);
