@@ -28,6 +28,8 @@ and cache size control.
 
 Added missing C++ operator overloads with ENABLE_OVERRIDE when using Microsoft C++ runtimes
 
+Fixed issue in pvalloc override that could return less than a memory page in usable size.
+
 
 1.4.0
 
