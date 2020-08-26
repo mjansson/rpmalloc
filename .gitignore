@@ -13,6 +13,8 @@ local.properties
 .loadpath
 .ninja*
 build.ninja
+.vs
+.vscode
 
 # Generated version
 version.c

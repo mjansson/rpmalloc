@@ -34,13 +34,13 @@ class XCode(object):
       sdk = 'iphoneos'
       deploytarget = 'IPHONEOS_DEPLOYMENT_TARGET=' + self.deploymenttarget
 
-    platformpath = subprocess.check_output(['xcrun', '--sdk', sdk, '--show-sdk-platform-path']).strip()
+    platformpath = toolchain.check_output(['xcrun', '--sdk', sdk, '--show-sdk-platform-path'])
     localpath = platformpath + "/Developer/usr/bin:/Applications/Xcode.app/Contents/Developer/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-    self.plist = "PATH=" + localpath + " " + subprocess.check_output(['xcrun', '--sdk', sdk, '-f', 'plutil']).strip()
-    self.xcassets = "PATH=" + localpath + " " + subprocess.check_output(['xcrun', '--sdk', sdk, '-f', 'actool']).strip()
-    self.xib = "PATH=" + localpath + " " + subprocess.check_output(['xcrun', '--sdk', sdk, '-f', 'ibtool']).strip()
-    self.dsymutil = "PATH=" + localpath + " " + subprocess.check_output(['xcrun', '--sdk', sdk, '-f', 'dsymutil']).strip()
+    self.plist = "PATH=" + localpath + " " + toolchain.check_output(['xcrun', '--sdk', sdk, '-f', 'plutil'])
+    self.xcassets = "PATH=" + localpath + " " + toolchain.check_output(['xcrun', '--sdk', sdk, '-f', 'actool'])
+    self.xib = "PATH=" + localpath + " " + toolchain.check_output(['xcrun', '--sdk', sdk, '-f', 'ibtool'])
+    self.dsymutil = "PATH=" + localpath + " " + toolchain.check_output(['xcrun', '--sdk', sdk, '-f', 'dsymutil'])
 
     self.plistcmd = 'build/ninja/plist.py --exename $exename --prodname $prodname --bundle $bundleidentifier --target $target --deploymenttarget $deploymenttarget --output $outpath $in'
     if self.target.is_macos():

@@ -4,6 +4,7 @@
 #endif
 
 #include <rpmalloc.h>
+#include <rpnew.h>
 #include <thread.h>
 #include <test.h>
 
@@ -12,6 +13,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <inttypes.h>
+
+extern "C" void* RPMALLOC_CDECL pvalloc(size_t size);
+extern "C" void* RPMALLOC_CDECL valloc(size_t size);
 
 static size_t _hardware_threads;
 
@@ -26,6 +31,8 @@ test_fail(const char* reason) {
 
 static int
 test_alloc(void) {
+	const rpmalloc_config_t* config = rpmalloc_config();
+
 	void* p = malloc(371);
 	if (!p)
 		return test_fail("malloc failed");
@@ -47,6 +54,31 @@ test_alloc(void) {
 		return test_fail("usable size invalid (3)");
 	delete[] static_cast<int*>(p);
 
+	p = new int[32];
+	if (!p)
+		return test_fail("new[] failed");
+	if (rpmalloc_usable_size(p) != 32*sizeof(int))
+		return test_fail("usable size invalid (4)");
+	delete[] static_cast<int*>(p);
+
+	p = valloc(873);
+	if (reinterpret_cast<uintptr_t>(p) & (config->page_size - 1)) {
+		fprintf(stderr, "FAIL: pvalloc did not align address to page size (%p)\n", p);
+		return -1;
+	}
+	free(p);
+
+	p = pvalloc(275);
+	if (reinterpret_cast<uintptr_t>(p) & (config->page_size - 1)) {
+		fprintf(stderr, "FAIL: pvalloc did not align address to page size (%p)\n", p);
+		return -1;
+	}
+	if (reinterpret_cast<uintptr_t>(p) < config->page_size) {
+		fprintf(stderr, "FAIL: pvalloc did not align size to page size (%" PRIu64 ")\n", static_cast<uint64_t>(rpmalloc_usable_size(p)));
+		return -1;
+	}
+	rpfree(p);
+
 	printf("Allocation tests passed\n");
 	return 0;
 }
@@ -56,6 +88,7 @@ test_free(void) {
 	free(rpmalloc(371));
 	free(new int);
 	free(new int[16]);
+	free(pvalloc(1275));
 	printf("Free tests passed\n");
 	return 0;	
 }
@@ -131,7 +164,10 @@ main(int argc, char** argv) {
 #endif
 
 #ifdef _WIN32
-#include <Windows.h>
+#if defined(__clang__)
+#pragma clang diagnostic ignored "-Wnonportable-system-include-path"
+#endif
+#include <windows.h>
 
 static void
 test_initialize(void) {

@@ -1,5 +1,7 @@
-# rpmalloc - Rampant Pixels Memory Allocator
+# rpmalloc - General Purpose Memory Allocator
 This library provides a public domain cross platform lock free thread caching 16-byte aligned memory allocator implemented in C. The latest source code is always available at https://github.com/mjansson/rpmalloc
+
+Created by Mattias Jansson ([@maniccoder](https://twitter.com/maniccoder))  -  Support development through my [GitHub Sponsors page](https://github.com/sponsors/mjansson)
 
 Platforms currently supported:
 
@@ -14,10 +16,8 @@ The code should be easily portable to any platform with atomic operations and an
 
 This library is put in the public domain; you can redistribute it and/or modify it without any restrictions. Or, if you choose, you can use it under the MIT license.
 
-Created by Mattias Jansson ([@maniccoder](https://twitter.com/maniccoder))
-
 # Performance
-We believe rpmalloc is faster than most popular memory allocators like tcmalloc, hoard, ptmalloc3 and others without causing extra allocated memory overhead in the thread caches compared to these allocators. We also believe the implementation to be easier to read and modify compared to these allocators, as it is a single source file of ~2500 lines of C code. All allocations have a natural 16-byte alignment.
+We believe rpmalloc is faster than most popular memory allocators like tcmalloc, hoard, ptmalloc3 and others without causing extra allocated memory overhead in the thread caches compared to these allocators. We also believe the implementation to be easier to read and modify compared to these allocators, as it is a single source file of ~3000 lines of C code. All allocations have a natural 16-byte alignment.
 
 Contained in a parallel repository is a benchmark utility that performs interleaved unaligned allocations and deallocations (both in-thread and cross-thread) in multiple threads. It measures number of memory operations performed per CPU second, as well as memory overhead by comparing the virtual memory mapped with the number of bytes requested in allocation calls. The setup of number of thread, cross-thread deallocation rate and allocation size limits is configured by command line arguments.
 
@@ -30,6 +30,12 @@ Below is an example performance comparison chart of rpmalloc and other popular a
 The benchmark producing these numbers were run on an Ubuntu 16.10 machine with 8 logical cores (4 physical, HT). The actual numbers are not to be interpreted as absolute performance figures, but rather as relative comparisons between the different allocators. For additional benchmark results, see the [BENCHMARKS](BENCHMARKS.md) file.
 
 Configuration of the thread and global caches can be important depending on your use pattern. See [CACHE](CACHE.md) for a case study and some comments/guidelines.
+
+# Required functions
+
+Before calling any other function in the API, you __MUST__ call the initization function, either __rpmalloc_initialize__ or __pmalloc_initialize_config__, or you will get undefined behaviour when calling other rpmalloc entry point.
+
+Before terminating your use of the allocator, you __SHOULD__ call __rpmalloc_finalize__ in order to release caches and unmap virtual memory, as well as prepare the allocator for global scope cleanup at process exit or dynamic library unload depending on your use case.
 
 # Using
 The easiest way to use the library is simply adding __rpmalloc.[h|c]__ to your project and compile them along with your sources. This contains only the rpmalloc specific entry points and does not provide internal hooks to process and/or thread creation at the moment. You are required to call these functions from your own code in order to initialize and finalize the allocator in your process and threads:
@@ -49,6 +55,8 @@ __rpmalloc_config__: Get the current runtime configuration of the allocator
 Then simply use the __rpmalloc__/__rpfree__ and the other malloc style replacement functions. Remember all allocations are 16-byte aligned, so no need to call the explicit rpmemalign/rpaligned_alloc/rpposix_memalign functions unless you need greater alignment, they are simply wrappers to make it easier to replace in existing code.
 
 If you wish to override the standard library malloc family of functions and have automatic initialization/finalization of process and threads, define __ENABLE_OVERRIDE__ to non-zero which will include the `malloc.c` file in compilation of __rpmalloc.c__. The list of libc entry points replaced may not be complete, use libc replacement only as a convenience for testing the library on an existing code base, not a final solution.
+
+For explicit first class heaps, see the __rpmalloc_heap_*__ API under [first class heaps](#first-class-heaps) section, requiring __RPMALLOC_FIRST_CLASS_HEAPS__ tp be defined to 1.
 
 # Building
 To compile as a static library run the configure python script which generates a Ninja build script, then build using ninja. The ninja build produces two static libraries, one named `rpmalloc` and one named `rpmallocwrap`, where the latter includes the libc entry point overrides.
@@ -79,11 +87,11 @@ Integer safety checks on all calls are enabled if __ENABLE_VALIDATE_ARGS__ is de
 
 Asserts are enabled if __ENABLE_ASSERTS__ is defined to 1 (default is 0, or disabled), either on compile command line or by setting the value in `rpmalloc.c`.
 
-Overwrite and underwrite guards are enabled if __ENABLE_GUARDS__ is defined to 1 (default is 0, or disabled), either on compile command line or by settings the value in `rpmalloc.c`. This will introduce up to 64 byte overhead on each allocation to store magic numbers, which will be verified when freeing the memory block. The actual overhead is dependent on the requested size compared to size class limits.
-
 To include __malloc.c__ in compilation and provide overrides of standard library malloc entry points define __ENABLE_OVERRIDE__ to 1. To enable automatic initialization of finalization of process and threads in order to preload the library into executables using standard library malloc, define __ENABLE_PRELOAD__ to 1.
 
-To enable the runtime configurable memory page and span sizes, define __ENABLE_CONFIGURABLE__ to 1. By default, memory page size is determined by system APIs and memory span size is set to 64KiB.
+To enable the runtime configurable memory page and span sizes, define __RPMALLOC_CONFIGURABLE__ to 1. By default, memory page size is determined by system APIs and memory span size is set to 64KiB.
+
+To enable support for first class heaps, define __RPMALLOC_FIRST_CLASS_HEAPS__ to 1. By default, the first class heap API is disabled.
 
 # Huge pages
 The allocator has support for huge/large pages on Windows, Linux and MacOS. To enable it, pass a non-zero value in the config value `enable_huge_pages` when initializing the allocator with `rpmalloc_initialize_config`. If the system does not support huge pages it will be automatically disabled. You can query the status by looking at `enable_huge_pages` in the config returned from a call to `rpmalloc_config` after initialization is done.
@@ -122,17 +130,15 @@ A span that is a subspan of a larger super span can be individually decommitted 
 
 If you use a custom memory map/unmap function you need to take this into account by looking at the `release` parameter given to the `memory_unmap` function. It is set to 0 for decommitting invididual pages and the total super span byte size for finally releasing the entire super span memory range.
 
-# Memory guards
-If you define the __ENABLE_GUARDS__ to 1, all memory allocations will be padded with extra guard areas before and after the memory block (while still honoring the requested alignment). These dead zones will be filled with a pattern and checked when the block is freed. If the patterns are not intact the callback set in initialization config is called, or if not set an assert is fired.
-
-Note that the end of the memory block in this case is defined by the total usable size of the block as returned by `rpmalloc_usable_size`, which can be larger than the size passed to allocation request due to size class buckets.
-
 # Memory fragmentation
 There is no memory fragmentation by the allocator in the sense that it will not leave unallocated and unusable "holes" in the memory pages by calls to allocate and free blocks of different sizes. This is due to the fact that the memory pages allocated for each size class is split up in perfectly aligned blocks which are not reused for a request of a different size. The block freed by a call to `rpfree` will always be immediately available for an allocation request within the same size class.
 
 However, there is memory fragmentation in the meaning that a request for x bytes followed by a request of y bytes where x and y are at least one size class different in size will return blocks that are at least one memory page apart in virtual address space. Only blocks of the same size will potentially be within the same memory page span.
 
 rpmalloc keeps an "active span" and free list for each size class. This leads to back-to-back allocations will most likely be served from within the same span of memory pages (unless the span runs out of free blocks). The rpmalloc implementation will also use any "holes" in memory pages in semi-filled spans before using a completely free span.
+
+# First class heaps
+rpmalloc provides a first class heap type with explicit heap control API. Heaps are maintained with calls to __rpmalloc_heap_acquire__ and __rpmalloc_heap_release__ and allocations/frees are done with __rpmalloc_heap_alloc__ and __rpmalloc_heap_free__. See the `rpmalloc.h` documentation for the full list of functions in the heap API. The main use case of explicit heap control is to scope allocations in a heap and release everything with a single call to __rpmalloc_heap_free_all__ without having to maintain ownership of memory blocks. Note that the heap API is not thread-safe, the caller must make sure that each heap is only used in a single thread at any given time.
 
 # Producer-consumer scenario
 Compared to the some other allocators, rpmalloc does not suffer as much from a producer-consumer thread scenario where one thread allocates memory blocks and another thread frees the blocks. In some allocators the free blocks need to traverse both the thread cache of the thread doing the free operations as well as the global cache before being reused in the allocating thread. In rpmalloc the freed blocks will be reused as soon as the allocating thread needs to get new spans from the thread cache. This enables faster release of completely freed memory pages as blocks in a memory page will not be aliased between different owning threads.
@@ -148,11 +154,17 @@ Since each thread cache maps spans of memory pages per size class, a thread that
 Threads that perform a lot of allocations and deallocations in a pattern that have a large difference in high and low water marks, and that difference is larger than the thread cache size, will put a lot of contention on the global cache. What will happen is the thread cache will overflow on each low water mark causing pages to be released to the global cache, then underflow on high water mark causing pages to be re-acquired from the global cache. This can be mitigated by changing the __MAX_SPAN_CACHE_DIVISOR__ define in the source code (at the cost of higher average memory overhead).
 
 # Caveats
-Cross-thread deallocations could leave dangling spans in the owning thread heap partially used list if the deallocation is the last used block in the span and the span is previously marked as partial (at least one block deallocated by the owning thread). However, an optimization for GC like use cases is that if all the blocks in the span are freed by other threads, the span can immediately be inserted in the owning thread span cache.
-
 VirtualAlloc has an internal granularity of 64KiB. However, mmap lacks this granularity control, and the implementation instead oversizes the memory mapping with configured span size to be able to always return a memory area with the required alignment. Since the extra memory pages are never touched this will not result in extra committed physical memory pages, but rather only increase virtual memory address space.
 
 All entry points assume the passed values are valid, for example passing an invalid pointer to free would most likely result in a segmentation fault. __The library does not try to guard against errors!__.
+
+To support global scope data doing dynamic allocation/deallocation such as C++ objects with custom constructors and destructors, the call to __rpmalloc_finalize__ will not completely terminate the allocator but rather empty all caches and put the allocator in finalization mode. Once this call has been made, the allocator is no longer thread safe and expects all remaining calls to originate from global data destruction on main thread. Any spans or heaps becoming free during this phase will be immediately unmapped to allow correct teardown of the process or dynamic library without any leaks.
+
+# Other languages
+
+[Johan Andersson](https://github.com/repi) at Embark has created a Rust wrapper available at [rpmalloc-rs](https://github.com/EmbarkStudios/rpmalloc-rs)
+
+[Stas Denisov](https://github.com/nxrighthere) has created a C# wrapper available at [Rpmalloc-CSharp](https://github.com/nxrighthere/Rpmalloc-CSharp)
 
 # License
 
@@ -188,7 +200,7 @@ not recognized in your country
 
 The MIT License (MIT)
 
-Copyright (c) 2017 Rampant Pixels AB
+Copyright (c) 2017 Mattias Jansson
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

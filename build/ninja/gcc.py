@@ -13,19 +13,19 @@ class GCCToolchain(toolchain.Toolchain):
     self.toolchain = ''
     self.includepaths = []
     self.libpaths = libpaths
-    self.ccompiler = 'gcc'
-    self.cxxcompiler = 'g++'
-    self.archiver = 'ar'
-    self.linker = 'gcc'
-    self.cxxlinker = 'g++'
+    self.ccompiler = os.environ.get('CC') or 'gcc'
+    self.cxxcompiler = os.environ.get('CXX') or 'g++'
+    self.archiver = os.environ.get('AR') or 'ar'
+    self.linker = os.environ.get('CC') or 'gcc'
+    self.cxxlinker = os.environ.get('CXX') or 'g++'
 
     #Command definitions
-    self.cccmd = '$toolchain$cc -MMD -MT $out -MF $out.d $includepaths $moreincludepaths $cflags $carchflags $cconfigflags $cmoreflags -c $in -o $out'
-    self.cxxcmd = '$toolchain$cxx -MMD -MT $out -MF $out.d $includepaths $moreincludepaths $cxxflags $carchflags $cconfigflags $cmoreflags -c $in -o $out'
+    self.cccmd = '$toolchain$cc -MMD -MT $out -MF $out.d $includepaths $moreincludepaths $cflags $carchflags $cconfigflags $cmoreflags $cenvflags -c $in -o $out'
+    self.cxxcmd = '$toolchain$cxx -MMD -MT $out -MF $out.d $includepaths $moreincludepaths $cxxflags $carchflags $cconfigflags $cmoreflags $cxxenvflags -c $in -o $out'
     self.ccdeps = 'gcc'
     self.ccdepfile = '$out.d'
-    self.arcmd = self.rmcmd('$out') + ' && $toolchain$ar crsD $ararchflags $arflags $out $in'
-    self.linkcmd = '$toolchain$link $libpaths $configlibpaths $linkflags $linkarchflags $linkconfigflags -o $out $in $libs $archlibs $oslibs'
+    self.arcmd = self.rmcmd('$out') + ' && $toolchain$ar crsD $ararchflags $arflags $arenvflags $out $in'
+    self.linkcmd = '$toolchain$link $libpaths $configlibpaths $linkflags $linkarchflags $linkconfigflags $linkenvflags -o $out $in $libs $archlibs $oslibs'
 
     #Base flags
     self.cflags = ['-D' + project.upper() + '_COMPILE=1',
@@ -49,7 +49,7 @@ class GCCToolchain(toolchain.Toolchain):
     self.parse_default_variables(variables)
     self.read_build_prefs()
 
-    if self.target.is_linux() or self.target.is_bsd() or self.target.is_raspberrypi():
+    if self.target.is_linux() or self.target.is_bsd() or self.target.is_raspberrypi() or self.target.is_sunos():
       self.cflags += ['-D_GNU_SOURCE=1']
       self.linkflags += ['-pthread']
     if self.target.is_linux() or self.target.is_raspberrypi():
@@ -118,12 +118,16 @@ class GCCToolchain(toolchain.Toolchain):
     writer.variable('carchflags', '')
     writer.variable('cconfigflags', '')
     writer.variable('cmoreflags', self.cmoreflags)
+    writer.variable('cenvflags', (os.environ.get('CFLAGS') or '').split())
+    writer.variable('cxxenvflags', (os.environ.get('CXXFLAGS') or '').split())
     writer.variable('arflags', self.arflags)
     writer.variable('ararchflags', '')
     writer.variable('arconfigflags', '')
+    writer.variable('arenvflags', (os.environ.get('ARFLAGS') or '').split())
     writer.variable('linkflags', self.linkflags)
     writer.variable('linkarchflags', '')
     writer.variable('linkconfigflags', '')
+    writer.variable('linkenvflags', (os.environ.get('LDFLAGS') or '').split())
     writer.variable('libs', '')
     writer.variable('libpaths', self.make_libpaths(self.libpaths))
     writer.variable('configlibpaths', '')
@@ -182,7 +186,7 @@ class GCCToolchain(toolchain.Toolchain):
     flags = []
     if targettype == 'sharedlib':
       flags += ['-DBUILD_DYNAMIC_LINK=1']
-      if self.target.is_linux() or self.target.is_bsd():
+      if self.target.is_linux() or self.target.is_bsd() or self.target.is_sunos():
         flags += ['-fPIC']
     flags += self.make_targetarchflags(arch, targettype)
     return flags
