@@ -2,6 +2,9 @@
 #if defined(_WIN32) && !defined(_CRT_SECURE_NO_WARNINGS)
 #  define _CRT_SECURE_NO_WARNINGS
 #endif
+#if defined(__clang__)
+#pragma clang diagnostic ignored "-Wnonportable-system-include-path"
+#endif
 
 #include <rpmalloc.h>
 #include <thread.h>

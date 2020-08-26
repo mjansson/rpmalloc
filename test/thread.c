@@ -6,6 +6,9 @@
 #else
 #  define ATTRIBUTE_NORETURN __attribute__((noreturn))
 #endif
+#if defined(__clang__)
+#pragma clang diagnostic ignored "-Wnonportable-system-include-path"
+#endif
 
 #ifdef _WIN32
 #  include <windows.h>

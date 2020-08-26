@@ -1026,7 +1026,7 @@ static span_t*
 _rpmalloc_span_map(heap_t* heap, size_t span_count) {
 	if (span_count <= heap->spans_reserved)
 		return _rpmalloc_span_map_from_reserve(heap, span_count);
-		span_t* span = 0;
+	span_t* span = 0;
 	if (_memory_page_size > _memory_span_size) {
 		// If huge pages, make sure only one thread maps more memory to avoid bloat
 		while (!atomic_cas32_acquire(&_memory_global_lock, 1, 0)) {

@@ -63,18 +63,18 @@ test_alloc(void) {
 	delete[] static_cast<int*>(p);
 
 	p = valloc(873);
-	if ((uintptr_t)p & (config->page_size - 1)) {
+	if (reinterpret_cast<uintptr_t>(p) & (config->page_size - 1)) {
 		fprintf(stderr, "FAIL: pvalloc did not align address to page size (%p)\n", p);
 		return -1;
 	}
 	free(p);
 
 	p = pvalloc(275);
-	if ((uintptr_t)p & (config->page_size - 1)) {
+	if (reinterpret_cast<uintptr_t>(p) & (config->page_size - 1)) {
 		fprintf(stderr, "FAIL: pvalloc did not align address to page size (%p)\n", p);
 		return -1;
 	}
-	if (rpmalloc_usable_size(p) < config->page_size) {
+	if (reinterpret_cast<uintptr_t>(p) < config->page_size) {
 		fprintf(stderr, "FAIL: pvalloc did not align size to page size (%llu)\n", rpmalloc_usable_size(p));
 		return -1;
 	}
@@ -164,6 +164,9 @@ main(int argc, char** argv) {
 #endif
 
 #ifdef _WIN32
+#if defined(__clang__)
+#pragma clang diagnostic ignored "-Wnonportable-system-include-path"
+#endif
 #include <windows.h>
 
 static void
