@@ -14,10 +14,8 @@
 #include <string.h>
 #include <math.h>
 
-#if defined(_WIN32)
 extern "C" void* RPMALLOC_CDECL pvalloc(size_t size);
 extern "C" void* RPMALLOC_CDECL valloc(size_t size);
-#endif
 
 static size_t _hardware_threads;
 
@@ -75,10 +73,10 @@ test_alloc(void) {
 		return -1;
 	}
 	if (reinterpret_cast<uintptr_t>(p) < config->page_size) {
-		fprintf(stderr, "FAIL: pvalloc did not align size to page size (%llu)\n", rpmalloc_usable_size(p));
+		fprintf(stderr, "FAIL: pvalloc did not align size to page size (%lu)\n", static_cast<uintptr_t>(rpmalloc_usable_size(p)));
 		return -1;
 	}
-	free(p);
+	rpfree(p);
 
 	printf("Allocation tests passed\n");
 	return 0;
@@ -89,6 +87,7 @@ test_free(void) {
 	free(rpmalloc(371));
 	free(new int);
 	free(new int[16]);
+	free(pvalloc(1275));
 	printf("Free tests passed\n");
 	return 0;	
 }
