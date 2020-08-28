@@ -1,3 +1,9 @@
+1.4.2
+
+Fixed an issue where calling _exit might hang the main thread cleanup in rpmalloc if another
+worker thread was terminated while holding exclusive access to the global cache.
+
+
 1.4.1
 
 Dual license as both released to public domain or under MIT license

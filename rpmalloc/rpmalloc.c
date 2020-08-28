@@ -149,11 +149,6 @@
 #if defined(_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
 #include <fibersapi.h>
 static DWORD fls_key;
-static void NTAPI
-_rpmalloc_thread_destructor(void* value) {
-	if (value)
-		rpmalloc_thread_finalize();
-}
 #endif
 
 #if PLATFORM_POSIX
@@ -738,6 +733,20 @@ extern void
 rpmalloc_set_main_thread(void) {
 	_rpmalloc_main_thread_id = get_thread_id();
 }
+
+#if defined(_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
+static void NTAPI
+_rpmalloc_thread_destructor(void* value) {
+#if ENABLE_OVERRIDE
+	// If this is called on main thread it means rpmalloc_finalize
+	// has not been called and shutdown is forced (through _exit) or unclean
+	if (get_thread_id() == _rpmalloc_main_thread_id)
+		return;
+#endif
+	if (value)
+		rpmalloc_thread_finalize();
+}
+#endif
 
 
 ////////////
