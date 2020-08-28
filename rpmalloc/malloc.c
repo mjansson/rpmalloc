@@ -296,7 +296,32 @@ DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
 	return TRUE;
 }
 
+//end BUILD_DYNAMIC_LINK
+#else
+
+extern void
+_global_rpmalloc_init(void) {
+	rpmalloc_set_main_thread();
+	rpmalloc_initialize();
+}
+
+#if defined(__clang__) || defined(__GNUC__)
+
+static void __attribute__((constructor))
+initializer(void) {
+	_global_rpmalloc_init();
+}
+
+#elif defined(_MSC_VER)
+
+#pragma section(".CRT$XIB",read)
+__declspec(allocate(".CRT$XIB")) void (*_rpmalloc_module_init)(void) = _global_rpmalloc_init;
+#pragma comment(linker, "/include:_rpmalloc_module_init")
+
 #endif
+
+//end !BUILD_DYNAMIC_LINK
+#endif 
 
 #else
 
@@ -305,6 +330,9 @@ DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
 #include <stdint.h>
 #include <unistd.h>
 
+extern void
+rpmalloc_set_main_thread(void);
+
 static pthread_key_t destructor_key;
 
 static void
@@ -312,6 +340,7 @@ thread_destructor(void*);
 
 static void __attribute__((constructor))
 initializer(void) {
+	rpmalloc_set_main_thread();
 	rpmalloc_initialize();
 	pthread_key_create(&destructor_key, thread_destructor);
 }
