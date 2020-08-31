@@ -149,11 +149,6 @@
 #if defined(_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
 #include <fibersapi.h>
 static DWORD fls_key;
-static void NTAPI
-_rpmalloc_thread_destructor(void* value) {
-	if (value)
-		rpmalloc_thread_finalize();
-}
 #endif
 
 #if PLATFORM_POSIX
@@ -570,6 +565,8 @@ struct global_cache_t {
 
 //! Initialized flag
 static int _rpmalloc_initialized;
+//! Main thread ID
+static uintptr_t _rpmalloc_main_thread_id;
 //! Configuration
 static rpmalloc_config_t _memory_config;
 //! Memory page size
@@ -730,6 +727,30 @@ set_thread_heap(heap_t* heap) {
 	if (heap)
 		heap->owner_thread = get_thread_id();
 }
+
+//! Set main thread ID
+extern void
+rpmalloc_set_main_thread(void);
+
+void
+rpmalloc_set_main_thread(void) {
+	_rpmalloc_main_thread_id = get_thread_id();
+}
+
+#if defined(_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
+static void NTAPI
+_rpmalloc_thread_destructor(void* value) {
+#if ENABLE_OVERRIDE
+	// If this is called on main thread it means rpmalloc_finalize
+	// has not been called and shutdown is forced (through _exit) or unclean
+	if (get_thread_id() == _rpmalloc_main_thread_id)
+		return;
+#endif
+	if (value)
+		rpmalloc_thread_finalize();
+}
+#endif
+
 
 ////////////
 ///
@@ -1771,8 +1792,12 @@ _rpmalloc_heap_release(void* heapptr, int first_class) {
 	assert(atomic_load32(&_memory_active_heaps) >= 0);
 #endif
 
-	while (!atomic_cas32_acquire(&_memory_global_lock, 1, 0))
-		/* Spin */;
+	// If we are forcibly terminating with _exit the state of the
+	// lock atomic is unknown and it's best to just go ahead and exit
+	if (get_thread_id() != _rpmalloc_main_thread_id) {
+		while (!atomic_cas32_acquire(&_memory_global_lock, 1, 0))
+			/* Spin */;
+	}
 	_rpmalloc_heap_orphan(heap, first_class);
 	atomic_store32_release(&_memory_global_lock, 0);
 }
