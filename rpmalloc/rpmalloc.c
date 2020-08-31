@@ -730,6 +730,9 @@ set_thread_heap(heap_t* heap) {
 
 //! Set main thread ID
 extern void
+rpmalloc_set_main_thread(void);
+
+void
 rpmalloc_set_main_thread(void) {
 	_rpmalloc_main_thread_id = get_thread_id();
 }
