@@ -86,10 +86,8 @@ thread_sleep(int milliseconds) {
 	ts.tv_sec  = milliseconds / 1000;
 	ts.tv_nsec = (long)(milliseconds % 1000) * 1000000L;
 
-	while (nanosleep(&ts, &remaining) != 0) {
-		if (errno == EINTR)
-			ts = remaining;
-	}
+	while (nanosleep(&ts, &remaining) != 0 && errno == EINTR)
+		ts = remaining;
 #endif
 }
 
