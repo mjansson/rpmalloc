@@ -1030,8 +1030,10 @@ _rpmalloc_span_map_aligned_count(heap_t* heap, size_t span_count) {
 			size_t remain_count = reserved_count - DEFAULT_SPAN_MAP_COUNT;
 			reserved_count = DEFAULT_SPAN_MAP_COUNT;
 			span_t* remain_span = (span_t*)pointer_offset(reserved_spans, reserved_count * _memory_span_size);
-			if (_memory_global_reserve)
+			if (_memory_global_reserve) {
+				_rpmalloc_span_mark_as_subspan_unless_master(_memory_global_reserve_master, _memory_global_reserve, _memory_global_reserve_count);
 				_rpmalloc_span_unmap(_memory_global_reserve);
+			}
 			_rpmalloc_global_set_reserved_spans(span, remain_span, remain_count);
 		}
 		_rpmalloc_heap_set_reserved_spans(heap, span, reserved_spans, reserved_count);
