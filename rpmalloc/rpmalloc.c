@@ -3095,7 +3095,7 @@ rpmalloc_heap_alloc(rpmalloc_heap_t* heap, size_t size) {
 #if ENABLE_VALIDATE_ARGS
 	if (size >= MAX_ALLOC_SIZE) {
 		errno = EINVAL;
-		return ptr;
+		return 0;
 	}
 #endif
 	return _rpmalloc_allocate(heap, size);
@@ -3106,7 +3106,7 @@ rpmalloc_heap_aligned_alloc(rpmalloc_heap_t* heap, size_t alignment, size_t size
 #if ENABLE_VALIDATE_ARGS
 	if (size >= MAX_ALLOC_SIZE) {
 		errno = EINVAL;
-		return ptr;
+		return 0;
 	}
 #endif
 	return _rpmalloc_aligned_allocate(heap, alignment, size);
