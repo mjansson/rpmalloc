@@ -810,6 +810,9 @@ _rpmalloc_mmap_os(size_t size, size_t* offset) {
 	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, flags, fd, 0);
 #  elif defined(MAP_HUGETLB)
 	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, (_memory_huge_pages ? MAP_HUGETLB : 0) | flags, -1, 0);
+#  elif defined(MAP_ALIGNED)
+	const size_t align = (sizeof(size_t) * 8) - (size_t)(__builtin_clzl(size - 1));
+	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, (_memory_huge_pages ? MAP_ALIGNED(align) : 0) | flags, -1, 0);
 #  elif defined(MAP_ALIGN)
 	caddr_t base = (_memory_huge_pages ? (caddr_t)(4 << 20) : 0);
 	void* ptr = mmap(base, size + padding, PROT_READ | PROT_WRITE, (_memory_huge_pages ? MAP_ALIGN : 0) | flags, -1, 0);
@@ -2537,7 +2540,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 				_memory_page_size = 2 * 1024 * 1024;
 				_memory_map_granularity = _memory_page_size;
 			}
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) || defined(__NetBSD__)
 			_memory_huge_pages = 1;
 			_memory_page_size = 2 * 1024 * 1024;
 			_memory_map_granularity = _memory_page_size;
