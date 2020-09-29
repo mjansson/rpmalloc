@@ -1632,6 +1632,7 @@ _rpmalloc_heap_extract_new_span(heap_t* heap, size_t span_count, uint32_t class_
 
 static void
 _rpmalloc_heap_initialize(heap_t* heap) {
+	memset(heap, 0, sizeof(heap_t));
 	//Get a new heap ID
 	heap->id = 1 + atomic_incr32(&_memory_heap_id);
 
