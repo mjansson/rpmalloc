@@ -391,7 +391,7 @@ class ClangToolchain(toolchain.Toolchain):
       if targettype == 'sharedlib':
         flags += ['-shared', '-fPIC']
     if config != 'debug':
-      if targettype == 'bin' or targettype == 'sharedlib':
+      if (targettype == 'bin' or targettype == 'sharedlib') and self.use_lto():
         flags += ['-flto']
     return flags
 
