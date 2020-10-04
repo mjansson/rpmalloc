@@ -49,6 +49,9 @@ class Generator(object):
     parser.add_argument('--updatebuild', action='store_true',
                         help = 'Update submodule build scripts',
                         default = '')
+    parser.add_argument('--lto', action='store_true',
+                        help = 'Build with Link Time Optimization',
+                        default = False)
     options = parser.parse_args()
 
     self.project = project
@@ -91,6 +94,8 @@ class Generator(object):
       variables['monolithic'] = True
     if options.coverage:
       variables['coverage'] = True
+    if options.lto:
+      variables['lto'] = True
     if self.subninja != '':
       variables['internal_deps'] = True
 

@@ -54,6 +54,7 @@ class Toolchain(object):
     #Set default values
     self.build_monolithic = False
     self.build_coverage = False
+    self.build_lto = False
     self.support_lua = False
     self.internal_deps = False
     self.python = 'python'
@@ -208,6 +209,8 @@ class Toolchain(object):
         self.build_monolithic = get_boolean_flag(val)
       elif key == 'coverage':
         self.build_coverage = get_boolean_flag(val)
+      elif key == 'lto':
+        self.build_lto = get_boolean_flag(val)
       elif key == 'support_lua':
         self.support_lua = get_boolean_flag(val)
       elif key == 'internal_deps':
@@ -234,6 +237,8 @@ class Toolchain(object):
       self.build_monolithic = get_boolean_flag(prefs['monolithic'])
     if 'coverage' in prefs:
       self.build_coverage = get_boolean_flag( prefs['coverage'] )
+    if 'lto' in prefs:
+      self.build_lto = get_boolean_flag( prefs['lto'] )
     if 'support_lua' in prefs:
       self.support_lua = get_boolean_flag(prefs['support_lua'])
     if 'python' in prefs:
@@ -257,6 +262,9 @@ class Toolchain(object):
 
   def use_coverage(self):
     return self.build_coverage
+
+  def use_lto(self):
+    return self.build_lto
 
   def write_variables(self, writer):
     writer.variable('buildpath', self.buildpath)
