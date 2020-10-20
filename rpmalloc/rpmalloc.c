@@ -1454,7 +1454,7 @@ _rpmalloc_heap_global_finalize(heap_t* heap) {
 		}
 	}
 	//Heap is now completely free, unmap and remove from heap list
-	size_t list_idx = heap->id % HEAP_ARRAY_SIZE;
+	size_t list_idx = (size_t)heap->id % HEAP_ARRAY_SIZE;
 	heap_t* list_heap = _memory_heaps[list_idx];
 	if (list_heap == heap) {
 		_memory_heaps[list_idx] = heap->next_heap;
@@ -1637,7 +1637,7 @@ _rpmalloc_heap_initialize(heap_t* heap) {
 	heap->id = 1 + atomic_incr32(&_memory_heap_id);
 
 	//Link in heap in heap ID map
-	size_t list_idx = heap->id % HEAP_ARRAY_SIZE;
+	size_t list_idx = (size_t)heap->id % HEAP_ARRAY_SIZE;
 	heap->next_heap = _memory_heaps[list_idx];
 	_memory_heaps[list_idx] = heap;
 }
