@@ -397,7 +397,8 @@ pthread_create(pthread_t* thread,
                const pthread_attr_t* attr,
                void* (*start_routine)(void*),
                void* arg) {
-#if defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__APPLE__) || defined(__HAIKU__)
+#if defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFLy__) || \
+    defined(__APPLE__) || defined(__HAIKU__)
 	char fname[] = "pthread_create";
 #else
 	char fname[] = "_pthread_create";

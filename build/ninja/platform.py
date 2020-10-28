@@ -20,7 +20,7 @@ class Platform(object):
       self.platform = 'macos'
     elif self.platform.startswith('win'):
       self.platform = 'windows'
-    elif 'bsd' in self.platform:
+    elif 'bsd' in self.platform or self.platform.startswith('dragonfly'):
       self.platform = 'bsd'
     elif self.platform.startswith('ios'):
       self.platform = 'ios'
