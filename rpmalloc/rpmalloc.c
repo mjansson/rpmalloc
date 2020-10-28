@@ -820,7 +820,8 @@ _rpmalloc_mmap_os(size_t size, size_t* offset) {
 	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, flags, -1, 0);
 #  endif
 	if ((ptr == MAP_FAILED) || !ptr) {
-		assert("Failed to map virtual memory block" == 0);
+		if (errno != ENOMEM)
+			assert("Failed to map virtual memory block" == 0);
 		return 0;
 	}
 #endif
