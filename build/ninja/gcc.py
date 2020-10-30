@@ -56,6 +56,9 @@ class GCCToolchain(toolchain.Toolchain):
       self.oslibs += ['dl']
     if self.target.is_bsd():
       self.oslibs += ['execinfo']
+    if self.target.is_haiku():
+      self.cflags += ['-D_GNU_SOURCE=1']
+      self.linkflags += ['-lpthread']
 
     self.includepaths = self.prefix_includepaths((includepaths or []) + ['.'])
 

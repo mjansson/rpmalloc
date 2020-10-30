@@ -133,7 +133,7 @@ class Toolchain(object):
   def initialize_default_archs(self):
     if self.target.is_windows():
       self.archs = ['x86-64']
-    elif self.target.is_linux() or self.target.is_bsd() or self.target.is_sunos():
+    elif self.target.is_linux() or self.target.is_bsd() or self.target.is_sunos() or self.target.is_haiku():
       localarch = subprocess.check_output(['uname', '-m']).decode().strip()
       if localarch == 'x86_64' or localarch == 'amd64':
         self.archs = ['x86-64']
