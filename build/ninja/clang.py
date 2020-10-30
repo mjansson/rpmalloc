@@ -78,6 +78,10 @@ class ClangToolchain(toolchain.Toolchain):
       self.oslibs += ['dl']
     if self.target.is_bsd():
       self.oslibs += ['execinfo']
+    if self.target.is_haiku():
+      self.cflags += ['-D_GNU_SOURCE=1']
+      self.linkflags += ['-lpthread']
+      self.oslibs += ['m']
     if not self.target.is_windows():
       self.linkflags += ['-fomit-frame-pointer']
 

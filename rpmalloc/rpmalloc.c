@@ -137,7 +137,6 @@
 #    include <pthread.h>
 #  endif
 #  if defined(__HAIKU__)
-#    include <OS.h>
 #    include <pthread.h>
 #  endif
 #endif
@@ -659,7 +658,11 @@ static pthread_key_t _memory_thread_heap;
 #    define _Thread_local __declspec(thread)
 #    define TLS_MODEL
 #  else
-#    define TLS_MODEL __attribute__((tls_model("initial-exec")))
+#    ifndef __HAIKU__
+#      define TLS_MODEL __attribute__((tls_model("initial-exec")))
+#    else
+#      define TLS_MODEL
+#    endif
 #    if !defined(__clang__) && defined(__GNUC__)
 #      define _Thread_local __thread
 #    endif
