@@ -866,6 +866,9 @@ _rpmalloc_unmap_os(void* address, size_t size, size_t offset, size_t release) {
 			assert("Failed to unmap virtual memory block" == 0);
 		}
 	} else {
+#if defined(MADV_FREE_REUSABLE)
+		if (madvise(address, size, MADV_FREE_REUSABLE))
+#endif
 #if defined(POSIX_MADV_FREE)
 		if (posix_madvise(address, size, POSIX_MADV_FREE))
 #endif
