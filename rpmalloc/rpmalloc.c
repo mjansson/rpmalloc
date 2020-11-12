@@ -868,11 +868,14 @@ _rpmalloc_unmap_os(void* address, size_t size, size_t offset, size_t release) {
 	} else {
 #if defined(MADV_FREE_REUSABLE)
 		if (madvise(address, size, MADV_FREE_REUSABLE))
+#elif defined(MADV_FREE)
+		if (madvise(address, size, MADV_FREE))
 #endif
-#if defined(POSIX_MADV_FREE)
-		if (posix_madvise(address, size, POSIX_MADV_FREE))
-#endif
+#if defined(MADV_DONTNEED)
+		if (madvise(address, size, MADV_DONTNEED)) {
+#else
 		if (posix_madvise(address, size, POSIX_MADV_DONTNEED)) {
+#endif
 			assert("Failed to madvise virtual memory block as free" == 0);
 		}
 	}
