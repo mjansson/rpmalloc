@@ -157,6 +157,9 @@ static DWORD fls_key;
 #    include <sys/sysctl.h>
 #    define MAP_HUGETLB MAP_ALIGNED_SUPER
 #  endif
+#  ifdef __sun
+   extern int madvise(caddr_t, size_t, int);
+#  endif
 #  ifndef MAP_UNINITIALIZED
 #    define MAP_UNINITIALIZED 0
 #  endif
