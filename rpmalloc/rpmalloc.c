@@ -710,7 +710,7 @@ get_thread_id(void) {
 #  elif defined(__x86_64__)
 	__asm__("movq %%fs:0, %0" : "=r" (tid) : : );
 #  elif defined(__arm__)
-	__asm__ volatile ("mrc p15, 0, %0, c13, c0, 3" : "=r" (tid));
+	__asm__ volatile ("mrc p15, 0, %0, c13, c0, 3\nbic %0, %0, #3" : "=r" (tid));
 #  elif defined(__aarch64__)
 	__asm__ volatile ("mrs %0, tpidr_el0" : "=r" (tid));
 #  else
