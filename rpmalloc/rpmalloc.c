@@ -128,6 +128,7 @@
 #  include <unistd.h>
 #  include <stdio.h>
 #  include <stdlib.h>
+#  include <time.h>
 #  if defined(__APPLE__)
 #    include <TargetConditionals.h>
 #    if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
@@ -743,6 +744,21 @@ rpmalloc_set_main_thread(void) {
 	_rpmalloc_main_thread_id = get_thread_id();
 }
 
+static void
+_rpmalloc_spin(void) {
+#if defined(__x86_64__) || defined(__i386__)
+	__asm__ volatile("pause" ::: "memory");
+#elif defined(__aarch64__) || (defined(__arm__) && __ARM_ARCH__ >= 7)
+	__asm__ volatile("yield" ::: "memory");
+#elif defined(__powerpc__) || defined(__powerpc64__)
+        // No idea if ever been compiled in such archs but ... as precaution
+	__asm__ volatile("or 27,27,27");
+#else
+	struct timespec ts = {0};
+	nanosleep(&ts, NULL);
+#endif
+}
+
 #if defined(_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
 static void NTAPI
 _rpmalloc_thread_destructor(void* value) {
@@ -1068,9 +1084,8 @@ _rpmalloc_span_map(heap_t* heap, size_t span_count) {
 	span_t* span = 0;
 	if (_memory_page_size > _memory_span_size) {
 		// If huge pages, make sure only one thread maps more memory to avoid bloat
-		while (!atomic_cas32_acquire(&_memory_global_lock, 1, 0)) {
-			/* Spin */
-		}
+		while (!atomic_cas32_acquire(&_memory_global_lock, 1, 0))
+			_rpmalloc_spin();
 		if (_memory_global_reserve_count >= span_count) {
 			size_t reserve_count = (!heap->spans_reserved ? DEFAULT_SPAN_MAP_COUNT : span_count);
 			if (_memory_global_reserve_count < reserve_count)
@@ -1284,7 +1299,7 @@ _rpmalloc_span_finalize(heap_t* heap, size_t iclass, span_t* span, span_t** list
 static void
 _rpmalloc_global_cache_finalize(global_cache_t* cache) {
 	while (!atomic_cas32_acquire(&cache->lock, 1, 0))
-		/* Spin */;
+		_rpmalloc_spin();
 
 	for (size_t ispan = 0; ispan < cache->count; ++ispan)
 		_rpmalloc_span_unmap(cache->span[ispan]);
@@ -1309,7 +1324,7 @@ _rpmalloc_global_cache_insert_spans(span_t** span, size_t span_count, size_t cou
 
 	size_t insert_count = count;
 	while (!atomic_cas32_acquire(&cache->lock, 1, 0))
-		/* Spin */;
+		_rpmalloc_spin();
 
 	if ((cache->count + insert_count) > cache_limit)
 		insert_count = cache_limit - cache->count;
@@ -1340,7 +1355,7 @@ _rpmalloc_global_cache_extract_spans(span_t** span, size_t span_count, size_t co
 
 	size_t extract_count = count;
 	while (!atomic_cas32_acquire(&cache->lock, 1, 0))
-		/* Spin */;
+		_rpmalloc_spin();
 
 	if (extract_count > cache->count)
 		extract_count = cache->count;
@@ -1757,7 +1772,7 @@ static heap_t*
 _rpmalloc_heap_allocate(int first_class) {
 	heap_t* heap = 0;
 	while (!atomic_cas32_acquire(&_memory_global_lock, 1, 0))
-		/* Spin */;
+		_rpmalloc_spin();
 	if (first_class == 0)
 		heap = _rpmalloc_heap_extract_orphan(&_memory_orphan_heaps);
 #if RPMALLOC_FIRST_CLASS_HEAPS
@@ -1815,7 +1830,7 @@ _rpmalloc_heap_release(void* heapptr, int first_class) {
 	// lock atomic is unknown and it's best to just go ahead and exit
 	if (get_thread_id() != _rpmalloc_main_thread_id) {
 		while (!atomic_cas32_acquire(&_memory_global_lock, 1, 0))
-			/* Spin */;
+			_rpmalloc_spin();
 	}
 	_rpmalloc_heap_orphan(heap, first_class);
 	atomic_store32_release(&_memory_global_lock, 0);
