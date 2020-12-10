@@ -746,7 +746,9 @@ rpmalloc_set_main_thread(void) {
 
 static void
 _rpmalloc_spin(void) {
-#if defined(__x86_64__) || defined(__i386__)
+#if defined(_MSC_VER)
+	_mm_pause();
+#elif defined(__x86_64__) || defined(__i386__)
 	__asm__ volatile("pause" ::: "memory");
 #elif defined(__aarch64__) || (defined(__arm__) && __ARM_ARCH__ >= 7)
 	__asm__ volatile("yield" ::: "memory");
@@ -755,7 +757,7 @@ _rpmalloc_spin(void) {
 	__asm__ volatile("or 27,27,27");
 #else
 	struct timespec ts = {0};
-	nanosleep(&ts, NULL);
+	nanosleep(&ts, 0);
 #endif
 }
 
@@ -1059,6 +1061,9 @@ _rpmalloc_span_map_aligned_count(heap_t* heap, size_t span_count) {
 			_rpmalloc_heap_cache_insert(heap, heap->span_reserve);
 		}
 		if (reserved_count > DEFAULT_SPAN_MAP_COUNT) {
+			// If huge pages, make sure only one thread maps more memory to avoid bloat
+			while (!atomic_cas32_acquire(&_memory_global_lock, 1, 0))
+				_rpmalloc_spin();
 			size_t remain_count = reserved_count - DEFAULT_SPAN_MAP_COUNT;
 			reserved_count = DEFAULT_SPAN_MAP_COUNT;
 			span_t* remain_span = (span_t*)pointer_offset(reserved_spans, reserved_count * _memory_span_size);
@@ -1067,14 +1072,12 @@ _rpmalloc_span_map_aligned_count(heap_t* heap, size_t span_count) {
 				_rpmalloc_span_unmap(_memory_global_reserve);
 			}
 			_rpmalloc_global_set_reserved_spans(span, remain_span, remain_count);
+			atomic_store32_release(&_memory_global_lock, 0);
 		}
 		_rpmalloc_heap_set_reserved_spans(heap, span, reserved_spans, reserved_count);
 	}
 	return span;
 }
-
-static span_t*
-_rpmalloc_global_get_reserved_spans(size_t span_count);
 
 //! Map in memory pages for the given number of spans (or use previously reserved pages)
 static span_t*
