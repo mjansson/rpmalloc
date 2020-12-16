@@ -755,6 +755,8 @@ _rpmalloc_spin(void) {
 #elif defined(__powerpc__) || defined(__powerpc64__)
         // No idea if ever been compiled in such archs but ... as precaution
 	__asm__ volatile("or 27,27,27");
+#elif defined(__sparc__)
+	__asm__ volatile("rd %ccr, %g0 \n\trd %ccr, %g0 \n\trd %ccr, %g0");
 #else
 	struct timespec ts = {0};
 	nanosleep(&ts, 0);
