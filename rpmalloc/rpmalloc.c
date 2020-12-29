@@ -706,15 +706,17 @@ get_thread_id(void) {
 	uintptr_t tid;
 #  if defined(__i386__)
 	__asm__("movl %%gs:0, %0" : "=r" (tid) : : );
-#  elif defined(__MACH__) && !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
-	__asm__("movq %%gs:0, %0" : "=r" (tid) : : );
 #  elif defined(__x86_64__)
+#    if defined(__MACH__) && !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+	__asm__("movq %%gs:0, %0" : "=r" (tid) : : );
+#    else
 	__asm__("movq %%fs:0, %0" : "=r" (tid) : : );
+#    endif
 #  elif defined(__arm__)
 	__asm__ volatile ("mrc p15, 0, %0, c13, c0, 3" : "=r" (tid));
 #  elif defined(__aarch64__)
 #    if defined(__MACH__)
-	// tpidr_el0 likely unused, always return 0 on iOs
+	// tpidr_el0 likely unused, always return 0 on iOS
 	__asm__ volatile ("mrs %0, tpidrro_el0" : "=r" (tid));
 #    else
 	__asm__ volatile ("mrs %0, tpidr_el0" : "=r" (tid));
