@@ -713,7 +713,12 @@ get_thread_id(void) {
 #  elif defined(__arm__)
 	__asm__ volatile ("mrc p15, 0, %0, c13, c0, 3" : "=r" (tid));
 #  elif defined(__aarch64__)
+#    if defined(__MACH__)
+	// tpidr_el0 likely unused, always return 0 on iOs
+	__asm__ volatile ("mrs %0, tpidrro_el0" : "=r" (tid));
+#    else
 	__asm__ volatile ("mrs %0, tpidr_el0" : "=r" (tid));
+#    endif
 #  else
 	tid = (uintptr_t)((void*)get_thread_heap_raw());
 #  endif
