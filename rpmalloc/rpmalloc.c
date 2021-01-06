@@ -707,7 +707,7 @@ get_thread_id(void) {
 #  if defined(__i386__)
 	__asm__("movl %%gs:0, %0" : "=r" (tid) : : );
 #  elif defined(__x86_64__)
-#    if defined(__MACH__) && !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+#    if defined(__MACH__)
 	__asm__("movq %%gs:0, %0" : "=r" (tid) : : );
 #    else
 	__asm__("movq %%fs:0, %0" : "=r" (tid) : : );
