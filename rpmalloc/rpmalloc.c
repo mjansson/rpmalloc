@@ -2287,9 +2287,8 @@ _rpmalloc_deallocate_large(span_t* span) {
 	size_t idx = span->span_count - 1;
 	atomic_decr32(&span->heap->span_use[idx].current);
 #endif
-	heap_t* heap = get_thread_heap();
+	heap_t* heap = span->heap;
 	assert(heap);
-	span->heap = heap;
 	if ((span->span_count > 1) && !heap->finalize && !heap->spans_reserved) {
 		heap->span_reserve = span;
 		heap->spans_reserved = span->span_count;
