@@ -897,7 +897,9 @@ _rpmalloc_unmap_os(void* address, size_t size, size_t offset, size_t release) {
 		}
 	} else {
 #if defined(MADV_FREE_REUSABLE)
-		if (madvise(address, size, MADV_FREE_REUSABLE))
+		int ret;
+		while ((ret = madvise(address, size, MADV_FREE_REUSABLE)) == -1 && errno == EAGAIN);
+		if (ret == -1 && errno != 0)
 #elif defined(MADV_FREE)
 		if (madvise(address, size, MADV_FREE))
 #endif
