@@ -200,7 +200,7 @@ rpmalloc_thread_initialize(void);
 
 //! Finalize allocator for calling thread
 RPMALLOC_EXPORT void
-rpmalloc_thread_finalize(void);
+rpmalloc_thread_finalize(int release_caches);
 
 //! Perform deferred deallocations pending for the calling thread heap
 RPMALLOC_EXPORT void

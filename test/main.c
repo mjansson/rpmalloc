@@ -454,7 +454,7 @@ allocator_thread(void* argp) {
 	thread_sleep(1);
 
 	if (arg.init_fini_each_loop)
-		rpmalloc_thread_finalize();
+		rpmalloc_thread_finalize(1);
 
 	for (iloop = 0; iloop < arg.loops; ++iloop) {
 		if (arg.init_fini_each_loop)
@@ -504,7 +504,7 @@ allocator_thread(void* argp) {
 		}
 
 		if (arg.init_fini_each_loop)
-			rpmalloc_thread_finalize();
+			rpmalloc_thread_finalize(1);
 	}
 
 	if (arg.init_fini_each_loop)
@@ -513,7 +513,7 @@ allocator_thread(void* argp) {
 	rpfree(data);
 	rpfree(addr);
 
-	rpmalloc_thread_finalize();
+	rpmalloc_thread_finalize(1);
 
 end:
 	thread_exit((uintptr_t)ret);
@@ -676,7 +676,7 @@ crossallocator_thread(void* argp) {
 	}
 
 end:
-	rpmalloc_thread_finalize();
+	rpmalloc_thread_finalize(1);
 
 	thread_exit((uintptr_t)ret);
 }
@@ -777,12 +777,12 @@ initfini_thread(void* argp) {
 			rpfree(addr[ipass]);
 		}
 
-		rpmalloc_thread_finalize();
+		rpmalloc_thread_finalize(1);
 		thread_yield();
 	}
 
 end:
-	rpmalloc_thread_finalize();
+	rpmalloc_thread_finalize(1);
 	thread_exit((uintptr_t)ret);
 }
 

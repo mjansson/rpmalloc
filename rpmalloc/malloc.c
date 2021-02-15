@@ -292,7 +292,7 @@ DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
 	else if (reason == DLL_THREAD_ATTACH)
 		rpmalloc_thread_initialize();
 	else if (reason == DLL_THREAD_DETACH)
-		rpmalloc_thread_finalize();
+		rpmalloc_thread_finalize(1);
 	return TRUE;
 }
 
@@ -369,7 +369,7 @@ thread_starter(void* argptr) {
 static void
 thread_destructor(void* value) {
 	(void)sizeof(value);
-	rpmalloc_thread_finalize();
+	rpmalloc_thread_finalize(1);
 }
 
 #ifdef __APPLE__
