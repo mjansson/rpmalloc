@@ -369,7 +369,7 @@ thread_starter(void* argptr) {
 static void
 thread_destructor(void* value) {
 	(void)sizeof(value);
-	rpmalloc_thread_finalize();
+	rpmalloc_thread_finalize(1);
 }
 
 #ifdef __APPLE__
