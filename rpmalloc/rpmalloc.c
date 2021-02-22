@@ -1947,6 +1947,11 @@ _rpmalloc_heap_release_raw(void* heapptr, int release_cache) {
 }
 
 static void
+_rpmalloc_heap_release_raw_fc(void* heapptr) {
+	_rpmalloc_heap_release_raw(heapptr, 1);
+}
+
+static void
 _rpmalloc_heap_finalize(heap_t* heap) {
 	if (heap->spans_reserved) {
 		span_t* span = _rpmalloc_span_map(heap, heap->spans_reserved);
@@ -2779,7 +2784,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	_memory_span_release_count_large = (_memory_span_release_count > 8 ? (_memory_span_release_count / 4) : 2);
 
 #if (defined(__APPLE__) || defined(__HAIKU__)) && ENABLE_PRELOAD
-	if (pthread_key_create(&_memory_thread_heap, _rpmalloc_heap_release_raw))
+	if (pthread_key_create(&_memory_thread_heap, _rpmalloc_heap_release_raw_fc))
 		return -1;
 #endif
 #if defined(_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
