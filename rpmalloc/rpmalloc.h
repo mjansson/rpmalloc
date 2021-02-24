@@ -13,73 +13,33 @@
 
 #include <stddef.h>
 
+#include <rpmalloc_config.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#if defined(__clang__) || defined(__GNUC__)
-# define RPMALLOC_EXPORT __attribute__((visibility("default")))
-# define RPMALLOC_ALLOCATOR 
-# if (defined(__clang_major__) && (__clang_major__ < 4)) || (defined(__GNUC__) && defined(ENABLE_PRELOAD) && ENABLE_PRELOAD)
-# define RPMALLOC_ATTRIB_MALLOC
-# define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
-# define RPMALLOC_ATTRIB_ALLOC_SIZE2(count, size)
-# else
-# define RPMALLOC_ATTRIB_MALLOC __attribute__((__malloc__))
-# define RPMALLOC_ATTRIB_ALLOC_SIZE(size) __attribute__((alloc_size(size)))
-# define RPMALLOC_ATTRIB_ALLOC_SIZE2(count, size)  __attribute__((alloc_size(count, size)))
-# endif
-# define RPMALLOC_CDECL
-#elif defined(_MSC_VER)
-# define RPMALLOC_EXPORT
-# define RPMALLOC_ALLOCATOR __declspec(allocator) __declspec(restrict)
-# define RPMALLOC_ATTRIB_MALLOC
-# define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
-# define RPMALLOC_ATTRIB_ALLOC_SIZE2(count,size)
-# define RPMALLOC_CDECL __cdecl
-#else
-# define RPMALLOC_EXPORT
-# define RPMALLOC_ALLOCATOR
-# define RPMALLOC_ATTRIB_MALLOC
-# define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
-# define RPMALLOC_ATTRIB_ALLOC_SIZE2(count,size)
-# define RPMALLOC_CDECL
-#endif
-
-//! Define RPMALLOC_CONFIGURABLE to enable configuring sizes. Will introduce
-//  a very small overhead due to some size calculations not being compile time constants
-#ifndef RPMALLOC_CONFIGURABLE
-#define RPMALLOC_CONFIGURABLE 0
-#endif
-
-//! Define RPMALLOC_FIRST_CLASS_HEAPS to enable heap based API (rpmalloc_heap_* functions).
-//  Will introduce a very small overhead to track fully allocated spans in heaps
-#ifndef RPMALLOC_FIRST_CLASS_HEAPS
-#define RPMALLOC_FIRST_CLASS_HEAPS 0
-#endif
-
-//! Flag to rpaligned_realloc to not preserve content in reallocation
-#define RPMALLOC_NO_PRESERVE    1
-//! Flag to rpaligned_realloc to fail and return null pointer if grow cannot be done in-place,
-//  in which case the original pointer is still valid (just like a call to realloc which failes to allocate
-//  a new block).
-#define RPMALLOC_GROW_OR_FAIL   2
-
 typedef struct rpmalloc_global_statistics_t {
-	//! Current amount of virtual memory mapped, all of which might not have been committed (only if ENABLE_STATISTICS=1)
+#if RPMALLOC_ENABLE_STATISTICS
+	//! Current amount of virtual memory mapped, all of which might not have been committed
 	size_t mapped;
-	//! Peak amount of virtual memory mapped, all of which might not have been committed (only if ENABLE_STATISTICS=1)
+	//! Peak amount of virtual memory mapped, all of which might not have been committed
 	size_t mapped_peak;
+#endif
+#if RPMALLOC_ENABLE_GLOBAL_CACHE
 	//! Current amount of memory in global caches for small and medium sizes (<32KiB)
 	size_t cached;
-	//! Current amount of memory allocated in huge allocations, i.e larger than LARGE_SIZE_LIMIT which is 2MiB by default (only if ENABLE_STATISTICS=1)
+#endif
+#if RPMALLOC_ENABLE_STATISTICS
+	//! Current amount of memory allocated in huge allocations, i.e larger than LARGE_SIZE_LIMIT which is 2MiB by default
 	size_t huge_alloc;
-	//! Peak amount of memory allocated in huge allocations, i.e larger than LARGE_SIZE_LIMIT which is 2MiB by default (only if ENABLE_STATISTICS=1)
+	//! Peak amount of memory allocated in huge allocations, i.e larger than LARGE_SIZE_LIMIT which is 2MiB by default
 	size_t huge_alloc_peak;
-	//! Total amount of memory mapped since initialization (only if ENABLE_STATISTICS=1)
+	//! Total amount of memory mapped since initialization
 	size_t mapped_total;
-	//! Total amount of memory unmapped since initialization  (only if ENABLE_STATISTICS=1)
+	//! Total amount of memory unmapped since initialization
 	size_t unmapped_total;
+#endif
 } rpmalloc_global_statistics_t;
 
 typedef struct rpmalloc_thread_statistics_t {
@@ -87,11 +47,12 @@ typedef struct rpmalloc_thread_statistics_t {
 	size_t sizecache;
 	//! Current number of bytes available in thread span caches for small and medium sizes (<32KiB)
 	size_t spancache;
-	//! Total number of bytes transitioned from thread cache to global cache (only if ENABLE_STATISTICS=1)
+#if RPMALLOC_ENABLE_STATISTICS
+	//! Total number of bytes transitioned from thread cache to global cache
 	size_t thread_to_global;
-	//! Total number of bytes transitioned from global cache to thread cache (only if ENABLE_STATISTICS=1)
+	//! Total number of bytes transitioned from global cache to thread cache
 	size_t global_to_thread;
-	//! Per span count statistics (only if ENABLE_STATISTICS=1)
+	//! Per span count statistics
 	struct {
 		//! Currently used number of spans
 		size_t current;
@@ -112,7 +73,7 @@ typedef struct rpmalloc_thread_statistics_t {
 		//! Number of raw memory map calls (not hitting the reserve spans but resulting in actual OS mmap calls)
 		size_t map_calls;
 	} span_use[64];
-	//! Per size class statistics (only if ENABLE_STATISTICS=1)
+	//! Per size class statistics
 	struct {
 		//! Current number of allocations
 		size_t alloc_current;
@@ -131,6 +92,7 @@ typedef struct rpmalloc_thread_statistics_t {
 		//! Number of raw memory map calls (not hitting the reserve spans but resulting in actual OS mmap calls)
 		size_t map_calls;
 	} size_use[128];
+#endif
 } rpmalloc_thread_statistics_t;
 
 typedef struct rpmalloc_config_t {

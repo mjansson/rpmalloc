@@ -34,7 +34,7 @@ _Static_assert(sizeof(void*) == 4, "Data type size mismatch");
 #define USE_INTERPOSE 0
 #define USE_ALIAS 0
 
-#if defined(__APPLE__) && ENABLE_PRELOAD
+#if defined(__APPLE__) && RPMALLOC_ENABLE_PRELOAD
 #undef USE_INTERPOSE
 #define USE_INTERPOSE 1
 
@@ -272,7 +272,7 @@ pvalloc(size_t size) {
 
 #endif // ENABLE_OVERRIDE
 
-#if ENABLE_PRELOAD
+#if RPMALLOC_ENABLE_PRELOAD
 
 #ifdef _WIN32
 
