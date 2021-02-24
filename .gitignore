@@ -207,6 +207,9 @@ build/scons/release*
 build/scons/profi*
 build/scons/deploy*
 
+#CMake build
+build/
+
 #Backups
 *~
 
