@@ -1,0 +1,43 @@
+#pragma once
+
+#include <rpmalloc_export.h>
+
+/* Allow overriding these values for the rpmalloc::rpmallocwrap target */
+#ifdef RPMALLOC_WRAP
+#  define RPMALLOC_ENABLE_PRELOAD 1
+#  define RPMALLOC_ENABLE_OVERRIDE 1
+#else
+#  cmakedefine01 RPMALLOC_ENABLE_PRELOAD
+#  cmakedefine01 RPMALLOC_ENABLE_OVERRIDE
+#endif
+
+#cmakedefine01 RPMALLOC_ENABLE_STATISTICS
+#cmakedefine01 RPMALLOC_CONFIGURABLE
+#cmakedefine01 RPMALLOC_FIRST_CLASS_HEAPS
+#cmakedefine01 RPMALLOC_ENABLE_GLOBAL_CACHE
+
+#if defined(__clang__) || defined(__GNUC__)
+#  define RPMALLOC_ALLOCATOR
+#  if (defined(__clang_major__) && (__clang_major__ < 4)) || (defined(__GNUC__) && RPMALLOC_ENABLE_PRELOAD)
+#    define RPMALLOC_ATTRIB_MALLOC
+#    define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
+#    define RPMALLOC_ATTRIB_ALLOC_SIZE2(count, size)
+#  else
+#    define RPMALLOC_ATTRIB_MALLOC __attribute__((__malloc__))
+#    define RPMALLOC_ATTRIB_ALLOC_SIZE(size) __attribute__((alloc_size(size)))
+#    define RPMALLOC_ATTRIB_ALLOC_SIZE2(count, size)  __attribute__((alloc_size(count, size)))
+#  endif
+#  define RPMALLOC_CDECL
+#elif defined(_MSC_VER)
+#  define RPMALLOC_ALLOCATOR __declspec(allocator) __declspec(restrict)
+#  define RPMALLOC_ATTRIB_MALLOC
+#  define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
+#  define RPMALLOC_ATTRIB_ALLOC_SIZE2(count,size)
+#  define RPMALLOC_CDECL __cdecl
+#else
+#  define RPMALLOC_ALLOCATOR
+#  define RPMALLOC_ATTRIB_MALLOC
+#  define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
+#  define RPMALLOC_ATTRIB_ALLOC_SIZE2(count,size)
+#  define RPMALLOC_CDECL
+#endif
