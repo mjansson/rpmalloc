@@ -7,6 +7,7 @@
 #endif
 
 #include <rpmalloc.h>
+#include <rpmalloc_config_private.h>
 #include <thread.h>
 #include <test.h>
 
