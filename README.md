@@ -38,7 +38,7 @@ Before calling any other function in the API, you __MUST__ call the initializati
 Before terminating your use of the allocator, you __SHOULD__ call __rpmalloc_finalize__ in order to release caches and unmap virtual memory, as well as prepare the allocator for global scope cleanup at process exit or dynamic library unload depending on your use case.
 
 # Using
-The easiest way to use the library is simply adding __rpmalloc.[h|c]__ to your project and compile them along with your sources. This contains only the rpmalloc specific entry points and does not provide internal hooks to process and/or thread creation at the moment. You are required to call these functions from your own code in order to initialize and finalize the allocator in your process and threads:
+The easiest way to use the library is simply linking against `rpmalloc::rpmalloc`. This contains only the rpmalloc specific entry points and does not provide internal hooks to process and/or thread creation at the moment. You are required to call these functions from your own code in order to initialize and finalize the allocator in your process and threads:
 
 __rpmalloc_initialize__ : Call at process start to initialize the allocator
 
@@ -54,44 +54,44 @@ __rpmalloc_config__: Get the current runtime configuration of the allocator
 
 Then simply use the __rpmalloc__/__rpfree__ and the other malloc style replacement functions. Remember all allocations are 16-byte aligned, so no need to call the explicit rpmemalign/rpaligned_alloc/rpposix_memalign functions unless you need greater alignment, they are simply wrappers to make it easier to replace in existing code.
 
-If you wish to override the standard library malloc family of functions and have automatic initialization/finalization of process and threads, define __ENABLE_OVERRIDE__ to non-zero which will include the `malloc.c` file in compilation of __rpmalloc.c__. The list of libc entry points replaced may not be complete, use libc replacement only as a convenience for testing the library on an existing code base, not a final solution.
+If you wish to override the standard library malloc family of functions and have automatic initialization/finalization of process and threads, compile with __RPMALLOC_ENABLE_OVERRIDE__ turned on, which will include the `malloc.c` file in compilation of __rpmalloc.c__. The list of libc entry points replaced may not be complete, use libc replacement only as a convenience for testing the library on an existing code base, not a final solution.
 
-For explicit first class heaps, see the __rpmalloc_heap_*__ API under [first class heaps](#first-class-heaps) section, requiring __RPMALLOC_FIRST_CLASS_HEAPS__ tp be defined to 1.
+For explicit first class heaps, see the __rpmalloc_heap_*__ API under [first class heaps](#first-class-heaps) section, requiring __RPMALLOC_FIRST_CLASS_HEAPS__ to be enabled.
 
 # Building
-To compile as a static library run the configure python script which generates a Ninja build script, then build using ninja. The ninja build produces two static libraries, one named `rpmalloc` and one named `rpmallocwrap`, where the latter includes the libc entry point overrides.
+The project can be built with ordinary CMake commands. There is an optional target called `rpmalloc_rpmallocwrap` enabled by the `rpmalloc_BUILD_WRAP` option, which includes the libc entry point overrides.
 
-The configure + ninja build also produces two shared object/dynamic libraries. The `rpmallocwrap` shared library can be used with LD_PRELOAD/DYLD_INSERT_LIBRARIES to inject in a preexisting binary, replacing any malloc/free family of function calls. This is only implemented for Linux and macOS targets. The list of libc entry points replaced may not be complete, use preloading as a convenience for testing the library on an existing binary, not a final solution. The dynamic library also provides automatic init/fini of process and threads for all platforms.
+The `rpmalloc_rpmallocwrap` target built as a shared library can be used with LD_PRELOAD/DYLD_INSERT_LIBRARIES to inject into a preexisting binary, replacing any malloc/free family of function calls for testing purposes. This is only implemented for Linux and macOS targets. The list of libc entry points replaced may not be complete, use preloading as a convenience for testing the library on an existing binary, not a final solution. The shared library also provides automatic init/fini of process and threads for all platforms.
 
 The latest stable release is available in the master branch. For latest development code, use the develop branch.
 
 # Cache configuration options
 Free memory pages are cached both per thread and in a global cache for all threads. The size of the thread caches is determined by an adaptive scheme where each cache is limited by a percentage of the maximum allocation count of the corresponding size class. The size of the global caches is determined by a multiple of the maximum of all thread caches. The factors controlling the cache sizes can be set by editing the individual defines in the `rpmalloc.c` source file for fine tuned control.
 
-__ENABLE_UNLIMITED_CACHE__: By default defined to 0, set to 1 to make all caches infinite, i.e never release spans to global cache unless thread finishes and never unmap memory pages back to the OS. Highest performance but largest memory overhead.
+__RPMALLOC_ENABLE_UNLIMITED_CACHE__: By default disabled, enable to make all caches infinite, i.e never release spans to global cache unless thread finishes and never unmap memory pages back to the OS. Highest performance but largest memory overhead.
 
-__ENABLE_UNLIMITED_GLOBAL_CACHE__: By default defined to 0, set to 1 to make global caches infinite, i.e never unmap memory pages back to the OS.
+__RPMALLOC_ENABLE_UNLIMITED_GLOBAL_CACHE__: By default disabled, enable to make global caches infinite, i.e never unmap memory pages back to the OS.
 
-__ENABLE_UNLIMITED_THREAD_CACHE__: By default defined to 0, set to 1 to make thread caches infinite, i.e never release spans to global cache unless thread finishes.
+__RPMALLOC_ENABLE_UNLIMITED_THREAD_CACHE__: By default disabled, enable to make thread caches infinite, i.e never release spans to global cache unless thread finishes.
 
-__ENABLE_GLOBAL_CACHE__: By default defined to 1, enables the global cache shared between all threads. Set to 0 to disable the global cache and directly unmap pages evicted from the thread cache.
+__RPMALLOC_ENABLE_GLOBAL_CACHE__: By default enabled, enables the global cache shared between all threads. Disable to disable the global cache and directly unmap pages evicted from the thread cache.
 
-__ENABLE_THREAD_CACHE__: By default defined to 1, enables the per-thread cache. Set to 0 to disable the thread cache and directly unmap pages no longer in use (also disables the global cache).
+__RPMALLOC_ENABLE_THREAD_CACHE__: By default enabled, enables the per-thread cache. Disable to disable the thread cache and directly unmap pages no longer in use (also disables the global cache).
 
-__ENABLE_ADAPTIVE_THREAD_CACHE__: Introduces a simple heuristics in the thread cache size, keeping 25% of the high water mark for each span count class.
+__RPMALLOC_ENABLE_ADAPTIVE_THREAD_CACHE__: Introduces a simple heuristics in the thread cache size, keeping 25% of the high water mark for each span count class.
 
 # Other configuration options
-Detailed statistics are available if __ENABLE_STATISTICS__ is defined to 1 (default is 0, or disabled), either on compile command line or by setting the value in `rpmalloc.c`. This will cause a slight overhead in runtime to collect statistics for each memory operation, and will also add 4 bytes overhead per allocation to track sizes.
+Detailed statistics are available if __RPMALLOC_ENABLE_STATISTICS__ is enabled (default is disabled). This will cause a slight overhead in runtime to collect statistics for each memory operation, and will also add 4 bytes overhead per allocation to track sizes.
 
-Integer safety checks on all calls are enabled if __ENABLE_VALIDATE_ARGS__ is defined to 1 (default is 0, or disabled), either on compile command line or by setting the value in `rpmalloc.c`. If enabled, size arguments to the global entry points are verified not to cause integer overflows in calculations.
+Integer safety checks on all calls are enabled if __RPMALLOC_ENABLE_VALIDATE_ARGS__ is enabled (default is disabled), either on compile command line or by setting the value in `rpmalloc.c`. If enabled, size arguments to the global entry points are verified not to cause integer overflows in calculations.
 
-Asserts are enabled if __ENABLE_ASSERTS__ is defined to 1 (default is 0, or disabled), either on compile command line or by setting the value in `rpmalloc.c`.
+Asserts are enabled if __RPMALLOC_ENABLE_ASSERTS__ is enabled (default is disabled).
 
-To include __malloc.c__ in compilation and provide overrides of standard library malloc entry points define __ENABLE_OVERRIDE__ to 1. To enable automatic initialization of finalization of process and threads in order to preload the library into executables using standard library malloc, define __ENABLE_PRELOAD__ to 1.
+To include __malloc.c__ in compilation and provide overrides of standard library malloc entry points, enable __RPMALLOC_ENABLE_OVERRIDE__. To enable automatic initialization of finalization of process and threads in order to preload the library into executables using standard library malloc, enable __RPMALLOC_ENABLE_PRELOAD__.
 
-To enable the runtime configurable memory page and span sizes, define __RPMALLOC_CONFIGURABLE__ to 1. By default, memory page size is determined by system APIs and memory span size is set to 64KiB.
+To enable the runtime configurable memory page and span sizes, enable __RPMALLOC_CONFIGURABLE__. By default, memory page size is determined by system APIs and memory span size is set to 64KiB.
 
-To enable support for first class heaps, define __RPMALLOC_FIRST_CLASS_HEAPS__ to 1. By default, the first class heap API is disabled.
+To enable support for first class heaps, enable __RPMALLOC_FIRST_CLASS_HEAPS__. By default, the first class heap API is disabled.
 
 # Huge pages
 The allocator has support for huge/large pages on Windows, Linux and MacOS. To enable it, pass a non-zero value in the config value `enable_huge_pages` when initializing the allocator with `rpmalloc_initialize_config`. If the system does not support huge pages it will be automatically disabled. You can query the status by looking at `enable_huge_pages` in the config returned from a call to `rpmalloc_config` after initialization is done.
