@@ -276,7 +276,7 @@ pvalloc(size_t size) {
 
 #ifdef _WIN32
 
-#if defined(BUILD_DYNAMIC_LINK) && BUILD_DYNAMIC_LINK
+#if BUILD_DYNAMIC_LINK
 
 extern __declspec(dllexport) BOOL WINAPI
 DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved);

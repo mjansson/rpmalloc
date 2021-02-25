@@ -52,7 +52,7 @@
 #include <string.h>
 #include <errno.h>
 
-#if defined(_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
+#if defined(_WIN32) && !BUILD_DYNAMIC_LINK
 #include <fibersapi.h>
 static DWORD fls_key;
 #endif
@@ -686,7 +686,7 @@ _rpmalloc_spin(void) {
 #endif
 }
 
-#if defined(_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
+#if defined(_WIN32) && !BUILD_DYNAMIC_LINK
 static void NTAPI
 _rpmalloc_thread_destructor(void* value) {
 #if RPMALLOC_ENABLE_OVERRIDE
@@ -2693,7 +2693,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	if (pthread_key_create(&_memory_thread_heap, _rpmalloc_heap_release_raw_fc))
 		return -1;
 #endif
-#if defined(_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
+#if defined(_WIN32) && !BUILD_DYNAMIC_LINK
 	fls_key = FlsAlloc(&_rpmalloc_thread_destructor);
 #endif
 
@@ -2764,7 +2764,7 @@ rpmalloc_finalize(void) {
 #if (defined(__APPLE__) || defined(__HAIKU__)) && RPMALLOC_ENABLE_PRELOAD
 	pthread_key_delete(_memory_thread_heap);
 #endif
-#if defined(_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
+#if defined(_WIN32) && !BUILD_DYNAMIC_LINK
 	FlsFree(fls_key);
 	fls_key = 0;
 #endif
@@ -2786,7 +2786,7 @@ rpmalloc_thread_initialize(void) {
 		if (heap) {
 			_rpmalloc_stat_inc(&_memory_active_heaps);
 			set_thread_heap(heap);
-#if defined(_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
+#if defined(_WIN32) && !BUILD_DYNAMIC_LINK
 			FlsSetValue(fls_key, heap);
 #endif
 		}
@@ -2800,7 +2800,7 @@ rpmalloc_thread_finalize(int release_caches) {
 	if (heap)
 		_rpmalloc_heap_release_raw(heap, release_caches);
 	set_thread_heap(0);
-#if defined(_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
+#if defined(_WIN32) && !BUILD_DYNAMIC_LINK
 	FlsSetValue(fls_key, 0);
 #endif
 }

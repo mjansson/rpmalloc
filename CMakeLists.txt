@@ -88,6 +88,7 @@ macro(rpmalloc_properties TARGET)
       "PLATFORM_WINDOWS=$<PLATFORM_ID:Windows>"
       "PLATFORM_POSIX=$<NOT:$<PLATFORM_ID:Windows>>"
       "$<$<PLATFORM_ID:Windows>:WIN32_LEAN_AND_MEAN>"
+      "BUILD_DYNAMIC_LINK=$<AND:$<BOOL:${MSVC}>,$<BOOL:${BUILD_SHARED_LIBS}>>"
   )
 endmacro()
 
