@@ -157,6 +157,11 @@ static DWORD fls_key;
 #  ifdef __FreeBSD__
 #    include <sys/sysctl.h>
 #    define MAP_HUGETLB MAP_ALIGNED_SUPER
+#    ifndef PROT_MAX
+#      define PROT_MAX(f) 0
+#    endif
+#  else
+#    define PROT_MAX(f) 0
 #  endif
 #  ifdef __sun
 extern int madvise(caddr_t, size_t, int);
@@ -852,7 +857,7 @@ _rpmalloc_mmap_os(size_t size, size_t* offset) {
 		fd |= VM_FLAGS_SUPERPAGE_SIZE_2MB;
 	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, flags, fd, 0);
 #  elif defined(MAP_HUGETLB)
-	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, (_memory_huge_pages ? MAP_HUGETLB : 0) | flags, -1, 0);
+	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE | PROT_MAX(PROT_READ | PROT_WRITE), (_memory_huge_pages ? MAP_HUGETLB : 0) | flags, -1, 0);
 #  elif defined(MAP_ALIGNED)
 	const size_t align = (sizeof(size_t) * 8) - (size_t)(__builtin_clzl(size - 1));
 	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, (_memory_huge_pages ? MAP_ALIGNED(align) : 0) | flags, -1, 0);
