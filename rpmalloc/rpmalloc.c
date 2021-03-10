@@ -2131,6 +2131,7 @@ _rpmalloc_allocate_large(heap_t* heap, size_t size) {
 static void*
 _rpmalloc_allocate_huge(heap_t* heap, size_t size) {
 	assert(heap);
+	_rpmalloc_heap_cache_adopt_deferred(heap, 0);
 	size += SPAN_HEADER_SIZE;
 	size_t num_pages = size >> _memory_page_size_shift;
 	if (size & (_memory_page_size - 1))
