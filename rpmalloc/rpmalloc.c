@@ -1394,7 +1394,7 @@ _rpmalloc_global_cache_insert_spans(span_t** span, size_t span_count, size_t cou
 			_rpmalloc_spin();
 
 		size_t islot = 0;
-		while (keep) {
+		for (; keep; keep = keep->next) {
 			for (; islot < cache->count; ++islot) {
 				span_t* current_span = cache->span[islot];
 				if (!(current_span->flags & SPAN_FLAG_MASTER) || ((current_span->flags & SPAN_FLAG_MASTER) &&
@@ -1406,14 +1406,13 @@ _rpmalloc_global_cache_insert_spans(span_t** span, size_t span_count, size_t cou
 			}
 			if (islot == cache->count)
 				break;
-			keep = keep->next;
 		}
 
-		while (keep) {
-			span_t* next_span = keep->next;
-			keep->next = cache->overflow;
+		if (keep) {
+			span_t* tail = keep;
+			for (; tail->next; tail = tail->next);
+			tail->next = cache->overflow;
 			cache->overflow = keep;
-			keep = next_span;
 		}
 
 		atomic_store32_release(&cache->lock, 0);
@@ -3051,14 +3050,13 @@ rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats) {
 	for (size_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
 		size_class_t* size_class = _memory_size_class + iclass;
 		span_t* span = heap->size_class[iclass].partial_span;
-		while (span) {
+		for (; span; span = span->next) {
 			size_t free_count = span->list_size;
 			size_t block_count = size_class->block_count;
 			if (span->free_list_limit < block_count)
 				block_count = span->free_list_limit;
 			free_count += (block_count - span->used_count);
 			stats->sizecache = free_count * size_class->block_size;
-			span = span->next;
 		}
 	}
 
@@ -3074,10 +3072,9 @@ rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats) {
 #endif
 
 	span_t* deferred = (span_t*)atomic_load_ptr(&heap->span_free_deferred);
-	while (deferred) {
+	for (; deferred; deferred = (span_t*)deferred->free_list) {
 		if (deferred->size_class != SIZE_CLASS_HUGE)
 			stats->spancache = (size_t)deferred->span_count * _memory_span_size;
-		deferred = (span_t*)deferred->free_list;
 	}
 
 #if ENABLE_STATISTICS
@@ -3184,8 +3181,7 @@ rpmalloc_dump_statistics(void* file) {
 	//If you hit this assert, you still have active threads or forgot to finalize some thread(s)
 	//assert(atomic_load32(&_memory_active_heaps) == 0);
 	for (size_t list_idx = 0; list_idx < HEAP_ARRAY_SIZE; ++list_idx) {
-		heap_t* heap = _memory_heaps[list_idx];
-		while (heap) {
+		for (heap_t* heap = _memory_heaps[list_idx]; heap; heap = heap->next_heap) {
 			int need_dump = 0;
 			for (size_t iclass = 0; !need_dump && (iclass < SIZE_CLASS_COUNT); ++iclass) {
 				if (!atomic_load32(&heap->size_class_use[iclass].alloc_total)) {
@@ -3202,7 +3198,6 @@ rpmalloc_dump_statistics(void* file) {
 			}
 			if (need_dump)
 				_memory_heap_dump_statistics(heap, file);
-			heap = heap->next_heap;
 		}
 	}
 	fprintf(file, "Global stats:\n");
@@ -3216,11 +3211,8 @@ rpmalloc_dump_statistics(void* file) {
 		global_cache_t* cache = _memory_span_cache + iclass;
 		global_cache += (size_t)cache->count * iclass * _memory_span_size;
 
-		span_t* span = cache->overflow;
-		while (span) {
+		for (span_t* span = cache->overflow; span; span = span->next)
 			global_cache += iclass * _memory_span_size;
-			span = span->next;
-		}
 	}
 	fprintf(file, "GlobalCacheMiB\n");
 	fprintf(file, "%14zu\n", global_cache / (size_t)(1024 * 1024));
