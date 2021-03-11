@@ -2159,9 +2159,7 @@ _rpmalloc_allocate_huge(heap_t* heap, size_t size) {
 //! Allocate a block of the given size
 static void*
 _rpmalloc_allocate(heap_t* heap, size_t size) {
-#if ENABLE_STATISTICS
-	atomic_add64(&_allocation_counter, 1);
-#endif
+	_rpmalloc_stat_add64(&_allocation_counter, 1);
 	if (EXPECTED(size <= SMALL_SIZE_LIMIT))
 		return _rpmalloc_allocate_small(heap, size);
 	else if (size <= _memory_medium_size_limit)
@@ -2284,9 +2282,7 @@ retry:
 #endif
 	++heap->full_span_count;
 
-#if ENABLE_STATISTICS
-	atomic_add64(&_allocation_counter, 1);
-#endif
+	_rpmalloc_stat_add64(&_allocation_counter, 1);
 
 	return ptr;
 }
@@ -2448,9 +2444,7 @@ _rpmalloc_deallocate_huge(span_t* span) {
 //! Deallocate the given block
 static void
 _rpmalloc_deallocate(void* p) {
-#if ENABLE_STATISTICS
-	atomic_add64(&_deallocation_counter, 1);
-#endif
+	_rpmalloc_stat_add64(&_deallocation_counter, 1);
 	//Grab the span (always at start of span, using span alignment)
 	span_t* span = (span_t*)((uintptr_t)p & _memory_span_mask);
 	if (UNEXPECTED(!span))
