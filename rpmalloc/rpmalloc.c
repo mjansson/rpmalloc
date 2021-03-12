@@ -1409,11 +1409,12 @@ _rpmalloc_global_cache_insert_spans(span_t** span, size_t span_count, size_t cou
 			keep = keep->next;
 		}
 
-		while (keep) {
-			span_t* next_span = keep->next;
-			keep->next = cache->overflow;
+		if (keep) {
+			span_t* tail = keep;
+			while (tail->next)
+				tail = tail->next;
+			tail->next = cache->overflow;
 			cache->overflow = keep;
-			keep = next_span;
 		}
 
 		atomic_store32_release(&cache->lock, 0);
