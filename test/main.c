@@ -1061,6 +1061,36 @@ test_first_class_heaps(void) {
 	return 0;
 }
 
+static int got_error;
+
+static void
+test_error_callback(const char* message) {
+	//printf("%s\n", message);
+	(void)sizeof(message);
+	got_error = 1;
+}
+
+static int
+test_error(void) {
+	//printf("Detecting memory leak\n");
+
+	rpmalloc_config_t config = {0};
+	config.error_callback = test_error_callback;
+	rpmalloc_initialize_config(&config);
+
+	rpmalloc(10);
+
+	rpmalloc_finalize();
+
+	if (!got_error) {
+		printf("Leak not detected and reported as expected\n");
+		return -1;
+	}
+
+	printf("Error detection test passed\n");
+	return 0;
+}
+
 int
 test_run(int argc, char** argv) {
 	(void)sizeof(argc);
@@ -1079,6 +1109,8 @@ test_run(int argc, char** argv) {
 	if (test_threadspam())
 		return -1;
 	if (test_first_class_heaps())
+		return -1;
+	if (test_error())
 		return -1;
 	printf("All tests passed\n");
 	return 0;
