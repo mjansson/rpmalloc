@@ -14,6 +14,8 @@ to another thread heap
 API breaking change - added flag to rpmalloc_thread_finalize to avoid releasing thread caches.
 Pass nonzero value to retain old behaviour of releasing thread caches to global cache.
 
+Add option to config to set a custom error callback for assert failures (if ENABLE_ASSERT)
+
 
 1.4.1
 

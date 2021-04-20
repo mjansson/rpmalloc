@@ -153,6 +153,9 @@ typedef struct rpmalloc_config_t {
 	//  If you set a memory_unmap function, you must also set a memory_map function or
 	//  else the default implementation will be used for both.
 	void (*memory_unmap)(void* address, size_t size, size_t offset, size_t release);
+	//! Called when an assert fails, if asserts are enabled. Will use the standard assert()
+	//  if this is not set.
+	void (*error_callback)(const char* message);
 	//! Size of memory pages. The page size MUST be a power of two. All memory mapping
 	//  requests to memory_map will be made with size set to a multiple of the page size.
 	//  Used if RPMALLOC_CONFIGURABLE is defined to 1, otherwise system page size is used.
