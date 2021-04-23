@@ -180,16 +180,16 @@ extern int madvise(caddr_t, size_t, int);
 #  include <assert.h>
 #define RPMALLOC_TOSTRING_M(x) #x
 #define RPMALLOC_TOSTRING(x) RPMALLOC_TOSTRING_M(x)
-#define rpmalloc_assert(truth, message)                                                                                 \
-	do {                                                                                                                \
-		if (!(truth)) {                                                                                                 \
-			if (_memory_config.error_callback) {                                                                        \
-				_memory_config.error_callback(                                                                          \
-				    message##" ("##RPMALLOC_TOSTRING(truth)##") at "##__FILE__##":"##RPMALLOC_TOSTRING(__LINE__));      \
-			} else {                                                                                                    \
-				assert((truth) && message);                                                                             \
-			}                                                                                                           \
-		}                                                                                                               \
+#define rpmalloc_assert(truth, message)                                                                      \
+	do {                                                                                                     \
+		if (!(truth)) {                                                                                      \
+			if (_memory_config.error_callback) {                                                             \
+				_memory_config.error_callback(                                                               \
+				    message " (" RPMALLOC_TOSTRING(truth) ") at " __FILE__ ":" RPMALLOC_TOSTRING(__LINE__)); \
+			} else {                                                                                         \
+				assert((truth) && message);                                                                  \
+			}                                                                                                \
+		}                                                                                                    \
 	} while (0)
 #else
 #  define rpmalloc_assert(truth, message) do {} while(0)
@@ -2830,15 +2830,15 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	_memory_first_class_orphan_heaps = 0;
 #endif
 #if ENABLE_STATISTICS
-	_memory_active_heaps = 0;
-	_mapped_pages = 0;
+	atomic_store32(&_memory_active_heaps, 0);
+	atomic_store32(&_mapped_pages, 0);
 	_mapped_pages_peak = 0;
-	_master_spans = 0;
-	_reserved_spans = 0;
-	_mapped_total = 0;
-	_unmapped_total = 0;
-	_mapped_pages_os = 0;
-	_huge_pages_current = 0;
+	atomic_store32(&_master_spans, 0);
+	atomic_store32(&_reserved_spans, 0);
+	atomic_store32(&_mapped_total, 0);
+	atomic_store32(&_unmapped_total, 0);
+	atomic_store32(&_mapped_pages_os, 0);
+	atomic_store32(&_huge_pages_current, 0);
 	_huge_pages_peak = 0;
 #endif
 	memset(_memory_heaps, 0, sizeof(_memory_heaps));
