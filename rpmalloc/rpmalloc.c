@@ -978,12 +978,9 @@ _rpmalloc_global_set_reserved_spans(span_t* master, span_t* reserve, size_t rese
 //! Add a span to double linked list at the head
 static void
 _rpmalloc_span_double_link_list_add(span_t** head, span_t* span) {
-	if (*head) {
-		span->next = *head;
+	if (*head)
 		(*head)->prev = span;
-	} else {
-		span->next = 0;
-	}
+	span->next = *head;
 	*head = span;
 }
 
@@ -1005,9 +1002,8 @@ _rpmalloc_span_double_link_list_remove(span_t** head, span_t* span) {
 		span_t* next_span = span->next;
 		span_t* prev_span = span->prev;
 		prev_span->next = next_span;
-		if (EXPECTED(next_span != 0)) {
+		if (EXPECTED(next_span != 0))
 			next_span->prev = prev_span;
-		}
 	}
 }
 
@@ -1241,7 +1237,7 @@ free_list_partial_init(void** list, void** first_block, void* page_start, void* 
 
 //! Initialize an unused span (from cache or mapped) to be new active span, putting the initial free list in heap class free list
 static void*
-_rpmalloc_span_initialize_new(heap_t* heap, span_t* span, uint32_t class_idx) {
+_rpmalloc_span_initialize_new(heap_t* heap, heap_size_class_t* heap_size_class, span_t* span, uint32_t class_idx) {
 	rpmalloc_assert(span->span_count == 1, "Internal failure");
 	size_class_t* size_class = _memory_size_class + class_idx;
 	span->size_class = class_idx;
@@ -1255,11 +1251,11 @@ _rpmalloc_span_initialize_new(heap_t* heap, span_t* span, uint32_t class_idx) {
 
 	//Setup free list. Only initialize one system page worth of free blocks in list
 	void* block;
-	span->free_list_limit = free_list_partial_init(&heap->size_class[class_idx].free_list, &block, 
+	span->free_list_limit = free_list_partial_init(&heap_size_class->free_list, &block, 
 		span, pointer_offset(span, SPAN_HEADER_SIZE), size_class->block_count, size_class->block_size);
 	//Link span as partial if there remains blocks to be initialized as free list, or full if fully initialized
 	if (span->free_list_limit < span->block_count) {
-		_rpmalloc_span_double_link_list_add(&heap->size_class[class_idx].partial_span, span);
+		_rpmalloc_span_double_link_list_add(&heap_size_class->partial_span, span);
 		span->used_count = span->free_list_limit;
 	} else {
 #if RPMALLOC_FIRST_CLASS_HEAPS
@@ -2038,10 +2034,10 @@ _rpmalloc_allocate_from_heap_fallback(heap_t* heap, heap_size_class_t* heap_size
 		rpmalloc_assert(!_rpmalloc_span_is_fully_utilized(span), "Internal failure");
 		void* block;
 		if (span->free_list) {
-			//Swap in free list if not empty
+			//Span local free list is not empty, swap to size class free list
+			block = free_list_pop(&span->free_list);
 			heap_size_class->free_list = span->free_list;
 			span->free_list = 0;
-			block = free_list_pop(&heap_size_class->free_list);
 		} else {
 			//If the span did not fully initialize free list, link up another page worth of blocks			
 			void* block_start = pointer_offset(span, SPAN_HEADER_SIZE + ((size_t)span->free_list_limit * span->block_size));
@@ -2073,7 +2069,7 @@ _rpmalloc_allocate_from_heap_fallback(heap_t* heap, heap_size_class_t* heap_size
 	span = _rpmalloc_heap_extract_new_span(heap, heap_size_class, 1, class_idx);
 	if (EXPECTED(span != 0)) {
 		//Mark span as owned by this heap and set base data, return first block
-		return _rpmalloc_span_initialize_new(heap, span, class_idx);
+		return _rpmalloc_span_initialize_new(heap, heap_size_class, span, class_idx);
 	}
 
 	return 0;
@@ -2317,8 +2313,8 @@ _rpmalloc_deallocate_direct_small_or_medium(span_t* span, void* block) {
 		_rpmalloc_span_double_link_list_add(&heap->size_class[span->size_class].partial_span, span);
 		--heap->full_span_count;
 	}
-	--span->used_count;
 	*((void**)block) = span->free_list;
+	--span->used_count;
 	span->free_list = block;
 	if (UNEXPECTED(span->used_count == span->list_size)) {
 		_rpmalloc_span_double_link_list_remove(&heap->size_class[span->size_class].partial_span, span);
