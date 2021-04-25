@@ -1,3 +1,22 @@
+1.4.2
+
+Fixed an issue where calling _exit might hang the main thread cleanup in rpmalloc if another
+worker thread was terminated while holding exclusive access to the global cache.
+
+Improved caches to prioritize main spans in a chunk to avoid leaving main spans mapped due to
+remaining subspans in caches.
+
+Improve cache reuse by allowing large blocks to use caches from slightly larger cache classes.
+
+Fixed an issue where thread heap statistics would go out of sync when a free span was deferred
+to another thread heap
+
+API breaking change - added flag to rpmalloc_thread_finalize to avoid releasing thread caches.
+Pass nonzero value to retain old behaviour of releasing thread caches to global cache.
+
+Add option to config to set a custom error callback for assert failures (if ENABLE_ASSERT)
+
+
 1.4.1
 
 Dual license as both released to public domain or under MIT license

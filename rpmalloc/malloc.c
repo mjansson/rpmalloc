@@ -292,11 +292,36 @@ DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
 	else if (reason == DLL_THREAD_ATTACH)
 		rpmalloc_thread_initialize();
 	else if (reason == DLL_THREAD_DETACH)
-		rpmalloc_thread_finalize();
+		rpmalloc_thread_finalize(1);
 	return TRUE;
 }
 
+//end BUILD_DYNAMIC_LINK
+#else
+
+extern void
+_global_rpmalloc_init(void) {
+	rpmalloc_set_main_thread();
+	rpmalloc_initialize();
+}
+
+#if defined(__clang__) || defined(__GNUC__)
+
+static void __attribute__((constructor))
+initializer(void) {
+	_global_rpmalloc_init();
+}
+
+#elif defined(_MSC_VER)
+
+#pragma section(".CRT$XIB",read)
+__declspec(allocate(".CRT$XIB")) void (*_rpmalloc_module_init)(void) = _global_rpmalloc_init;
+#pragma comment(linker, "/include:_rpmalloc_module_init")
+
 #endif
+
+//end !BUILD_DYNAMIC_LINK
+#endif 
 
 #else
 
@@ -305,6 +330,9 @@ DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
 #include <stdint.h>
 #include <unistd.h>
 
+extern void
+rpmalloc_set_main_thread(void);
+
 static pthread_key_t destructor_key;
 
 static void
@@ -312,6 +340,7 @@ thread_destructor(void*);
 
 static void __attribute__((constructor))
 initializer(void) {
+	rpmalloc_set_main_thread();
 	rpmalloc_initialize();
 	pthread_key_create(&destructor_key, thread_destructor);
 }
@@ -340,7 +369,7 @@ thread_starter(void* argptr) {
 static void
 thread_destructor(void* value) {
 	(void)sizeof(value);
-	rpmalloc_thread_finalize();
+	rpmalloc_thread_finalize(1);
 }
 
 #ifdef __APPLE__
@@ -368,7 +397,8 @@ pthread_create(pthread_t* thread,
                const pthread_attr_t* attr,
                void* (*start_routine)(void*),
                void* arg) {
-#if defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__APPLE__) || defined(__HAIKU__)
+#if defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__) || \
+    defined(__APPLE__) || defined(__HAIKU__)
 	char fname[] = "pthread_create";
 #else
 	char fname[] = "_pthread_create";

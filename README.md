@@ -33,7 +33,7 @@ Configuration of the thread and global caches can be important depending on your
 
 # Required functions
 
-Before calling any other function in the API, you __MUST__ call the initization function, either __rpmalloc_initialize__ or __pmalloc_initialize_config__, or you will get undefined behaviour when calling other rpmalloc entry point.
+Before calling any other function in the API, you __MUST__ call the initialization function, either __rpmalloc_initialize__ or __pmalloc_initialize_config__, or you will get undefined behaviour when calling other rpmalloc entry point.
 
 Before terminating your use of the allocator, you __SHOULD__ call __rpmalloc_finalize__ in order to release caches and unmap virtual memory, as well as prepare the allocator for global scope cleanup at process exit or dynamic library unload depending on your use case.
 
@@ -104,7 +104,7 @@ The allocator is based on a fixed but configurable page alignment (defaults to 6
 
 Memory blocks are divided into three categories. For 64KiB span size/alignment the small blocks are [16, 1024] bytes, medium blocks (1024, 32256] bytes, and large blocks (32256, 2097120] bytes. The three categories are further divided in size classes. If the span size is changed, the small block classes remain but medium blocks go from (1024, span size] bytes.
 
-Small blocks have a size class granularity of 16 bytes each in 64 buckets. Medium blocks have a granularity of 512 bytes, 61 buckets (default). Large blocks have a the same granularity as the configured span size (default 64KiB). All allocations are fitted to these size class boundaries (an allocation of 36 bytes will allocate a block of 48 bytes). Each small and medium size class has an associated span (meaning a contiguous set of memory pages) configuration describing how many pages the size class will allocate each time the cache is empty and a new allocation is requested.
+Small blocks have a size class granularity of 16 bytes each in 64 buckets. Medium blocks have a granularity of 512 bytes, 61 buckets (default). Large blocks have the same granularity as the configured span size (default 64KiB). All allocations are fitted to these size class boundaries (an allocation of 36 bytes will allocate a block of 48 bytes). Each small and medium size class has an associated span (meaning a contiguous set of memory pages) configuration describing how many pages the size class will allocate each time the cache is empty and a new allocation is requested.
 
 Spans for small and medium blocks are cached in four levels to avoid calls to map/unmap memory pages. The first level is a per thread single active span for each size class. The second level is a per thread list of partially free spans for each size class. The third level is a per thread list of free spans. The fourth level is a global list of free spans.
 
@@ -113,7 +113,7 @@ Each span for a small and medium size class keeps track of how many blocks are a
 Large blocks, or super spans, are cached in two levels. The first level is a per thread list of free super spans. The second level is a global list of free super spans.
 
 # Memory mapping
-By default the allocator uses OS APIs to map virtual memory pages as needed, either `VirtualAlloc` on Windows or `mmap` on POSIX systems. If you want to use your own custom memory mapping provider you can use __rpmalloc_initialize_config__ and pass function pointers to map and unmap virtual memory. These function should reserve and free the requested number of bytes. 
+By default the allocator uses OS APIs to map virtual memory pages as needed, either `VirtualAlloc` on Windows or `mmap` on POSIX systems. If you want to use your own custom memory mapping provider you can use __rpmalloc_initialize_config__ and pass function pointers to map and unmap virtual memory. These function should reserve and free the requested number of bytes.
 
 The returned memory address from the memory map function MUST be aligned to the memory page size and the memory span size (which ever is larger), both of which is configurable. Either provide the page and span sizes during initialization using __rpmalloc_initialize_config__, or use __rpmalloc_config__ to find the required alignment which is equal to the maximum of page and span size. The span size MUST be a power of two in [4096, 262144] range, and be a multiple or divisor of the memory page size.
 
@@ -128,7 +128,7 @@ Super spans (spans a multiple > 1 of the span size) can be subdivided into small
 
 A span that is a subspan of a larger super span can be individually decommitted to reduce physical memory pressure when the span is evicted from caches and scheduled to be unmapped. The entire original super span will keep track of the subspans it is broken up into, and when the entire range is decommitted tha super span will be unmapped. This allows platforms like Windows that require the entire virtual memory range that was mapped in a call to VirtualAlloc to be unmapped in one call to VirtualFree, while still decommitting individual pages in subspans (if the page size is smaller than the span size).
 
-If you use a custom memory map/unmap function you need to take this into account by looking at the `release` parameter given to the `memory_unmap` function. It is set to 0 for decommitting invididual pages and the total super span byte size for finally releasing the entire super span memory range.
+If you use a custom memory map/unmap function you need to take this into account by looking at the `release` parameter given to the `memory_unmap` function. It is set to 0 for decommitting individual pages and the total super span byte size for finally releasing the entire super span memory range.
 
 # Memory fragmentation
 There is no memory fragmentation by the allocator in the sense that it will not leave unallocated and unusable "holes" in the memory pages by calls to allocate and free blocks of different sizes. This is due to the fact that the memory pages allocated for each size class is split up in perfectly aligned blocks which are not reused for a request of a different size. The block freed by a call to `rpfree` will always be immediately available for an allocation request within the same size class.

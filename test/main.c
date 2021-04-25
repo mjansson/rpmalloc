@@ -454,7 +454,7 @@ allocator_thread(void* argp) {
 	thread_sleep(1);
 
 	if (arg.init_fini_each_loop)
-		rpmalloc_thread_finalize();
+		rpmalloc_thread_finalize(1);
 
 	for (iloop = 0; iloop < arg.loops; ++iloop) {
 		if (arg.init_fini_each_loop)
@@ -504,7 +504,7 @@ allocator_thread(void* argp) {
 		}
 
 		if (arg.init_fini_each_loop)
-			rpmalloc_thread_finalize();
+			rpmalloc_thread_finalize(1);
 	}
 
 	if (arg.init_fini_each_loop)
@@ -513,7 +513,7 @@ allocator_thread(void* argp) {
 	rpfree(data);
 	rpfree(addr);
 
-	rpmalloc_thread_finalize();
+	rpmalloc_thread_finalize(1);
 
 end:
 	thread_exit((uintptr_t)ret);
@@ -676,7 +676,7 @@ crossallocator_thread(void* argp) {
 	}
 
 end:
-	rpmalloc_thread_finalize();
+	rpmalloc_thread_finalize(1);
 
 	thread_exit((uintptr_t)ret);
 }
@@ -777,12 +777,12 @@ initfini_thread(void* argp) {
 			rpfree(addr[ipass]);
 		}
 
-		rpmalloc_thread_finalize();
+		rpmalloc_thread_finalize(1);
 		thread_yield();
 	}
 
 end:
-	rpmalloc_thread_finalize();
+	rpmalloc_thread_finalize(1);
 	thread_exit((uintptr_t)ret);
 }
 
@@ -1061,6 +1061,36 @@ test_first_class_heaps(void) {
 	return 0;
 }
 
+static int got_error;
+
+static void
+test_error_callback(const char* message) {
+	//printf("%s\n", message);
+	(void)sizeof(message);
+	got_error = 1;
+}
+
+static int
+test_error(void) {
+	//printf("Detecting memory leak\n");
+
+	rpmalloc_config_t config = {0};
+	config.error_callback = test_error_callback;
+	rpmalloc_initialize_config(&config);
+
+	rpmalloc(10);
+
+	rpmalloc_finalize();
+
+	if (!got_error) {
+		printf("Leak not detected and reported as expected\n");
+		return -1;
+	}
+
+	printf("Error detection test passed\n");
+	return 0;
+}
+
 int
 test_run(int argc, char** argv) {
 	(void)sizeof(argc);
@@ -1079,6 +1109,8 @@ test_run(int argc, char** argv) {
 	if (test_threadspam())
 		return -1;
 	if (test_first_class_heaps())
+		return -1;
+	if (test_error())
 		return -1;
 	printf("All tests passed\n");
 	return 0;

@@ -24,7 +24,7 @@ class GCCToolchain(toolchain.Toolchain):
     self.cxxcmd = '$toolchain$cxx -MMD -MT $out -MF $out.d $includepaths $moreincludepaths $cxxflags $carchflags $cconfigflags $cmoreflags $cxxenvflags -c $in -o $out'
     self.ccdeps = 'gcc'
     self.ccdepfile = '$out.d'
-    self.arcmd = self.rmcmd('$out') + ' && $toolchain$ar crsD $ararchflags $arflags $arenvflags $out $in'
+    self.arcmd = self.rmcmd('$out') + ' && $toolchain$ar crs $ararchflags $arflags $arenvflags $out $in'
     self.linkcmd = '$toolchain$link $libpaths $configlibpaths $linkflags $linkarchflags $linkconfigflags $linkenvflags -o $out $in $libs $archlibs $oslibs'
 
     #Base flags
@@ -54,8 +54,13 @@ class GCCToolchain(toolchain.Toolchain):
       self.linkflags += ['-pthread']
     if self.target.is_linux() or self.target.is_raspberrypi():
       self.oslibs += ['dl']
+    if self.target.is_raspberrypi():
+      self.linkflags += ['-latomic']
     if self.target.is_bsd():
       self.oslibs += ['execinfo']
+    if self.target.is_haiku():
+      self.cflags += ['-D_GNU_SOURCE=1']
+      self.linkflags += ['-lpthread']
 
     self.includepaths = self.prefix_includepaths((includepaths or []) + ['.'])
 

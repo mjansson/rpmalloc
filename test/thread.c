@@ -1,5 +1,6 @@
 
 #include <thread.h>
+#include <errno.h>
 
 #ifdef _MSC_VER
 #  define ATTRIBUTE_NORETURN
@@ -81,10 +82,12 @@ thread_sleep(int milliseconds) {
 #ifdef _WIN32
 	SleepEx((DWORD)milliseconds, 0);
 #else
-	struct timespec ts;
+	struct timespec ts, remaining;
 	ts.tv_sec  = milliseconds / 1000;
 	ts.tv_nsec = (long)(milliseconds % 1000) * 1000000L;
-	nanosleep(&ts, 0);
+
+	while (nanosleep(&ts, &remaining) != 0 && errno == EINTR)
+		ts = remaining;
 #endif
 }
 

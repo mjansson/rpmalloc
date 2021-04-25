@@ -38,7 +38,7 @@ class ClangToolchain(toolchain.Toolchain):
     self.cxxcmd = '$toolchain$cxx -MMD -MT $out -MF $out.d $includepaths $moreincludepaths $cxxflags $carchflags $cconfigflags $cmoreflags $cxxenvflags -c $in -o $out'
     self.ccdeps = 'gcc'
     self.ccdepfile = '$out.d'
-    self.arcmd = self.rmcmd('$out') + ' && $toolchain$ar crsD $ararchflags $arflags $arenvflags $out $in'
+    self.arcmd = self.rmcmd('$out') + ' && $toolchain$ar crs $ararchflags $arflags $arenvflags $out $in'
     if self.target.is_windows():
       self.linkcmd = '$toolchain$link $libpaths $configlibpaths $linkflags $linkarchflags $linkconfigflags $linkenvflags /debug /nologo /subsystem:console /dynamicbase /nxcompat /manifest /manifestuac:\"level=\'asInvoker\' uiAccess=\'false\'\" /tlbid:1 /pdb:$pdbpath /out:$out $in $libs $archlibs $oslibs $frameworks'
       self.dllcmd = self.linkcmd + ' /dll'
@@ -52,7 +52,7 @@ class ClangToolchain(toolchain.Toolchain):
                    '-fno-trapping-math', '-ffast-math']
     self.cwarnflags = ['-W', '-Werror', '-pedantic', '-Wall', '-Weverything',
                        '-Wno-c++98-compat', '-Wno-padded', '-Wno-documentation-unknown-command',
-                       '-Wno-implicit-fallthrough', '-Wno-static-in-inline', '-Wno-reserved-id-macro']
+                       '-Wno-implicit-fallthrough', '-Wno-static-in-inline', '-Wno-reserved-id-macro', '-Wno-disabled-macro-expansion']
     self.cmoreflags = []
     self.mflags = []
     self.arflags = []
@@ -76,8 +76,14 @@ class ClangToolchain(toolchain.Toolchain):
       self.oslibs += ['m']
     if self.target.is_linux() or self.target.is_raspberrypi():
       self.oslibs += ['dl']
+    if self.target.is_raspberrypi():
+      self.linkflags += ['-latomic']
     if self.target.is_bsd():
       self.oslibs += ['execinfo']
+    if self.target.is_haiku():
+      self.cflags += ['-D_GNU_SOURCE=1']
+      self.linkflags += ['-lpthread']
+      self.oslibs += ['m']
     if not self.target.is_windows():
       self.linkflags += ['-fomit-frame-pointer']
 
@@ -391,7 +397,7 @@ class ClangToolchain(toolchain.Toolchain):
       if targettype == 'sharedlib':
         flags += ['-shared', '-fPIC']
     if config != 'debug':
-      if targettype == 'bin' or targettype == 'sharedlib':
+      if (targettype == 'bin' or targettype == 'sharedlib') and self.use_lto():
         flags += ['-flto']
     return flags
 

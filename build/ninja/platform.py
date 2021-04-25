@@ -5,7 +5,7 @@
 import sys
 
 def supported_platforms():
-  return [ 'windows', 'linux', 'macos', 'bsd', 'ios', 'android', 'raspberrypi', 'tizen', 'sunos' ]
+  return [ 'windows', 'linux', 'macos', 'bsd', 'ios', 'android', 'raspberrypi', 'tizen', 'sunos', 'haiku' ]
 
 class Platform(object):
   def __init__(self, platform):
@@ -20,7 +20,7 @@ class Platform(object):
       self.platform = 'macos'
     elif self.platform.startswith('win'):
       self.platform = 'windows'
-    elif 'bsd' in self.platform:
+    elif 'bsd' in self.platform or self.platform.startswith('dragonfly'):
       self.platform = 'bsd'
     elif self.platform.startswith('ios'):
       self.platform = 'ios'
@@ -32,6 +32,8 @@ class Platform(object):
       self.platform = 'tizen'
     elif self.platform.startswith('sunos'):
       self.platform = 'sunos'
+    elif self.platform.startswith('haiku'):
+      self.platform = 'haiku'
 
   def platform(self):
     return self.platform
@@ -62,6 +64,9 @@ class Platform(object):
 
   def is_sunos(self):
     return self.platform == 'sunos'
+
+  def is_haiku(self):
+    return self.platform == 'haiku'
 
   def get(self):
     return self.platform
