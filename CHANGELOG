@@ -1,3 +1,9 @@
+1.4.3
+
+Fixed an issue where certain combinations of memory page size and span map counts could cause
+a deadlock in the mapping of new memory pages
+
+
 1.4.2
 
 Fixed an issue where calling _exit might hang the main thread cleanup in rpmalloc if another

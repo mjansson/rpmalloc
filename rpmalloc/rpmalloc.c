@@ -1092,9 +1092,8 @@ _rpmalloc_span_map_aligned_count(heap_t* heap, size_t span_count) {
 			_rpmalloc_heap_cache_insert(heap, heap->span_reserve);
 		}
 		if (reserved_count > DEFAULT_SPAN_MAP_COUNT) {
-			// If huge pages, make sure only one thread maps more memory to avoid bloat
-			while (!atomic_cas32_acquire(&_memory_global_lock, 1, 0))
-				_rpmalloc_spin();
+			// If huge pages, the global reserve spin lock is held by caller, _rpmalloc_span_map
+			rpmalloc_assert(atomic_load32(&_memory_global_lock) == 1, "Global spin lock not held as expected");
 			size_t remain_count = reserved_count - DEFAULT_SPAN_MAP_COUNT;
 			reserved_count = DEFAULT_SPAN_MAP_COUNT;
 			span_t* remain_span = (span_t*)pointer_offset(reserved_spans, reserved_count * _memory_span_size);
@@ -1103,7 +1102,6 @@ _rpmalloc_span_map_aligned_count(heap_t* heap, size_t span_count) {
 				_rpmalloc_span_unmap(_memory_global_reserve);
 			}
 			_rpmalloc_global_set_reserved_spans(span, remain_span, remain_count);
-			atomic_store32_release(&_memory_global_lock, 0);
 		}
 		_rpmalloc_heap_set_reserved_spans(heap, span, reserved_spans, reserved_count);
 	}

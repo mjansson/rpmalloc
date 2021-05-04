@@ -787,14 +787,12 @@ end:
 }
 
 static int
-test_threaded(void) {
+test_thread_implementation(void) {
 	uintptr_t thread[32];
 	uintptr_t threadres[32];
 	unsigned int i;
 	size_t num_alloc_threads;
 	allocator_thread_arg_t arg;
-
-	rpmalloc_initialize();
 
 	num_alloc_threads = _hardware_threads;
 	if (num_alloc_threads < 2)
@@ -846,9 +844,21 @@ test_threaded(void) {
 			return -1;
 	}
 
-	printf("Memory threaded tests passed\n");
-
 	return 0;
+}
+
+static int
+test_threaded(void) {
+	rpmalloc_initialize();
+
+	int ret = test_thread_implementation();
+
+	rpmalloc_finalize();
+
+	if (ret == 0)
+		printf("Memory threaded tests passed\n");
+
+	return ret;
 }
 
 static int 
@@ -917,9 +927,9 @@ test_crossthread(void) {
 	for (unsigned int ithread = 0; ithread < num_alloc_threads; ++ithread)
 		rpfree(arg[ithread].pointers);
 
-	rpmalloc_finalize();
-
 	printf("Memory cross thread free tests passed\n");
+
+	rpmalloc_finalize();
 
 	return 0;
 }
@@ -1091,6 +1101,24 @@ test_error(void) {
 	return 0;
 }
 
+static int
+test_large_pages(void) {
+	rpmalloc_config_t config = {0};
+	config.page_size = 16 * 1024 * 1024;
+	config.span_map_count = 16;
+
+	rpmalloc_initialize_config(&config);
+
+	int ret = test_thread_implementation();
+
+	rpmalloc_finalize();
+
+	if (ret == 0)
+		printf("Large page config test passed\n");
+
+	return ret;
+}
+
 int
 test_run(int argc, char** argv) {
 	(void)sizeof(argc);
@@ -1109,6 +1137,8 @@ test_run(int argc, char** argv) {
 	if (test_threadspam())
 		return -1;
 	if (test_first_class_heaps())
+		return -1;
+	if (test_large_pages())
 		return -1;
 	if (test_error())
 		return -1;
