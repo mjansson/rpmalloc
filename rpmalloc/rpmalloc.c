@@ -614,10 +614,6 @@ static uintptr_t _memory_span_mask;
 #endif
 //! Number of spans to map in each map call
 static size_t _memory_span_map_count;
-//! Number of spans to release from thread cache to global cache (single spans)
-static size_t _memory_span_release_count;
-//! Number of spans to release from thread cache to global cache (large multiple spans)
-static size_t _memory_span_release_count_large;
 //! Global size classes
 static size_class_t _memory_size_class[SIZE_CLASS_COUNT];
 //! Run-time size limit of medium blocks
@@ -2785,9 +2781,6 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	_memory_config.span_size = _memory_span_size;
 	_memory_config.span_map_count = _memory_span_map_count;
 	_memory_config.enable_huge_pages = _memory_huge_pages;
-
-	_memory_span_release_count = (_memory_span_map_count > 4 ? ((_memory_span_map_count < 64) ? _memory_span_map_count : 64) : 4);
-	_memory_span_release_count_large = (_memory_span_release_count > 8 ? (_memory_span_release_count / 4) : 2);
 
 #if (defined(__APPLE__) || defined(__HAIKU__)) && ENABLE_PRELOAD
 	if (pthread_key_create(&_memory_thread_heap, _rpmalloc_heap_release_raw_fc))
