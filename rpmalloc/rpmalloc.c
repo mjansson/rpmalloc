@@ -1091,11 +1091,11 @@ _rpmalloc_span_map_aligned_count(heap_t* heap, size_t span_count) {
 			_rpmalloc_span_mark_as_subspan_unless_master(heap->span_reserve_master, heap->span_reserve, heap->spans_reserved);
 			_rpmalloc_heap_cache_insert(heap, heap->span_reserve);
 		}
-		if (reserved_count > DEFAULT_SPAN_MAP_COUNT) {
+		if (reserved_count > _memory_span_map_count) {
 			// If huge pages, the global reserve spin lock is held by caller, _rpmalloc_span_map
 			rpmalloc_assert(atomic_load32(&_memory_global_lock) == 1, "Global spin lock not held as expected");
-			size_t remain_count = reserved_count - DEFAULT_SPAN_MAP_COUNT;
-			reserved_count = DEFAULT_SPAN_MAP_COUNT;
+			size_t remain_count = reserved_count - _memory_span_map_count;
+			reserved_count = _memory_span_map_count;
 			span_t* remain_span = (span_t*)pointer_offset(reserved_spans, reserved_count * _memory_span_size);
 			if (_memory_global_reserve) {
 				_rpmalloc_span_mark_as_subspan_unless_master(_memory_global_reserve_master, _memory_global_reserve, _memory_global_reserve_count);
@@ -1119,7 +1119,7 @@ _rpmalloc_span_map(heap_t* heap, size_t span_count) {
 		while (!atomic_cas32_acquire(&_memory_global_lock, 1, 0))
 			_rpmalloc_spin();
 		if (_memory_global_reserve_count >= span_count) {
-			size_t reserve_count = (!heap->spans_reserved ? DEFAULT_SPAN_MAP_COUNT : span_count);
+			size_t reserve_count = (!heap->spans_reserved ? _memory_span_map_count : span_count);
 			if (_memory_global_reserve_count < reserve_count)
 				reserve_count = _memory_global_reserve_count;
 			span = _rpmalloc_global_get_reserved_spans(reserve_count);
@@ -1850,7 +1850,7 @@ _rpmalloc_heap_allocate_new(void) {
 	if (span_count > heap_span_count) {
 		// Cap reserved spans
 		size_t remain_count = span_count - heap_span_count;
-		size_t reserve_count = (remain_count > DEFAULT_SPAN_MAP_COUNT ? DEFAULT_SPAN_MAP_COUNT : remain_count);
+		size_t reserve_count = (remain_count > _memory_span_map_count ? _memory_span_map_count : remain_count);
 		span_t* remain_span = (span_t*)pointer_offset(span, heap_span_count * _memory_span_size);
 		_rpmalloc_heap_set_reserved_spans(heap, span, remain_span, reserve_count);
 
