@@ -2645,23 +2645,26 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		_memory_config.memory_unmap = _rpmalloc_unmap_os;
 	}
 
+#if PLATFORM_WINDOWS
+	SYSTEM_INFO system_info;
+	memset(&system_info, 0, sizeof(system_info));
+	GetSystemInfo(&system_info);
+	_memory_map_granularity = system_info.dwAllocationGranularity;
+#else
+	_memory_map_granularity = (size_t)sysconf(_SC_PAGESIZE);
+#endif
+
 #if RPMALLOC_CONFIGURABLE
 	_memory_page_size = _memory_config.page_size;
 #else
 	_memory_page_size = 0;
 #endif
 	_memory_huge_pages = 0;
-	_memory_map_granularity = _memory_page_size;
 	if (!_memory_page_size) {
 #if PLATFORM_WINDOWS
-		SYSTEM_INFO system_info;
-		memset(&system_info, 0, sizeof(system_info));
-		GetSystemInfo(&system_info);
 		_memory_page_size = system_info.dwPageSize;
-		_memory_map_granularity = system_info.dwAllocationGranularity;
 #else
-		_memory_page_size = (size_t)sysconf(_SC_PAGESIZE);
-		_memory_map_granularity = _memory_page_size;
+		_memory_page_size = _memory_map_granularity;
 		if (_memory_config.enable_huge_pages) {
 #if defined(__linux__)
 			size_t huge_page_size = 0;
