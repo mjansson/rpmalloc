@@ -2719,17 +2719,17 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 				token_privileges.Privileges[0].Luid = luid;
 				token_privileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
 				if (AdjustTokenPrivileges(token, FALSE, &token_privileges, 0, 0, 0)) {
-					DWORD err = GetLastError();
-					if (err == ERROR_SUCCESS) {
+					if (GetLastError() == ERROR_SUCCESS)
 						_memory_huge_pages = 1;
-						if (large_page_minimum > _memory_page_size)
-						 	_memory_page_size = large_page_minimum;
-						if (large_page_minimum > _memory_map_granularity)
-							_memory_map_granularity = large_page_minimum;
-					}
 				}
 			}
 			CloseHandle(token);
+		}
+		if (_memory_huge_pages) {
+			if (large_page_minimum > _memory_page_size)
+				_memory_page_size = large_page_minimum;
+			if (large_page_minimum > _memory_map_granularity)
+				_memory_map_granularity = large_page_minimum;
 		}
 	}
 #endif
