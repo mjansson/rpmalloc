@@ -614,6 +614,8 @@ static uintptr_t _memory_span_mask;
 #endif
 //! Number of spans to map in each map call
 static size_t _memory_span_map_count;
+//! Number of spans to keep reserved in each heap
+static size_t _memory_heap_reserve_count;
 //! Global size classes
 static size_class_t _memory_size_class[SIZE_CLASS_COUNT];
 //! Run-time size limit of medium blocks
@@ -1091,11 +1093,11 @@ _rpmalloc_span_map_aligned_count(heap_t* heap, size_t span_count) {
 			_rpmalloc_span_mark_as_subspan_unless_master(heap->span_reserve_master, heap->span_reserve, heap->spans_reserved);
 			_rpmalloc_heap_cache_insert(heap, heap->span_reserve);
 		}
-		if (reserved_count > _memory_span_map_count) {
+		if (reserved_count > _memory_heap_reserve_count) {
 			// If huge pages, the global reserve spin lock is held by caller, _rpmalloc_span_map
 			rpmalloc_assert(atomic_load32(&_memory_global_lock) == 1, "Global spin lock not held as expected");
-			size_t remain_count = reserved_count - _memory_span_map_count;
-			reserved_count = _memory_span_map_count;
+			size_t remain_count = reserved_count - _memory_heap_reserve_count;
+			reserved_count = _memory_heap_reserve_count;
 			span_t* remain_span = (span_t*)pointer_offset(reserved_spans, reserved_count * _memory_span_size);
 			if (_memory_global_reserve) {
 				_rpmalloc_span_mark_as_subspan_unless_master(_memory_global_reserve_master, _memory_global_reserve, _memory_global_reserve_count);
@@ -1119,7 +1121,7 @@ _rpmalloc_span_map(heap_t* heap, size_t span_count) {
 		while (!atomic_cas32_acquire(&_memory_global_lock, 1, 0))
 			_rpmalloc_spin();
 		if (_memory_global_reserve_count >= span_count) {
-			size_t reserve_count = (!heap->spans_reserved ? _memory_span_map_count : span_count);
+			size_t reserve_count = (!heap->spans_reserved ? _memory_heap_reserve_count : span_count);
 			if (_memory_global_reserve_count < reserve_count)
 				reserve_count = _memory_global_reserve_count;
 			span = _rpmalloc_global_get_reserved_spans(reserve_count);
@@ -1850,7 +1852,7 @@ _rpmalloc_heap_allocate_new(void) {
 	if (span_count > heap_span_count) {
 		// Cap reserved spans
 		size_t remain_count = span_count - heap_span_count;
-		size_t reserve_count = (remain_count > _memory_span_map_count ? _memory_span_map_count : remain_count);
+		size_t reserve_count = (remain_count > _memory_heap_reserve_count ? _memory_heap_reserve_count : remain_count);
 		span_t* remain_span = (span_t*)pointer_offset(span, heap_span_count * _memory_span_size);
 		_rpmalloc_heap_set_reserved_spans(heap, span, remain_span, reserve_count);
 
@@ -2645,23 +2647,26 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		_memory_config.memory_unmap = _rpmalloc_unmap_os;
 	}
 
+#if PLATFORM_WINDOWS
+	SYSTEM_INFO system_info;
+	memset(&system_info, 0, sizeof(system_info));
+	GetSystemInfo(&system_info);
+	_memory_map_granularity = system_info.dwAllocationGranularity;
+#else
+	_memory_map_granularity = (size_t)sysconf(_SC_PAGESIZE);
+#endif
+
 #if RPMALLOC_CONFIGURABLE
 	_memory_page_size = _memory_config.page_size;
 #else
 	_memory_page_size = 0;
 #endif
 	_memory_huge_pages = 0;
-	_memory_map_granularity = _memory_page_size;
 	if (!_memory_page_size) {
 #if PLATFORM_WINDOWS
-		SYSTEM_INFO system_info;
-		memset(&system_info, 0, sizeof(system_info));
-		GetSystemInfo(&system_info);
 		_memory_page_size = system_info.dwPageSize;
-		_memory_map_granularity = system_info.dwAllocationGranularity;
 #else
-		_memory_page_size = (size_t)sysconf(_SC_PAGESIZE);
-		_memory_map_granularity = _memory_page_size;
+		_memory_page_size = _memory_map_granularity;
 		if (_memory_config.enable_huge_pages) {
 #if defined(__linux__)
 			size_t huge_page_size = 0;
@@ -2716,17 +2721,17 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 				token_privileges.Privileges[0].Luid = luid;
 				token_privileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
 				if (AdjustTokenPrivileges(token, FALSE, &token_privileges, 0, 0, 0)) {
-					DWORD err = GetLastError();
-					if (err == ERROR_SUCCESS) {
+					if (GetLastError() == ERROR_SUCCESS)
 						_memory_huge_pages = 1;
-						if (large_page_minimum > _memory_page_size)
-						 	_memory_page_size = large_page_minimum;
-						if (large_page_minimum > _memory_map_granularity)
-							_memory_map_granularity = large_page_minimum;
-					}
 				}
 			}
 			CloseHandle(token);
+		}
+		if (_memory_huge_pages) {
+			if (large_page_minimum > _memory_page_size)
+				_memory_page_size = large_page_minimum;
+			if (large_page_minimum > _memory_map_granularity)
+				_memory_map_granularity = large_page_minimum;
 		}
 	}
 #endif
@@ -2774,6 +2779,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		_memory_span_map_count = (_memory_page_size / _memory_span_size);
 	if ((_memory_page_size >= _memory_span_size) && ((_memory_span_map_count * _memory_span_size) % _memory_page_size))
 		_memory_span_map_count = (_memory_page_size / _memory_span_size);
+	_memory_heap_reserve_count = (_memory_span_map_count > DEFAULT_SPAN_MAP_COUNT) ? DEFAULT_SPAN_MAP_COUNT : _memory_span_map_count;
 
 	_memory_config.page_size = _memory_page_size;
 	_memory_config.span_size = _memory_span_size;
