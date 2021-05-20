@@ -659,8 +659,6 @@ static int32_t _mapped_pages_peak;
 static atomic32_t _master_spans;
 //! Number of unmapped dangling master spans
 static atomic32_t _unmapped_master_spans;
-//! Number of currently unused spans
-static atomic32_t _reserved_spans;
 //! Running counter of total number of mapped memory pages since start
 static atomic32_t _mapped_total;
 //! Running counter of total number of unmapped memory pages since start
@@ -1082,7 +1080,6 @@ _rpmalloc_span_map_aligned_count(heap_t* heap, size_t span_count) {
 	if (!span)
 		return 0;
 	_rpmalloc_span_initialize(span, aligned_span_count, span_count, align_offset);
-	_rpmalloc_stat_add(&_reserved_spans, aligned_span_count);
 	_rpmalloc_stat_inc(&_master_spans);
 	if (span_count <= LARGE_CLASS_COUNT)
 		_rpmalloc_stat_inc(&heap->span_use[span_count - 1].spans_map_calls);
@@ -1094,7 +1091,7 @@ _rpmalloc_span_map_aligned_count(heap_t* heap, size_t span_count) {
 			_rpmalloc_heap_cache_insert(heap, heap->span_reserve);
 		}
 		if (reserved_count > _memory_heap_reserve_count) {
-			// If huge pages, the global reserve spin lock is held by caller, _rpmalloc_span_map
+			// If huge pages or eager spam map count, the global reserve spin lock is held by caller, _rpmalloc_span_map
 			rpmalloc_assert(atomic_load32(&_memory_global_lock) == 1, "Global spin lock not held as expected");
 			size_t remain_count = reserved_count - _memory_heap_reserve_count;
 			reserved_count = _memory_heap_reserve_count;
@@ -1116,7 +1113,8 @@ _rpmalloc_span_map(heap_t* heap, size_t span_count) {
 	if (span_count <= heap->spans_reserved)
 		return _rpmalloc_span_map_from_reserve(heap, span_count);
 	span_t* span = 0;
-	if (_memory_page_size > _memory_span_size) {
+	int use_global_reserve = (_memory_page_size > _memory_span_size) || (_memory_span_map_count > _memory_heap_reserve_count);
+	if (use_global_reserve) {
 		// If huge pages, make sure only one thread maps more memory to avoid bloat
 		while (!atomic_cas32_acquire(&_memory_global_lock, 1, 0))
 			_rpmalloc_spin();
@@ -1137,7 +1135,7 @@ _rpmalloc_span_map(heap_t* heap, size_t span_count) {
 	}
 	if (!span)
 		span = _rpmalloc_span_map_aligned_count(heap, span_count);
-	if (_memory_page_size > _memory_span_size)
+	if (use_global_reserve)
 		atomic_store32_release(&_memory_global_lock, 0);
 	return span;
 }
@@ -1157,10 +1155,8 @@ _rpmalloc_span_unmap(span_t* span) {
 	if (!is_master) {
 		//Directly unmap subspans (unless huge pages, in which case we defer and unmap entire page range with master)
 		rpmalloc_assert(span->align_offset == 0, "Span align offset corrupted");
-		if (_memory_span_size >= _memory_page_size) {
+		if (_memory_span_size >= _memory_page_size)
 			_rpmalloc_unmap(span, span_count * _memory_span_size, 0, 0);
-			_rpmalloc_stat_sub(&_reserved_spans, span_count);
-		}
 	} else {
 		//Special double flag to denote an unmapped master
 		//It must be kept in memory since span header must be used
@@ -1174,7 +1170,6 @@ _rpmalloc_span_unmap(span_t* span) {
 		size_t unmap_count = master->span_count;
 		if (_memory_span_size < _memory_page_size)
 			unmap_count = master->total_spans;
-		_rpmalloc_stat_sub(&_reserved_spans, unmap_count);
 		_rpmalloc_stat_sub(&_master_spans, 1);
 		_rpmalloc_stat_sub(&_unmapped_master_spans, 1);
 		_rpmalloc_unmap(master, unmap_count * _memory_span_size, master->align_offset, (size_t)master->total_spans * _memory_span_size);
@@ -1826,7 +1821,6 @@ _rpmalloc_heap_allocate_new(void) {
 			return 0;
 
 		// Master span will contain the heaps
-		_rpmalloc_stat_add(&_reserved_spans, span_count);
 		_rpmalloc_stat_inc(&_master_spans);
 		_rpmalloc_span_initialize(span, span_count, heap_span_count, align_offset);
 	}
@@ -2824,7 +2818,6 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	atomic_store32(&_mapped_pages, 0);
 	_mapped_pages_peak = 0;
 	atomic_store32(&_master_spans, 0);
-	atomic_store32(&_reserved_spans, 0);
 	atomic_store32(&_mapped_total, 0);
 	atomic_store32(&_unmapped_total, 0);
 	atomic_store32(&_mapped_pages_os, 0);
@@ -2880,7 +2873,6 @@ rpmalloc_finalize(void) {
 #if ENABLE_STATISTICS
 	//If you hit these asserts you probably have memory leaks (perhaps global scope data doing dynamic allocations) or double frees in your code
 	rpmalloc_assert(atomic_load32(&_mapped_pages) == 0, "Memory leak detected");
-	rpmalloc_assert(atomic_load32(&_reserved_spans) == 0, "Memory leak detected");
 	rpmalloc_assert(atomic_load32(&_mapped_pages_os) == 0, "Memory leak detected");
 #endif
 
@@ -3237,15 +3229,13 @@ rpmalloc_dump_statistics(void* file) {
 	size_t mapped_peak = (size_t)_mapped_pages_peak * _memory_page_size;
 	size_t mapped_total = (size_t)atomic_load32(&_mapped_total) * _memory_page_size;
 	size_t unmapped_total = (size_t)atomic_load32(&_unmapped_total) * _memory_page_size;
-	size_t reserved_total = (size_t)atomic_load32(&_reserved_spans) * _memory_span_size;
-	fprintf(file, "MappedMiB MappedOSMiB MappedPeakMiB MappedTotalMiB UnmappedTotalMiB ReservedTotalMiB\n");
-	fprintf(file, "%9zu %11zu %13zu %14zu %16zu %16zu\n",
+	fprintf(file, "MappedMiB MappedOSMiB MappedPeakMiB MappedTotalMiB UnmappedTotalMiB\n");
+	fprintf(file, "%9zu %11zu %13zu %14zu %16zu\n",
 		mapped / (size_t)(1024 * 1024),
 		mapped_os / (size_t)(1024 * 1024),
 		mapped_peak / (size_t)(1024 * 1024),
 		mapped_total / (size_t)(1024 * 1024),
-		unmapped_total / (size_t)(1024 * 1024),
-		reserved_total / (size_t)(1024 * 1024));
+		unmapped_total / (size_t)(1024 * 1024));
 
 	fprintf(file, "\n");
 #if 0
