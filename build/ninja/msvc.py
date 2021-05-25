@@ -172,6 +172,8 @@ class MSVCToolchain(toolchain.Toolchain):
               break
           if not self.toolchain == '':
             break
+    if self.toolchain == '':
+      raise Exception("Unable to locate any installed Visual Studio toolchain")
     self.includepaths += [os.path.join(self.toolchain, 'include')]
     if self.sdkpath == '':
       versions = ['v10.0', 'v8.1']

@@ -210,7 +210,7 @@ Provide malloc entry point replacements and automatic init/fini hooks, and a LD_
 
 Improve documentation and additional code comments
 
-Move benchmarks to separate repo, https://github.com/rampantpixels/rpmalloc-benchmark
+Move benchmarks to separate repo, https://github.com/mjansson/rpmalloc-benchmark
 
 
 1.0
