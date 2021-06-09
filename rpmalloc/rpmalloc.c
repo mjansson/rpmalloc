@@ -18,6 +18,7 @@
 //////
 
 #if defined(__clang__)
+#pragma clang diagnostic ignored "-Wreserved-identifier"
 #pragma clang diagnostic ignored "-Wunused-macros"
 #pragma clang diagnostic ignored "-Wunused-function"
 #elif defined(__GNUC__)
