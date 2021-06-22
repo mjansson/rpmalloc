@@ -362,7 +362,7 @@ test_realloc(void) {
 	for (size_t iloop = 0; iloop < 8000; ++iloop) {
 		for (size_t iptr = 0; iptr < pointer_count; ++iptr) {
 			if (iloop)
-				rpfree(rprealloc(pointers[iptr], rand() % 4096));
+				rpfree(rprealloc(pointers[iptr], (size_t)rand() % 4096));
 			pointers[iptr] = rpaligned_alloc(alignments[(iptr + iloop) % 5], iloop + iptr);
 		}
 	}

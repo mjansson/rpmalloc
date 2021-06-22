@@ -850,15 +850,16 @@ _rpmalloc_mmap_os(size_t size, size_t* offset) {
 	//Either size is a heap (a single page) or a (multiple) span - we only need to align spans, and only if larger than map granularity
 	size_t padding = ((size >= _memory_span_size) && (_memory_span_size > _memory_map_granularity)) ? _memory_span_size : 0;
 	rpmalloc_assert(size >= _memory_page_size, "Invalid mmap size");
-	retry_mmap:
 #if PLATFORM_WINDOWS
 	//Ok to MEM_COMMIT - according to MSDN, "actual physical pages are not allocated unless/until the virtual addresses are actually accessed"
 	void* ptr = VirtualAlloc(0, size + padding, (_memory_huge_pages ? MEM_LARGE_PAGES : 0) | MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 	if (!ptr) {
-		if (_memory_config.map_fail_callback && _memory_config.map_fail_callback(size + padding))
-			goto retry_mmap;
-		else
+		if (_memory_config.map_fail_callback) {
+			if (_memory_config.map_fail_callback(size + padding))
+				return _rpmalloc_mmap_os(size, offset);
+		} else {
 			rpmalloc_assert(ptr, "Failed to map virtual memory block");
+		}
 		return 0;
 	}
 #else
@@ -880,10 +881,12 @@ _rpmalloc_mmap_os(size_t size, size_t* offset) {
 	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, flags, -1, 0);
 #  endif
 	if ((ptr == MAP_FAILED) || !ptr) {
-		if (_memory_config.map_fail_callback && _memory_config.map_fail_callback(size + padding))
-			goto retry_mmap;
-		else if (errno != ENOMEM)
+		if (_memory_config.map_fail_callback) {
+			if (_memory_config.map_fail_callback(size + padding))
+				return _rpmalloc_mmap_os(size, offset);
+		} else if (errno != ENOMEM) {
 			rpmalloc_assert((ptr != MAP_FAILED) && ptr, "Failed to map virtual memory block");
+		}
 		return 0;
 	}
 #endif
