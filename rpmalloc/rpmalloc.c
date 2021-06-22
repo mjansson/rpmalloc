@@ -20,6 +20,9 @@
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wunused-macros"
 #pragma clang diagnostic ignored "-Wunused-function"
+#if __has_warning("-Wreserved-identifier")
+#pragma clang diagnostic ignored "-Wreserved-identifier"
+#endif
 #elif defined(__GNUC__)
 #pragma GCC diagnostic ignored "-Wunused-macros"
 #pragma GCC diagnostic ignored "-Wunused-function"
