@@ -1,7 +1,13 @@
 1.4.3
 
 Fixed an issue where certain combinations of memory page size and span map counts could cause
-a deadlock in the mapping of new memory pages
+a deadlock in the mapping of new memory pages.
+
+Tweaked cache levels and avoid setting spans as reserved in a heap when the heap already has
+spans in the thread cache to improve cache usage.
+
+Prefer flags to more actively evict physical pages in madvise calls when partially unmapping
+span ranges on POSIX systems.
 
 
 1.4.2
