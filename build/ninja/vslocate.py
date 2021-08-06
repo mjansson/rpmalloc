@@ -88,8 +88,15 @@ def get_vs_installations():
         ctypes.POINTER(ctypes.POINTER(ISetupConfiguration)),
         ctypes.c_void_p)
 
+    installations = []
+    dll = None
+
     dll_path = os.path.expandvars("$ProgramData\\Microsoft\\VisualStudio\\Setup\\x64\\Microsoft.VisualStudio.Setup.Configuration.Native.dll")
-    dll = ctypes.WinDLL(dll_path)
+    try:
+        dll = ctypes.WinDLL(dll_path)
+    except OSError as e:
+        #print("Failed to load Visual Studio setup configuration DLL: " + str(e))
+        return installations
 
     params_get_setup_configuration = (1, "configuration", 0), (1, "reserved", 0),
 
@@ -97,8 +104,6 @@ def get_vs_installations():
 
     configuration = ctypes.POINTER(ISetupConfiguration)()
     reserved = ctypes.c_void_p(0)
-
-    installations = []
 
     result = get_setup_configuration(ctypes.byref(configuration), reserved)
     if result != 0:
@@ -110,7 +115,7 @@ def get_vs_installations():
     enum_setup_instances = ctypes.POINTER(IEnumSetupInstances)()
     result = enum_instances(configuration, ctypes.byref(enum_setup_instances))
     if result != 0:
-    	#print("Failed to enum setup instances: " + str(result))
+        #print("Failed to enum setup instances: " + str(result))
         return installations
 
 

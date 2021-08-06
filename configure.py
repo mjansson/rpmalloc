@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join('build', 'ninja'))
 
 import generator
 
-generator = generator.Generator(project = 'rpmalloc', variables = [('bundleidentifier', 'com.rampantpixels.rpmalloc.$(binname)')])
+generator = generator.Generator(project = 'rpmalloc', variables = [('bundleidentifier', 'com.maniccoder.rpmalloc.$(binname)')])
 
 rpmalloc_lib = generator.lib(module = 'rpmalloc', libname = 'rpmalloc', sources = ['rpmalloc.c'])
 rpmalloc_test_lib = generator.lib(module = 'rpmalloc', libname = 'rpmalloc-test', sources = ['rpmalloc.c'], variables = {'defines': ['ENABLE_ASSERTS=1', 'ENABLE_STATISTICS=1', 'RPMALLOC_FIRST_CLASS_HEAPS=1', 'RPMALLOC_CONFIGURABLE=1']})

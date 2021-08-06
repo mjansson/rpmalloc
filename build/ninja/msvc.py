@@ -31,8 +31,8 @@ class MSVCToolchain(toolchain.Toolchain):
     self.linkcmd = '$toolchain$link $libpaths $configlibpaths $linkflags $linkarchflags $linkconfigflags /DEBUG /NOLOGO /SUBSYSTEM:CONSOLE /DYNAMICBASE /NXCOMPAT /MANIFEST /MANIFESTUAC:\"level=\'asInvoker\' uiAccess=\'false\'\" /TLBID:1 /PDB:$pdbpath /OUT:$out $in $libs $archlibs $oslibs'
     self.dllcmd = self.linkcmd + ' /DLL'
 
-    self.cflags = ['/D', '"' + project.upper() + '_COMPILE=1"', '/D', '"_UNICODE"',  '/D', '"UNICODE"', '/Zi', '/Oi', '/Oy-', '/GS-', '/Gy-', '/Qpar-', '/fp:fast', '/fp:except-', '/Zc:forScope', '/Zc:wchar_t', '/GR-', '/openmp-']
-    self.cwarnflags = ['/W4', '/WX']
+    self.cflags = ['/D', '"' + project.upper() + '_COMPILE=1"', '/D', '"_UNICODE"',  '/D', '"UNICODE"', '/std:c17', '/Zi', '/Oi', '/Oy-', '/GS-', '/Gy-', '/Qpar-', '/fp:fast', '/fp:except-', '/Zc:forScope', '/Zc:wchar_t', '/GR-', '/openmp-']
+    self.cwarnflags = ['/W4', '/WX', '/wd4201'] #Ignore nameless union/struct which is allowed in C11
     self.cmoreflags = []
     self.arflags = ['/ignore:4221'] #Ignore empty object file warning]
     self.linkflags = ['/DEBUG']
@@ -138,10 +138,11 @@ class MSVCToolchain(toolchain.Toolchain):
           tools_list.sort(key=StrictVersion)
           self.toolchain = os.path.join(tools_basepath, tools_list[-1])
           self.toolchain_version = major_version + ".0"
+          break
 
       if self.toolchain == '':
         toolchain = ''
-        versions = ['16.0', '15.0', '14.0', '13.0', '12.0', '11.0', '10.0']
+        versions = ['17.0', '16.0', '15.0']
         keys = [
           'HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\SxS\\VC7',
           'HKCU\\SOFTWARE\\Microsoft\\VisualStudio\\SxS\\VC7',
@@ -161,17 +162,18 @@ class MSVCToolchain(toolchain.Toolchain):
             except:
               continue
             if not toolchain == '':
-              if version == '15.0' or version == '16.0':
-                tools_basepath = os.path.join(toolchain, 'VC', 'Tools', 'MSVC')
-                tools_list = [item for item in os.listdir(tools_basepath) if os.path.isdir(os.path.join(tools_basepath, item))]
-                from distutils.version import StrictVersion
-                tools_list.sort(key=StrictVersion)
-                toolchain = os.path.join(tools_basepath, tools_list[-1])
+              tools_basepath = os.path.join(toolchain, 'VC', 'Tools', 'MSVC')
+              tools_list = [item for item in os.listdir(tools_basepath) if os.path.isdir(os.path.join(tools_basepath, item))]
+              from distutils.version import StrictVersion
+              tools_list.sort(key=StrictVersion)
+              toolchain = os.path.join(tools_basepath, tools_list[-1])
               self.toolchain = toolchain
               self.toolchain_version = version
               break
           if not self.toolchain == '':
             break
+    if self.toolchain == '':
+      raise Exception("Unable to locate any installed Visual Studio toolchain")
     self.includepaths += [os.path.join(self.toolchain, 'include')]
     if self.sdkpath == '':
       versions = ['v10.0', 'v8.1']
@@ -237,13 +239,10 @@ class MSVCToolchain(toolchain.Toolchain):
     return []
 
   def make_arch_toolchain_path(self, arch):
-    if self.toolchain_version == '15.0' or self.toolchain_version == '16.0':
-      if arch == 'x86-64':
-        return os.path.join(self.toolchain, 'bin', 'HostX64', 'x64\\')
-      elif arch == 'x86':
-        return os.path.join(self.toolchain, 'bin', 'HostX64', 'x86\\')
     if arch == 'x86-64':
-      return os.path.join(self.toolchain, 'bin', 'amd64\\')
+      return os.path.join(self.toolchain, 'bin', 'HostX64', 'x64\\')
+    elif arch == 'x86':
+      return os.path.join(self.toolchain, 'bin', 'HostX64', 'x86\\')
     return os.path.join(self.toolchain, 'bin\\')
 
   def make_carchflags(self, arch, targettype):
@@ -321,20 +320,14 @@ class MSVCToolchain(toolchain.Toolchain):
       libpaths += [os.path.join(libpath, self.libpath, config, arch) for libpath in extralibpaths]
     if self.sdkpath != '':
       if arch == 'x86':
-        if self.toolchain_version == '15.0' or self.toolchain_version == '16.0':
-          libpaths += [os.path.join(self.toolchain, 'lib', 'x86')]
-        else:
-          libpaths += [os.path.join(self.toolchain, 'lib')]
+        libpaths += [os.path.join(self.toolchain, 'lib', 'x86')]
         if self.sdkversion == 'v8.1':
           libpaths += [os.path.join( self.sdkpath, 'lib', 'winv6.3', 'um', 'x86')]
         if self.sdkversion == 'v10.0':
           libpaths += [os.path.join(self.sdkpath, 'lib', self.sdkversionpath, 'um', 'x86')]
           libpaths += [os.path.join(self.sdkpath, 'lib', self.sdkversionpath, 'ucrt', 'x86')]
       else:
-        if self.toolchain_version == '15.0' or self.toolchain_version == '16.0':
-          libpaths += [os.path.join( self.toolchain, 'lib', 'x64')]
-        else:
-          libpaths += [os.path.join( self.toolchain, 'lib', 'amd64')]
+        libpaths += [os.path.join( self.toolchain, 'lib', 'x64')]
         if self.sdkversion == 'v8.1':
           libpaths += [os.path.join( self.sdkpath, 'lib', 'winv6.3', 'um', 'x64')]
         if self.sdkversion == 'v10.0':

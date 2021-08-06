@@ -3,6 +3,9 @@
 #include <errno.h>
 
 #ifdef _MSC_VER
+#  if !defined(__clang__)
+#    pragma warning (disable: 5105)
+#  endif
 #  define ATTRIBUTE_NORETURN
 #else
 #  define ATTRIBUTE_NORETURN __attribute__((noreturn))

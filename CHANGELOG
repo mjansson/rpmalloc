@@ -1,3 +1,15 @@
+1.4.3
+
+Fixed an issue where certain combinations of memory page size and span map counts could cause
+a deadlock in the mapping of new memory pages.
+
+Tweaked cache levels and avoid setting spans as reserved in a heap when the heap already has
+spans in the thread cache to improve cache usage.
+
+Prefer flags to more actively evict physical pages in madvise calls when partially unmapping
+span ranges on POSIX systems.
+
+
 1.4.2
 
 Fixed an issue where calling _exit might hang the main thread cleanup in rpmalloc if another
@@ -204,7 +216,7 @@ Provide malloc entry point replacements and automatic init/fini hooks, and a LD_
 
 Improve documentation and additional code comments
 
-Move benchmarks to separate repo, https://github.com/rampantpixels/rpmalloc-benchmark
+Move benchmarks to separate repo, https://github.com/mjansson/rpmalloc-benchmark
 
 
 1.0
