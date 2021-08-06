@@ -2,6 +2,11 @@
 #if defined(_WIN32) && !defined(_CRT_SECURE_NO_WARNINGS)
 #  define _CRT_SECURE_NO_WARNINGS
 #endif
+#ifdef _MSC_VER
+#  if !defined(__clang__)
+#    pragma warning (disable: 5105)
+#  endif
+#endif
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wnonportable-system-include-path"
 #endif

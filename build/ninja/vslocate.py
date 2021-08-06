@@ -115,7 +115,7 @@ def get_vs_installations():
     enum_setup_instances = ctypes.POINTER(IEnumSetupInstances)()
     result = enum_instances(configuration, ctypes.byref(enum_setup_instances))
     if result != 0:
-    	#print("Failed to enum setup instances: " + str(result))
+        #print("Failed to enum setup instances: " + str(result))
         return installations
 
 

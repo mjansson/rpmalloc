@@ -110,6 +110,7 @@
 
 /// Platform and arch specifics
 #if defined(_MSC_VER) && !defined(__clang__)
+#  pragma warning (disable: 5105)
 #  ifndef FORCEINLINE
 #    define FORCEINLINE inline __forceinline
 #  endif
