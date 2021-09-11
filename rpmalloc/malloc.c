@@ -314,9 +314,17 @@ initializer(void) {
 
 #elif defined(_MSC_VER)
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #pragma section(".CRT$XIB",read)
 __declspec(allocate(".CRT$XIB")) void (*_rpmalloc_module_init)(void) = _global_rpmalloc_init;
 #pragma comment(linker, "/include:_rpmalloc_module_init")
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
 
