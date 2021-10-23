@@ -213,7 +213,7 @@ void* memalign(size_t alignment, size_t size) RPALIAS(rpmemalign)
 int posix_memalign(void** memptr, size_t alignment, size_t size) RPALIAS(rpposix_memalign)
 void free(void* ptr) RPALIAS(rpfree)
 void cfree(void* ptr) RPALIAS(rpfree)
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(__FreeBSD__)
 size_t malloc_usable_size(const void* ptr) RPALIAS(rpmalloc_usable_size)
 #else
 size_t malloc_usable_size(void* ptr) RPALIAS(rpmalloc_usable_size)
