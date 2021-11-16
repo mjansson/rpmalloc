@@ -33,7 +33,7 @@ Configuration of the thread and global caches can be important depending on your
 
 # Required functions
 
-Before calling any other function in the API, you __MUST__ call the initialization function, either __rpmalloc_initialize__ or __pmalloc_initialize_config__, or you will get undefined behaviour when calling other rpmalloc entry point.
+Before calling any other function in the API, you __MUST__ call the initialization function, either __rpmalloc_initialize__ or __rpmalloc_initialize_config__, or you will get undefined behaviour when calling other rpmalloc entry point.
 
 Before terminating your use of the allocator, you __SHOULD__ call __rpmalloc_finalize__ in order to release caches and unmap virtual memory, as well as prepare the allocator for global scope cleanup at process exit or dynamic library unload depending on your use case.
 
@@ -124,9 +124,9 @@ To reduce system call overhead, memory spans are mapped in batches controlled by
 On macOS and iOS mmap requests are tagged with tag 240 for easy identification with the vmmap tool.
 
 # Span breaking
-Super spans (spans a multiple > 1 of the span size) can be subdivided into smaller spans to fulfull a need to map a new span of memory. By default the allocator will greedily grab and break any larger span from the available caches before mapping new virtual memory. However, spans can currently not be glued together to form larger super spans again. Subspans can traverse the cache and be used by different threads individually.
+Super spans (spans a multiple > 1 of the span size) can be subdivided into smaller spans to fulfill a need to map a new span of memory. By default the allocator will greedily grab and break any larger span from the available caches before mapping new virtual memory. However, spans can currently not be glued together to form larger super spans again. Subspans can traverse the cache and be used by different threads individually.
 
-A span that is a subspan of a larger super span can be individually decommitted to reduce physical memory pressure when the span is evicted from caches and scheduled to be unmapped. The entire original super span will keep track of the subspans it is broken up into, and when the entire range is decommitted tha super span will be unmapped. This allows platforms like Windows that require the entire virtual memory range that was mapped in a call to VirtualAlloc to be unmapped in one call to VirtualFree, while still decommitting individual pages in subspans (if the page size is smaller than the span size).
+A span that is a subspan of a larger super span can be individually decommitted to reduce physical memory pressure when the span is evicted from caches and scheduled to be unmapped. The entire original super span will keep track of the subspans it is broken up into, and when the entire range is decommitted the super span will be unmapped. This allows platforms like Windows that require the entire virtual memory range that was mapped in a call to VirtualAlloc to be unmapped in one call to VirtualFree, while still decommitting individual pages in subspans (if the page size is smaller than the span size).
 
 If you use a custom memory map/unmap function you need to take this into account by looking at the `release` parameter given to the `memory_unmap` function. It is set to 0 for decommitting individual pages and the total super span byte size for finally releasing the entire super span memory range.
 
