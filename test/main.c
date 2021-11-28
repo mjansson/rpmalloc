@@ -25,8 +25,8 @@
 #define pointer_offset(ptr, ofs) (void*)((char*)(ptr) + (ptrdiff_t)(ofs))
 #define pointer_diff(first, second) (ptrdiff_t)((const char*)(first) - (const char*)(second))
 
-static size_t _hardware_threads;
-static int _test_failed;
+static size_t hardware_threads;
+static int test_failed;
 
 static void
 test_initialize(void);
@@ -35,7 +35,7 @@ static int
 test_fail_cb(const char* reason, const char* file, int line) {
 	fprintf(stderr, "FAIL: %s @ %s:%d\n", reason, file, line);
 	fflush(stderr);
-	_test_failed = 1;
+	test_failed = 1;
 	return -1;
 }
 
@@ -670,7 +670,7 @@ crossallocator_thread(void* argp) {
 
 	rpfree(extra_pointers);
 
-	while ((next_crossthread < end_crossthread) && !_test_failed) {
+	while ((next_crossthread < end_crossthread) && !test_failed) {
 		if (arg.crossthread_pointers[next_crossthread]) {
 			rpfree(arg.crossthread_pointers[next_crossthread]);
 			arg.crossthread_pointers[next_crossthread] = 0;
@@ -799,7 +799,7 @@ test_thread_implementation(void) {
 	size_t num_alloc_threads;
 	allocator_thread_arg_t arg;
 
-	num_alloc_threads = _hardware_threads;
+	num_alloc_threads = hardware_threads;
 	if (num_alloc_threads < 2)
 		num_alloc_threads = 2;
 	if (num_alloc_threads > 32)
@@ -874,7 +874,7 @@ test_crossthread(void) {
 
 	rpmalloc_initialize();
 
-	size_t num_alloc_threads = _hardware_threads;
+	size_t num_alloc_threads = hardware_threads;
 	if (num_alloc_threads < 2)
 		num_alloc_threads = 2;
 	if (num_alloc_threads > 16)
@@ -950,7 +950,7 @@ test_threadspam(void) {
 	rpmalloc_initialize();
 
 	num_passes = 100;
-	num_alloc_threads = _hardware_threads;
+	num_alloc_threads = hardware_threads;
 	if (num_alloc_threads < 2)
 		num_alloc_threads = 2;
 #if defined(__LLP64__) || defined(__LP64__) || defined(_WIN64)
@@ -1017,7 +1017,7 @@ test_first_class_heaps(void) {
 
 	rpmalloc_initialize();
 
-	num_alloc_threads = _hardware_threads * 2;
+	num_alloc_threads = hardware_threads * 2;
 	if (num_alloc_threads < 2)
 		num_alloc_threads = 2;
 	if (num_alloc_threads > 16)
@@ -1176,7 +1176,7 @@ static void
 test_initialize(void) {
 	SYSTEM_INFO system_info;
 	GetSystemInfo(&system_info);
-	_hardware_threads = (size_t)system_info.dwNumberOfProcessors;
+	hardware_threads = (size_t)system_info.dwNumberOfProcessors;
 }
 
 #elif (defined(__linux__) || defined(__linux))
@@ -1191,14 +1191,14 @@ test_initialize(void) {
 	sched_getaffinity(0, sizeof(testmask), &testmask);     //Get mask for all CPUs
 	sched_setaffinity(0, sizeof(prevmask), &prevmask);     //Reset current mask
 	int num = CPU_COUNT(&testmask);
-	_hardware_threads = (size_t)(num > 1 ? num : 1);
+	hardware_threads = (size_t)(num > 1 ? num : 1);
 }
 
 #else
 
 static void
 test_initialize(void) {
-	_hardware_threads = 1;
+	hardware_threads = 1;
 }
 
 #endif
