@@ -84,24 +84,24 @@ operator delete[](void* p, std::size_t size, std::align_val_t align) noexcept {
 
 extern void* __CRTDECL
 operator new(std::size_t size, std::align_val_t align) noexcept(false) {
-	return rpaligned_alloc(align, size);
+	return rpaligned_alloc((size_t)align, size);
 }
 
 extern void* __CRTDECL
 operator new[](std::size_t size, std::align_val_t align) noexcept(false) {
-	return rpaligned_alloc(align, size);
+	return rpaligned_alloc((size_t)align, size);
 }
 
 extern void* __CRTDECL
 operator new(std::size_t size, std::align_val_t align, const std::nothrow_t& tag) noexcept {
 	(void)sizeof(tag);
-	return rpaligned_alloc(align, size);
+	return rpaligned_alloc((size_t)align, size);
 }
 
 extern void* __CRTDECL
 operator new[](std::size_t size, std::align_val_t align, const std::nothrow_t& tag) noexcept {
 	(void)sizeof(tag);
-	return rpaligned_alloc(align, size);
+	return rpaligned_alloc((size_t)align, size);
 }
 
 #endif
