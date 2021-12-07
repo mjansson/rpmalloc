@@ -426,7 +426,7 @@ test_superalign(void) {
 	return 0;
 }
 
-typedef struct _allocator_thread_arg {
+typedef struct allocator_thread_arg_t {
 	unsigned int        loops;
 	unsigned int        passes; //max 4096
 	unsigned int        datasize[32];

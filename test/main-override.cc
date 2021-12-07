@@ -18,7 +18,7 @@
 extern "C" void* RPMALLOC_CDECL pvalloc(size_t size);
 extern "C" void* RPMALLOC_CDECL valloc(size_t size);
 
-static size_t _hardware_threads;
+static size_t hardware_thread_count;
 
 static void
 test_initialize(void);
@@ -173,7 +173,7 @@ static void
 test_initialize(void) {
 	SYSTEM_INFO system_info;
 	GetSystemInfo(&system_info);
-	_hardware_threads = static_cast<size_t>(system_info.dwNumberOfProcessors);
+	hardware_thread_count = static_cast<size_t>(system_info.dwNumberOfProcessors);
 }
 
 #elif (defined(__linux__) || defined(__linux))
@@ -188,14 +188,14 @@ test_initialize(void) {
 	sched_getaffinity(0, sizeof(testmask), &testmask);     //Get mask for all CPUs
 	sched_setaffinity(0, sizeof(prevmask), &prevmask);     //Reset current mask
 	int num = CPU_COUNT(&testmask);
-	_hardware_threads = static_cast<size_t>(num > 1 ? num : 1);
+	hardware_thread_count = static_cast<size_t>(num > 1 ? num : 1);
 }
 
 #else
 
 static void
 test_initialize(void) {
-	_hardware_threads = 1;
+	hardware_thread_count = 4;
 }
 
 #endif
