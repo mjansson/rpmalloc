@@ -142,7 +142,7 @@ class Toolchain(object):
       else:
         self.archs = [localarch]
     elif self.target.is_macos():
-      self.archs = ['x86-64']
+      self.archs = ['x86-64', 'arm64']
     elif self.target.is_ios():
       self.archs = ['arm7', 'arm64']
     elif self.target.is_raspberrypi():

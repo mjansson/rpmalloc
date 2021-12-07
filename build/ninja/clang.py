@@ -29,9 +29,9 @@ class ClangToolchain(toolchain.Toolchain):
     #Default variables
     self.sysroot = ''
     if self.target.is_ios():
-      self.deploymenttarget = '9.0'
+      self.deploymenttarget = '15.0'
     if self.target.is_macos():
-      self.deploymenttarget = '10.7'
+      self.deploymenttarget = '12.0'
 
     #Command definitions
     self.cccmd = '$toolchain$cc -MMD -MT $out -MF $out.d $includepaths $moreincludepaths $cflags $carchflags $cconfigflags $cmoreflags $cenvflags -c $in -o $out'
@@ -48,7 +48,7 @@ class ClangToolchain(toolchain.Toolchain):
     #Base flags
     self.cflags = ['-D' + project.upper() + '_COMPILE=1',
                    '-funit-at-a-time', '-fstrict-aliasing', '-fvisibility=hidden', '-fno-stack-protector',
-                   '-fomit-frame-pointer', '-fno-math-errno','-ffinite-math-only', '-funsafe-math-optimizations',
+                   '-fno-math-errno','-ffinite-math-only', '-funsafe-math-optimizations',
                    '-fno-trapping-math', '-ffast-math']
     self.cwarnflags = ['-W', '-Werror', '-pedantic', '-Wall', '-Weverything',
                        '-Wno-c++98-compat', '-Wno-padded', '-Wno-documentation-unknown-command',
@@ -84,8 +84,13 @@ class ClangToolchain(toolchain.Toolchain):
       self.cflags += ['-D_GNU_SOURCE=1']
       self.linkflags += ['-lpthread']
       self.oslibs += ['m']
-    if not self.target.is_windows():
+    if (not self.target.is_windows()) and (not self.target.is_macos()) and (not self.target.is_ios()):
       self.linkflags += ['-fomit-frame-pointer']
+    if self.target.is_macos() or self.target.is_ios():
+      # Needed for backtrace() system call (implemented as simple frame pointer walk by Apple)
+      self.cflags += ['-fno-omit-frame-pointer']
+    else:
+      self.cflags += ['-fomit-frame-pointer']
 
     self.includepaths = self.prefix_includepaths((includepaths or []) + ['.'])
 

@@ -22,9 +22,9 @@ class XCode(object):
     self.bundleidentifier = ''
     self.provisioning = ''
     if self.target.is_macos():
-      self.deploymenttarget = '10.7'
+      self.deploymenttarget = '12.0'
     elif self.target.is_ios():
-      self.deploymenttarget = '8.0'
+      self.deploymenttarget = '15.0'
 
   def build_toolchain(self):
     if self.target.is_macos():
