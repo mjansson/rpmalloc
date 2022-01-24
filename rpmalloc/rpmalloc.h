@@ -143,7 +143,8 @@ typedef struct rpmalloc_config_t {
 	//  larger than 65535 (storable in an uint16_t), if it is you must use natural
 	//  alignment to shift it into 16 bits. If you set a memory_map function, you
 	//  must also set a memory_unmap function or else the default implementation will
-	//  be used for both.
+	//  be used for both. This function must be thread safe, it can be called by
+	//  multiple threads simultaneously.
 	void* (*memory_map)(size_t size, size_t* offset);
 	//! Unmap the memory pages starting at address and spanning the given number of bytes.
 	//  If release is set to non-zero, the unmap is for an entire span range as returned by
@@ -151,7 +152,8 @@ typedef struct rpmalloc_config_t {
 	//  release argument holds the size of the entire span range. If release is set to 0,
 	//  the unmap is a partial decommit of a subset of the mapped memory range.
 	//  If you set a memory_unmap function, you must also set a memory_map function or
-	//  else the default implementation will be used for both.
+	//  else the default implementation will be used for both. This function must be thread
+	//  safe, it can be called by multiple threads simultaneously.
 	void (*memory_unmap)(void* address, size_t size, size_t offset, size_t release);
 	//! Called when an assert fails, if asserts are enabled. Will use the standard assert()
 	//  if this is not set.
