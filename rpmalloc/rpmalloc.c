@@ -832,9 +832,12 @@ static void*
 _rpmalloc_mmap(size_t size, size_t* offset) {
 	rpmalloc_assert(!(size % _memory_page_size), "Invalid mmap size");
 	rpmalloc_assert(size >= _memory_page_size, "Invalid mmap size");
-	_rpmalloc_stat_add_peak(&_mapped_pages, (size >> _memory_page_size_shift), _mapped_pages_peak);
-	_rpmalloc_stat_add(&_mapped_total, (size >> _memory_page_size_shift));
-	return _memory_config.memory_map(size, offset);
+	void* address = _memory_config.memory_map(size, offset);
+	if (EXPECTED(address != 0)) {
+		_rpmalloc_stat_add_peak(&_mapped_pages, (size >> _memory_page_size_shift), _mapped_pages_peak);
+		_rpmalloc_stat_add(&_mapped_total, (size >> _memory_page_size_shift));
+	}
+	return address;
 }
 
 //! Unmap virtual memory
