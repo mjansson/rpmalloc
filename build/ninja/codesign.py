@@ -61,6 +61,9 @@ parser.add_argument('--prefs', type=str,
 parser.add_argument('--config', type=str,
                     help = 'Build configuration',
                     default = '')
+parser.add_argument('--entitlements', type=str,
+                    help = 'Entitlements file',
+                    default = '')
 options = parser.parse_args()
 
 androidprefs = {}
@@ -93,13 +96,13 @@ def codesign_ios():
   if not 'provisioning' in iosprefs:
     iosprefs['provisioning'] = options.provisioning
 
-  sdkdir = subprocess.check_output( [ 'xcrun', '--sdk', 'iphoneos', '--show-sdk-path' ] ).strip()
+  sdkdir = subprocess.check_output( [ 'xcrun', '--sdk', 'iphoneos', '--show-sdk-path' ] ).decode().strip().splitlines()[-1]
   entitlements = os.path.join( sdkdir, 'Entitlements.plist' )
   plistpath = os.path.join( options.builddir, 'Entitlements.xcent' )
 
-  platformpath = subprocess.check_output( [ 'xcrun', '--sdk', 'iphoneos', '--show-sdk-platform-path' ] ).strip()
+  platformpath = subprocess.check_output( [ 'xcrun', '--sdk', 'iphoneos', '--show-sdk-platform-path' ] ).decode().strip().splitlines()[-1]
   localpath = platformpath + "/Developer/usr/bin:/Applications/Xcode.app/Contents/Developer/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-  plutil = "PATH=" + localpath + " " + subprocess.check_output( [ 'xcrun', '--sdk', 'iphoneos', '-f', 'plutil' ] ).strip()
+  plutil = "PATH=" + localpath + " " + subprocess.check_output( [ 'xcrun', '--sdk', 'iphoneos', '-f', 'plutil' ] ).decode().strip().splitlines()[-1]
 
   shutil.copyfile( entitlements, plistpath )
   os.system( plutil + ' -convert xml1 ' + plistpath )
@@ -142,16 +145,23 @@ def codesign_macos():
     macosprefs['bundleidentifier'] = options.bundle
   if not 'provisioning' in macosprefs:
     macosprefs['provisioning'] = options.provisioning
+  if not 'entitlements' in macosprefs:
+    macosprefs['entitlements'] = options.entitlements
 
-  codesign_allocate = subprocess.check_output( [ 'xcrun', '--sdk', 'macosx', '-f', 'codesign_allocate' ] ).strip()
-  sdkdir = subprocess.check_output( [ 'xcrun', '--sdk', 'macosx', '--show-sdk-path' ] ).strip()
+  codesign_allocate = subprocess.check_output( [ 'xcrun', '--sdk', 'macosx', '-f', 'codesign_allocate' ] ).decode().strip().splitlines()[-1]
+  sdkdir = subprocess.check_output( [ 'xcrun', '--sdk', 'macosx', '--show-sdk-path' ] ).decode().strip().splitlines()[-1]
   entitlements = os.path.join( sdkdir, 'Entitlements.plist' )
 
   if os.path.isfile( os.path.join( options.file, 'Contents', '_CodeSignature', 'CodeResources' ) ):
     os.remove( os.path.join( options.file, 'Contents', '_CodeSignature', 'CodeResources' ) )
 
   if 'signature' in macosprefs:
-    os.system( 'export CODESIGN_ALLOCATE=' + codesign_allocate + '; /usr/bin/codesign --force --sign ' + macosprefs['signature'] + ' ' + options.file )
+    command = 'export CODESIGN_ALLOCATE=' + codesign_allocate + '; /usr/bin/codesign --force --sign "' + macosprefs['signature'] + '" -o runtime '
+    if ('entitlements' in macosprefs) and (macosprefs['entitlements'] != '') and (macosprefs['entitlements'] != 'none'):
+      command = command + '--entitlements ' + macosprefs['entitlements'] + ' --generate-entitlement-der '
+    command = command + options.file
+    # print(command)
+    os.system(command)
 
   if os.path.isfile( os.path.join( options.file, 'Contents', '_CodeSignature', 'CodeResources' ) ):
     os.utime( os.path.join( options.file, 'Contents', '_CodeSignature', 'CodeResources' ), None )

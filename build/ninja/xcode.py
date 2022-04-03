@@ -34,13 +34,13 @@ class XCode(object):
       sdk = 'iphoneos'
       deploytarget = 'IPHONEOS_DEPLOYMENT_TARGET=' + self.deploymenttarget
 
-    platformpath = toolchain.check_output(['xcrun', '--sdk', sdk, '--show-sdk-platform-path'])
+    platformpath = toolchain.check_last_output(['xcrun', '--sdk', sdk, '--show-sdk-platform-path'])
     localpath = platformpath + "/Developer/usr/bin:/Applications/Xcode.app/Contents/Developer/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-    self.plist = "PATH=" + localpath + " " + toolchain.check_output(['xcrun', '--sdk', sdk, '-f', 'plutil'])
-    self.xcassets = "PATH=" + localpath + " " + toolchain.check_output(['xcrun', '--sdk', sdk, '-f', 'actool'])
-    self.xib = "PATH=" + localpath + " " + toolchain.check_output(['xcrun', '--sdk', sdk, '-f', 'ibtool'])
-    self.dsymutil = "PATH=" + localpath + " " + toolchain.check_output(['xcrun', '--sdk', sdk, '-f', 'dsymutil'])
+    self.plist = "PATH=" + localpath + " " + toolchain.check_last_output(['xcrun', '--sdk', sdk, '-f', 'plutil'])
+    self.xcassets = "PATH=" + localpath + " " + toolchain.check_last_output(['xcrun', '--sdk', sdk, '-f', 'actool'])
+    self.xib = "PATH=" + localpath + " " + toolchain.check_last_output(['xcrun', '--sdk', sdk, '-f', 'ibtool'])
+    self.dsymutil = "PATH=" + localpath + " " + toolchain.check_last_output(['xcrun', '--sdk', sdk, '-f', 'dsymutil'])
 
     self.plistcmd = 'build/ninja/plist.py --exename $exename --prodname $prodname --bundle $bundleidentifier --target $target --deploymenttarget $deploymenttarget --output $outpath $in'
     if self.target.is_macos():
@@ -58,7 +58,7 @@ class XCode(object):
                     ' --output-partial-info-plist $outplist --auto-activate-custom-fonts' \
                     ' --output-format human-readable-text --compile $outpath $in &> /dev/null '
     self.dsymutilcmd = '$dsymutil $in -o $outpath'
-    self.codesigncmd = 'build/ninja/codesign.py --target $target --prefs codesign.json --builddir $builddir --binname $binname --config $config $outpath'
+    self.codesigncmd = 'build/ninja/codesign.py --target $target --prefs codesign.json --builddir $builddir --binname $binname --config $config --entitlements $entitlements $outpath'
 
   def parse_default_variables(self, variables):
     if not variables:
@@ -106,6 +106,7 @@ class XCode(object):
     writer.variable('dsymutil', self.dsymutil)
     writer.variable('bundleidentifier', syntax.escape(self.bundleidentifier))
     writer.variable('deploymenttarget', self.deploymenttarget)
+    writer.variable('entitlements', 'none')
 
   def write_rules(self, writer):
     writer.rule('dsymutil', command = self.dsymutilcmd, description = 'DSYMUTIL $outpath')
@@ -147,6 +148,7 @@ class XCode(object):
       plists = []
       assetsplists = []
       xibplists = []
+      entitlements = []
 
       #All resource output files
       outfiles = []
@@ -183,6 +185,8 @@ class XCode(object):
           has_resources = True
         elif resource.endswith('.plist'):
           plists += [os.path.join(basepath, module, resource)]
+        elif resource.endswith('.entitlements'):
+          entitlements += [os.path.join(basepath, module, resource)]
 
       #Extra output files/directories
       outfiles = []
@@ -213,6 +217,8 @@ class XCode(object):
       elif self.target.is_macos():
         if self.provisioning != '':
           codesignvars += [('provisioning', self.provisioning)]
+        if len(entitlements) > 0:
+          codesignvars += [('entitlements', entitlements[0])]
         writer.build([os.path.join(apppath, 'Contents', '_CodeSignature', 'CodeResources'), os.path.join(apppath, 'Contents', '_CodeSignature'), os.path.join(apppath, 'Contents'), apppath], 'codesign', builtbin, implicit = builtres + [os.path.join('build', 'ninja', 'codesign.py')], variables = codesignvars)
 
     return builtbin + builtsym + builtres

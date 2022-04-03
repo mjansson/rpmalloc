@@ -19,6 +19,11 @@ def check_output(args):
   import subprocess
   return subprocess.check_output(args).decode().strip()
 
+def check_last_output(args):
+  import subprocess
+  output = subprocess.check_output(args).decode().strip()
+  return output.splitlines()[-1]
+
 def supported_toolchains():
   return ['msvc', 'gcc', 'clang', 'intel']
 
