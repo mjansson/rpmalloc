@@ -10,6 +10,10 @@ import unicodedata
 
 def normalize_char(c):
   try:
+    UNICODE_EXISTS = bool(type(unicode))
+  except NameError:
+    unicode = lambda s: str(s)
+  try:
     cname = unicodedata.name( unicode(c) )
     cname = cname[:cname.index( ' WITH' )]
     return unicodedata.lookup( cname )
@@ -29,7 +33,7 @@ def replace_var( str, var, val ):
 
 parser = argparse.ArgumentParser( description = 'PList utility for Ninja builds' )
 parser.add_argument( 'files',
-                     metavar = 'file', type=file, nargs='+',
+                     metavar = 'file', type=open, nargs='+',
                      help = 'Source plist file' )
 parser.add_argument( '--exename', type=str,
                      help = 'Executable name',
@@ -59,15 +63,18 @@ if not options.target:
   options.target = 'macos'
 if not options.deploymenttarget:
   if options.target == 'macos':
-    options.deploymenttarget = '10.7'
+    options.deploymenttarget = '12.0'
   else:
-    options.deploymenttarget = '6.0'
+    options.deploymenttarget = '10.0'
 
-buildversion = subprocess.check_output( [ 'sw_vers', '-buildVersion' ] ).strip()
+buildversion = subprocess.check_output( [ 'sw_vers', '-buildVersion' ] ).decode().strip()
 
-#Merge inputs using first file as base
+#Merge input plists using first file as base
 lines = []
 for f in options.files:
+  _, extension = os.path.splitext(f.name)
+  if extension != '.plist':
+    continue
   if lines == []:
     lines += [ line.strip( '\n\r' ) for line in f ]
   else:
@@ -171,8 +178,8 @@ with open( options.output, 'w' ) as plist_file:
 
 #run plutil -convert binary1
 sdk = 'iphoneos'
-platformpath = subprocess.check_output( [ 'xcrun', '--sdk', sdk, '--show-sdk-platform-path' ] ).strip()
+platformpath = subprocess.check_output( [ 'xcrun', '--sdk', sdk, '--show-sdk-platform-path' ] ).decode().strip()
 localpath = platformpath + "/Developer/usr/bin:/Applications/Xcode.app/Contents/Developer/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-plutil = "PATH=" + localpath + " " + subprocess.check_output( [ 'xcrun', '--sdk', sdk, '-f', 'plutil' ] ).strip()
-os.system( plutil + ' -convert binary1 ' + options.output )
-
+plutil = "PATH=" + localpath + " " + subprocess.check_output( [ 'xcrun', '--sdk', sdk, '-f', 'plutil' ] ).decode().strip()
+plcommand = plutil + ' -convert binary1 ' + options.output 
+os.system( plcommand )
