@@ -15,10 +15,12 @@
 #include <thread.h>
 #include <test.h>
 
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #include <math.h>
 #include <time.h>
 
@@ -1124,6 +1126,42 @@ test_large_pages(void) {
 	return ret;
 }
 
+static int
+test_named_pages(void) {
+	rpmalloc_config_t config = {0};
+	char page_name[64] = {0};
+	snprintf(page_name, sizeof(page_name), "rpmalloc ::%s::", __func__);
+	config.page_name = page_name;
+	rpmalloc_initialize_config(&config);
+	char name[256], buf[4096] = {0};
+	int pid;
+
+	void* testptr = rpmalloc(16 * 1024 * 1024);
+#if defined(__linux__)
+	pid = getpid();
+	snprintf(name, sizeof(name), "/proc/%d/maps", pid);
+	int fd = open(name, O_RDONLY);
+	if (fd != -1) {
+		read(fd, buf, sizeof(buf));
+		close(fd);
+	}
+#endif
+	rpfree(testptr);
+
+	rpmalloc_finalize();
+
+	printf("Named pages test passed\n");
+#if defined(__linux__)
+	// Since it s kernel version and config dependent
+	// we do not make an issue out of it.
+	if (!strstr(buf, page_name)) {
+		printf("\tbut the page did not get an id as expected\n");
+	}
+#endif
+
+	return 0;
+}
+
 int
 test_run(int argc, char** argv) {
 	(void)sizeof(argc);
@@ -1144,6 +1182,8 @@ test_run(int argc, char** argv) {
 	if (test_first_class_heaps())
 		return -1;
 	if (test_large_pages())
+		return -1;
+	if (test_named_pages())
 		return -1;
 	if (test_error())
 		return -1;

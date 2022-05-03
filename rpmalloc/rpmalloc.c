@@ -133,6 +133,13 @@
 #  include <stdio.h>
 #  include <stdlib.h>
 #  include <time.h>
+#  if defined(__linux__) || defined(__ANDROID__)
+#    include <sys/prctl.h>
+#    if !defined(PR_SET_VMA)
+#      define PR_SET_VMA 0x53564d41
+#      define PR_SET_VMA_ANON_NAME 0
+#    endif
+#  endif
 #  if defined(__APPLE__)
 #    include <TargetConditionals.h>
 #    if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
@@ -824,6 +831,23 @@ _rpmalloc_thread_destructor(void* value) {
 ///
 //////
 
+static void
+_rpmalloc_set_name(void* address, size_t size) {
+	const char *name = _memory_huge_pages ? _memory_config.huge_page_name : _memory_config.page_name;
+	if (address == MAP_FAILED || !name) {
+		return;
+	}
+#if defined(__linux__) || defined(__ANDROID__)
+	// If the kernel does not support CONFIG_ANON_VMA_NAME or if the call fails
+	// (e.g. invalid name) it is a no-op basically.
+	(void)prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, (uintptr_t)address, size, (uintptr_t)name);
+#else
+	(void)size;
+	(void)name;
+#endif
+}
+
+
 //! Map more virtual memory
 //  size is number of bytes to map
 //  offset receives the offset in bytes from start of mapped region
@@ -896,6 +920,7 @@ _rpmalloc_mmap_os(size_t size, size_t* offset) {
 		}
 	}
 #    endif
+	_rpmalloc_set_name(ptr, size + padding);
 #  elif defined(MAP_ALIGNED)
 	const size_t align = (sizeof(size_t) * 8) - (size_t)(__builtin_clzl(size - 1));
 	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, (_memory_huge_pages ? MAP_ALIGNED(align) : 0) | flags, -1, 0);
