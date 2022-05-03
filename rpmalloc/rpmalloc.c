@@ -688,9 +688,6 @@ static atomic32_t _huge_pages_current;
 static int32_t _huge_pages_peak;
 #endif
 
-static const char _memory_huge_page_name[] = "rpmalloc Huge Page";
-static const char _memory_page_name[] = "rpmalloc Page";
-
 ////////////
 ///
 /// Thread local heap and ID
@@ -835,8 +832,9 @@ _rpmalloc_thread_destructor(void* value) {
 //////
 
 static void
-_rpmalloc_set_name(void* address, size_t size, const char *name) {
-	if (address == MAP_FAILED || !_memory_config.named_pages) {
+_rpmalloc_set_name(void* address, size_t size) {
+	const char *name = _memory_huge_pages ? _memory_config.huge_page_name : _memory_config.page_name;
+	if (address == MAP_FAILED || !name) {
 		return;
 	}
 #if defined(__linux__) || defined(__ANDROID__)
@@ -922,7 +920,7 @@ _rpmalloc_mmap_os(size_t size, size_t* offset) {
 		}
 	}
 #    endif
-	_rpmalloc_set_name(ptr, size + padding, (_memory_huge_pages ? _memory_huge_page_name : _memory_page_name));
+	_rpmalloc_set_name(ptr, size + padding);
 #  elif defined(MAP_ALIGNED)
 	const size_t align = (sizeof(size_t) * 8) - (size_t)(__builtin_clzl(size - 1));
 	void* ptr = mmap(0, size + padding, PROT_READ | PROT_WRITE, (_memory_huge_pages ? MAP_ALIGNED(align) : 0) | flags, -1, 0);

@@ -1129,7 +1129,9 @@ test_large_pages(void) {
 static int
 test_named_pages(void) {
 	rpmalloc_config_t config = {0};
-	config.named_pages = 1;
+	char page_name[64] = {0};
+	snprintf(page_name, sizeof(page_name), "rpmalloc ::%s::", __func__);
+	config.page_name = page_name;
 	rpmalloc_initialize_config(&config);
 	char name[256], buf[4096] = {0};
 	int pid;
@@ -1152,7 +1154,7 @@ test_named_pages(void) {
 #if defined(__linux__)
 	// Since it s kernel version and config dependent
 	// we do not make an issue out of it.
-	if (!strstr(buf, "[anon:rpmalloc Page]")) {
+	if (!strstr(buf, page_name)) {
 		printf("\tbut the page did not get an id as expected\n");
 	}
 #endif

@@ -186,7 +186,10 @@ typedef struct rpmalloc_config_t {
 	//  For Windows, see https://docs.microsoft.com/en-us/windows/desktop/memory/large-page-support
 	//  For Linux, see https://www.kernel.org/doc/Documentation/vm/hugetlbpage.txt
 	int enable_huge_pages;
-	int named_pages;
+	//! Respectively allocated pages and huge allocated pages names for systems
+	//  supporting it to be able to distinguish among anonymous regions.
+	const char *page_name;
+	const char *huge_page_name;
 } rpmalloc_config_t;
 
 //! Initialize allocator with default configuration
