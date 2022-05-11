@@ -1133,12 +1133,11 @@ test_named_pages(void) {
 	snprintf(page_name, sizeof(page_name), "rpmalloc ::%s::", __func__);
 	config.page_name = page_name;
 	rpmalloc_initialize_config(&config);
-	char name[256], buf[4096] = {0};
-	int pid;
 
 	void* testptr = rpmalloc(16 * 1024 * 1024);
 #if defined(__linux__)
-	pid = getpid();
+	char name[256], buf[4096] = {0};
+	int pid = getpid();
 	snprintf(name, sizeof(name), "/proc/%d/maps", pid);
 	int fd = open(name, O_RDONLY);
 	if (fd != -1) {
