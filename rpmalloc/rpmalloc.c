@@ -833,17 +833,16 @@ _rpmalloc_thread_destructor(void* value) {
 
 static void
 _rpmalloc_set_name(void* address, size_t size) {
-	const char *name = _memory_huge_pages ? _memory_config.huge_page_name : _memory_config.page_name;
-	if (address == MAP_FAILED || !name) {
-		return;
-	}
 #if defined(__linux__) || defined(__ANDROID__)
+	const char *name = _memory_huge_pages ? _memory_config.huge_page_name : _memory_config.page_name;
+	if (address == MAP_FAILED || !name)
+		return;
 	// If the kernel does not support CONFIG_ANON_VMA_NAME or if the call fails
 	// (e.g. invalid name) it is a no-op basically.
 	(void)prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, (uintptr_t)address, size, (uintptr_t)name);
 #else
-	(void)size;
-	(void)name;
+	(void)sizeof(size);
+	(void)sizeof(address);
 #endif
 }
 
