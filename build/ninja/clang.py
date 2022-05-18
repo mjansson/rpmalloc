@@ -535,7 +535,7 @@ class ClangToolchain(toolchain.Toolchain):
     return writer.build(os.path.join(outfile, self.buildtarget), 'ar', infiles, variables = localvariables);
 
   def builder_apple_multisharedlib(self, writer, config, arch, targettype, infiles, outfile, variables):
-    return writer.build(os.path.join(outfile, self.buildtarget), 'so', infiles, implicit = self.implicit_deps(config, variables), variables = self.link_variables(config, arch, targettype, variables))
+    return writer.build(os.path.join(outfile, self.buildtarget), 'lipo', infiles, implicit = self.implicit_deps(config, variables), variables = variables)
 
   def builder_apple_multibin(self, writer, config, arch, targettype, infiles, outfile, variables):
     return writer.build(os.path.join(outfile, self.buildtarget), 'lipo', infiles, variables = variables)
