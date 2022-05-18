@@ -4,7 +4,9 @@
 #endif
 
 #include <rpmalloc.h>
+#ifdef _WIN32
 #include <rpnew.h>
+#endif
 #include <thread.h>
 #include <test.h>
 
