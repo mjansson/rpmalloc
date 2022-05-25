@@ -32,7 +32,7 @@ class MSVCToolchain(toolchain.Toolchain):
     self.dllcmd = self.linkcmd + ' /DLL'
 
     self.cflags = ['/D', '"' + project.upper() + '_COMPILE=1"', '/D', '"_UNICODE"',  '/D', '"UNICODE"', '/std:c17', '/Zi', '/Oi', '/Oy-', '/GS-', '/Gy-', '/Qpar-', '/fp:fast', '/fp:except-', '/Zc:forScope', '/Zc:wchar_t', '/GR-', '/openmp-']
-    self.cwarnflags = ['/W4', '/WX', '/wd4201'] #Ignore nameless union/struct which is allowed in C11
+    self.cwarnflags = ['/W4', '/WX', '/wd4201', '/wd4530'] #Ignore nameless union/struct which is allowed in C11
     self.cmoreflags = []
     self.arflags = ['/ignore:4221'] #Ignore empty object file warning]
     self.linkflags = ['/DEBUG']

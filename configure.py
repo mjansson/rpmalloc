@@ -22,3 +22,4 @@ if not generator.target.is_android() and not generator.target.is_ios():
 
 	generator.bin(module = 'test', sources = ['thread.c', 'main.c'], binname = 'rpmalloc-test', implicit_deps = [rpmalloc_test_lib], libs = ['rpmalloc-test'], includepaths = ['rpmalloc', 'test'], variables = {'defines': ['ENABLE_ASSERTS=1', 'ENABLE_STATISTICS=1', 'RPMALLOC_FIRST_CLASS_HEAPS=1', 'RPMALLOC_CONFIGURABLE=1']})
 	generator.bin(module = 'test', sources = ['thread.c', 'main-override.cc'], binname = 'rpmallocwrap-test', implicit_deps = [rpmallocwrap_lib], libs = ['rpmallocwrap'], includepaths = ['rpmalloc', 'test'], variables = {'runtime': 'c++', 'defines': ['ENABLE_ASSERTS=1', 'ENABLE_STATISTICS=1']})
+	generator.bin(module = 'test', sources = ['bug.cc'], binname = 'bug-test', implicit_deps = [rpmallocwrap_lib], libs = ['rpmallocwrap'], includepaths = ['rpmalloc', 'test'], variables = {'runtime': 'c++'})

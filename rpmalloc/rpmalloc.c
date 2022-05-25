@@ -2340,6 +2340,24 @@ _rpmalloc_deallocate_direct_small_or_medium(span_t* span, void* block) {
 	*((void**)block) = span->free_list;
 	--span->used_count;
 	span->free_list = block;
+#if 0 // Fix 1: synchronised read of span->list_size (performance impact?)
+	void* free_list;
+	do {
+		free_list = atomic_exchange_ptr_acquire(&span->free_list_deferred, INVALID_POINTER);
+	} while (free_list == INVALID_POINTER);
+	int used_count_equals_list_size = (span->used_count == span->list_size);
+	atomic_store_ptr_release(&span->free_list_deferred, free_list);
+	if (UNEXPECTED(used_count_equals_list_size)) {
+		_rpmalloc_span_double_link_list_remove(&heap->size_class[span->size_class].partial_span, span);
+		_rpmalloc_span_release_to_cache(heap, span);
+	}
+#endif
+#if 0 // Fix 2: avoid using span->list_size and only handle the more common case (memory impact?)
+	if (UNEXPECTED(span->used_count == 0)) {
+		_rpmalloc_span_double_link_list_remove(&heap->size_class[span->size_class].partial_span, span);
+		_rpmalloc_span_release_to_cache(heap, span);
+	}
+#endif
 	if (UNEXPECTED(span->used_count == span->list_size)) {
 		_rpmalloc_span_double_link_list_remove(&heap->size_class[span->size_class].partial_span, span);
 		_rpmalloc_span_release_to_cache(heap, span);
@@ -2368,7 +2386,21 @@ _rpmalloc_deallocate_defer_small_or_medium(span_t* span, void* block) {
 		free_list = atomic_exchange_ptr_acquire(&span->free_list_deferred, INVALID_POINTER);
 	} while (free_list == INVALID_POINTER);
 	*((void**)block) = free_list;
+#if 0
 	uint32_t free_count = ++span->list_size;
+#else
+	// Delay to make bug repro less painful.
+	++span->list_size;
+	_rpmalloc_spin();
+	_rpmalloc_spin();
+	_rpmalloc_spin();
+	_rpmalloc_spin();
+	_rpmalloc_spin();
+	_rpmalloc_spin();
+	_rpmalloc_spin();
+	_rpmalloc_spin();
+	uint32_t free_count = span->list_size;
+#endif
 	atomic_store_ptr_release(&span->free_list_deferred, block);
 	if (free_count == span->block_count) {
 		// Span was completely freed by this block. Due to the INVALID_POINTER spin lock
