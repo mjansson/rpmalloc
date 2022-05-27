@@ -2380,8 +2380,17 @@ _rpmalloc_deallocate_direct_small_or_medium(span_t* span, void* block) {
 	--span->used_count;
 	span->free_list = block;
 	if (UNEXPECTED(span->used_count == span->list_size)) {
-		_rpmalloc_span_double_link_list_remove(&heap->size_class[span->size_class].partial_span, span);
-		_rpmalloc_span_release_to_cache(heap, span);
+		// Make sure we have synchronized the deferred list and list size by using acquire semantics
+		void* free_list;
+		do {
+			free_list = atomic_exchange_ptr_acquire(&span->free_list_deferred, INVALID_POINTER);
+		} while (free_list == INVALID_POINTER);
+		int all_free = (span->used_count == span->list_size);
+		atomic_store_ptr_release(&span->free_list_deferred, free_list);
+		if (all_free) {
+			_rpmalloc_span_double_link_list_remove(&heap->size_class[span->size_class].partial_span, span);
+			_rpmalloc_span_release_to_cache(heap, span);
+		}
 	}
 }
 
