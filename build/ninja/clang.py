@@ -47,7 +47,7 @@ class ClangToolchain(toolchain.Toolchain):
 
     #Base flags
     self.cflags = ['-D' + project.upper() + '_COMPILE=1',
-                   '-funit-at-a-time', '-fstrict-aliasing', '-fvisibility=hidden', '-fno-stack-protector',
+                   '-funit-at-a-time', '-fstrict-aliasing', '-fvisibility=default', '-fno-stack-protector',
                    '-fno-math-errno','-ffinite-math-only', '-funsafe-math-optimizations',
                    '-fno-trapping-math', '-ffast-math']
     self.cwarnflags = ['-W', '-Werror', '-pedantic', '-Wall', '-Weverything',

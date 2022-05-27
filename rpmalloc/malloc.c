@@ -94,8 +94,8 @@ extern inline size_t RPMALLOC_CDECL malloc_size(void* ptr) { return rpmalloc_usa
 // Overload the C++ operators using the mangled names (https://itanium-cxx-abi.github.io/cxx-abi/abi.html#mangling)
 // operators delete and delete[]
 #define RPDEFVIS __attribute__((visibility("default")))
-extern void _ZdlPv(void* p); void _ZdlPv(void* p) { rpfree(p); }
-extern void _ZdaPv(void* p); void _ZdaPv(void* p) { rpfree(p); }
+extern void _ZdlPv(void* p); void RPDEFVIS _ZdlPv(void* p) { rpfree(p); }
+extern void _ZdaPv(void* p); void RPDEFVIS _ZdaPv(void* p) { rpfree(p); }
 #if ARCH_64BIT
 // 64-bit operators new and new[], normal and aligned
 extern void* _Znwm(uint64_t size); void* RPDEFVIS _Znwm(uint64_t size) { return rpmalloc(size); }
