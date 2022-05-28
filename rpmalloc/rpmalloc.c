@@ -2380,7 +2380,6 @@ _rpmalloc_deallocate_direct_small_or_medium(span_t* span, void* block) {
 	--span->used_count;
 	span->free_list = block;
 	if (UNEXPECTED(span->used_count == span->list_size)) {
-		int all_remaining_free_or_deferred = 1;
 		// If there are no used blocks it is guaranteed that no other external thread is accessing the span
 		if (span->used_count) {
 			// Make sure we have synchronized the deferred list and list size by using acquire semantics
@@ -2389,13 +2388,10 @@ _rpmalloc_deallocate_direct_small_or_medium(span_t* span, void* block) {
 			do {
 				free_list = atomic_exchange_ptr_acquire(&span->free_list_deferred, INVALID_POINTER);
 			} while (free_list == INVALID_POINTER);
-			all_remaining_free_or_deferred = (span->used_count == span->list_size);
 			atomic_store_ptr_release(&span->free_list_deferred, free_list);
 		}
-		if (all_remaining_free_or_deferred) {
-			_rpmalloc_span_double_link_list_remove(&heap->size_class[span->size_class].partial_span, span);
-			_rpmalloc_span_release_to_cache(heap, span);
-		}
+		_rpmalloc_span_double_link_list_remove(&heap->size_class[span->size_class].partial_span, span);
+		_rpmalloc_span_release_to_cache(heap, span);
 	}
 }
 
