@@ -2381,13 +2381,14 @@ _rpmalloc_deallocate_direct_small_or_medium(span_t* span, void* block) {
 	span->free_list = block;
 	if (UNEXPECTED(span->used_count == span->list_size)) {
 		// Make sure we have synchronized the deferred list and list size by using acquire semantics
+		// and guarantee that no external thread is accessing span concurrently
 		void* free_list;
 		do {
 			free_list = atomic_exchange_ptr_acquire(&span->free_list_deferred, INVALID_POINTER);
 		} while (free_list == INVALID_POINTER);
-		int all_free = (span->used_count == span->list_size);
+		int all_remaining_deferred_free = (span->used_count == span->list_size);
 		atomic_store_ptr_release(&span->free_list_deferred, free_list);
-		if (all_free) {
+		if (all_remaining_deferred_free) {
 			_rpmalloc_span_double_link_list_remove(&heap->size_class[span->size_class].partial_span, span);
 			_rpmalloc_span_release_to_cache(heap, span);
 		}
@@ -2417,8 +2418,9 @@ _rpmalloc_deallocate_defer_small_or_medium(span_t* span, void* block) {
 	} while (free_list == INVALID_POINTER);
 	*((void**)block) = free_list;
 	uint32_t free_count = ++span->list_size;
+	int all_deferred_free = (free_count == span->block_count);
 	atomic_store_ptr_release(&span->free_list_deferred, block);
-	if (free_count == span->block_count) {
+	if (all_deferred_free) {
 		// Span was completely freed by this block. Due to the INVALID_POINTER spin lock
 		// no other thread can reach this state simultaneously on this span.
 		// Safe to move to owner heap deferred cache
