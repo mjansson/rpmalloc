@@ -1,3 +1,16 @@
+1.4.4
+
+Fixed an issue where an external thread concurrently freeing a block to the deferred list of
+a heap at the same time as owner thread freeing the last used block could cause a race condition
+ending in spen being freed multiple time.
+
+Added fallback path when huge page allocation fails to allocate and promote new pages as a
+transparent huge page
+
+Added option to name pages on Linux and Android.
+
+Compilation compatibility updates for MSYS2, FreeBSD, MacOS/clang and tinycc.
+
 1.4.3
 
 Fixed an issue where certain combinations of memory page size and span map counts could cause
