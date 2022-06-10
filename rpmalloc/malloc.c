@@ -29,7 +29,7 @@ _Static_assert(sizeof(void*) == 4, "Data type size mismatch");
 #  endif
 #endif
 
-#if (defined(__GNUC__) || defined(__clang__)) && !defined(__MACH__)
+#if (defined(__GNUC__) || defined(__clang__))
 #pragma GCC visibility push(default)
 #endif
 
@@ -39,7 +39,7 @@ _Static_assert(sizeof(void*) == 4, "Data type size mismatch");
 
 #if defined(__APPLE__) && ENABLE_PRELOAD
 #undef USE_INTERPOSE
-#define USE_INTERPOSE 1
+#define USE_INTERPOSE 0
 
 typedef struct interpose_t {
 	void* new_func;
@@ -53,7 +53,7 @@ __attribute__ ((section("__DATA, __interpose"))) = MAC_INTERPOSE_PAIR(newf, oldf
 
 #endif
 
-#if !defined(_WIN32) && !USE_INTERPOSE
+#if !defined(_WIN32) && !defined(__APPLE__)
 #undef USE_IMPLEMENT
 #undef USE_ALIAS
 #define USE_IMPLEMENT 0
@@ -146,8 +146,8 @@ __attribute__ ((section("__DATA, __interpose"))) = {
 	MAC_INTERPOSE_PAIR(rpmalloc, _Znwm),
 	MAC_INTERPOSE_PAIR(rpmalloc, _Znam),
 	//delete and delete[]
-	MAC_INTERPOSE_PAIR(rpfree, _ZdlPv),
-	MAC_INTERPOSE_PAIR(rpfree, _ZdaPv),
+	MAC_INTERPOSE_PAIR(rpfree, _ZdlPvm),
+	MAC_INTERPOSE_PAIR(rpfree, _ZdaPvm),
 	MAC_INTERPOSE_PAIR(rpmalloc, malloc),
 	MAC_INTERPOSE_PAIR(rpmalloc, calloc),
 	MAC_INTERPOSE_PAIR(rprealloc, realloc),
@@ -449,6 +449,6 @@ __libc_pvalloc(size_t size) {
 
 #endif
 
-#if (defined(__GNUC__) || defined(__clang__)) && !defined(__MACH__)
+#if (defined(__GNUC__) || defined(__clang__))
 #pragma GCC visibility pop
 #endif

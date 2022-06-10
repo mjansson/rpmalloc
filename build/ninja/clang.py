@@ -325,7 +325,7 @@ class ClangToolchain(toolchain.Toolchain):
       if arch == 'x86':
         flags += ['-arch', 'x86']
       elif arch == 'x86-64':
-        flags += ['-arch', 'x86_64']
+        flags += ['-arch', 'x86_64', '-mavx2']
       elif arch == 'arm7':
         flags += ['-arch', 'armv7']
       elif arch == 'arm64':
@@ -529,10 +529,7 @@ class ClangToolchain(toolchain.Toolchain):
 
   #Apple universal targets
   def builder_apple_multilib(self, writer, config, arch, targettype, infiles, outfile, variables):
-    localvariables = [('arflags', '-static -no_warning_for_no_symbols')]
-    if variables != None:
-      localvariables = variables + localvariables
-    return writer.build(os.path.join(outfile, self.buildtarget), 'ar', infiles, variables = localvariables);
+    return writer.build(os.path.join(outfile, self.buildtarget), 'lipo', infiles, variables = variables);
 
   def builder_apple_multisharedlib(self, writer, config, arch, targettype, infiles, outfile, variables):
     return writer.build(os.path.join(outfile, self.buildtarget), 'lipo', infiles, implicit = self.implicit_deps(config, variables), variables = variables)
