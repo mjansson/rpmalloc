@@ -1282,7 +1282,7 @@ free_list_partial_init(void** list, void** first_block, void* page_start, void* 
 }
 
 //! Initialize an unused span (from cache or mapped) to be new active span, putting the initial free list in heap class free list
-static void*
+static __declspec(noinline) void*
 _rpmalloc_span_initialize_new(heap_t* heap, span_t* span, uint32_t class_idx) {
 	rpmalloc_assert(span->span_count == 1, "Internal failure");
 	size_class_t* size_class = _memory_size_class + class_idx;
@@ -2082,6 +2082,17 @@ free_list_pop(void** list) {
 	return block;
 }
 
+//! Allocate a small/medium sized memory block from the given span initial free list
+static __declspec(noinline) void*
+_rpmalloc_allocate_from_span_initial_free_list(heap_t* heap, span_t* span, uint32_t class_idx) {
+	void* block = 0;
+	void* block_start = pointer_offset(span, SPAN_HEADER_SIZE + ((size_t)span->free_list_limit * span->block_size));
+	span->free_list_limit += free_list_partial_init(&heap->size_class_free_list[class_idx], &block,
+		(void*)((uintptr_t)block_start & ~(_memory_page_size - 1)), block_start,
+		span->block_count - span->free_list_limit, span->block_size);
+	return block;
+}
+
 //! Allocate a small/medium sized memory block from the given heap
 static void*
 _rpmalloc_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
@@ -2096,11 +2107,8 @@ _rpmalloc_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 			heap->size_class_free_list[class_idx] = span->free_list;
 			span->free_list = 0;
 		} else {
-			//If the span did not fully initialize free list, link up another page worth of blocks			
-			void* block_start = pointer_offset(span, SPAN_HEADER_SIZE + ((size_t)span->free_list_limit * span->block_size));
-			span->free_list_limit += free_list_partial_init(&heap->size_class_free_list[class_idx], &block,
-				(void*)((uintptr_t)block_start & ~(_memory_page_size - 1)), block_start,
-				span->block_count - span->free_list_limit, span->block_size);
+			//If the span did not fully initialize free list, link up another page worth of blocks
+			block = _rpmalloc_allocate_from_span_initial_free_list(heap, span, class_idx);
 		}
 		rpmalloc_assert(span->free_list_limit <= span->block_count, "Span block count corrupted");
 		span->used_count = span->free_list_limit;
@@ -2158,7 +2166,7 @@ _rpmalloc_allocate_medium(heap_t* heap, size_t size) {
 }
 
 //! Allocate a large sized memory block from the given heap
-static void*
+static __declspec(noinline) void*
 _rpmalloc_allocate_large(heap_t* heap, size_t size) {
 	rpmalloc_assert(heap, "No thread heap");
 	//Calculate number of needed max sized spans (including header)
@@ -2188,7 +2196,7 @@ _rpmalloc_allocate_large(heap_t* heap, size_t size) {
 }
 
 //! Allocate a huge block by mapping memory pages directly
-static void*
+static __declspec(noinline) void*
 _rpmalloc_allocate_huge(heap_t* heap, size_t size) {
 	rpmalloc_assert(heap, "No thread heap");
 	_rpmalloc_heap_cache_adopt_deferred(heap, 0);
@@ -2442,7 +2450,7 @@ _rpmalloc_deallocate_small_or_medium(span_t* span, void* p) {
 }
 
 //! Deallocate the given large memory block to the current heap
-static void
+static __declspec(noinline) void
 _rpmalloc_deallocate_large(span_t* span) {
 	rpmalloc_assert(span->size_class == SIZE_CLASS_LARGE, "Bad span size class");
 	rpmalloc_assert(!(span->flags & SPAN_FLAG_MASTER) || !(span->flags & SPAN_FLAG_SUBSPAN), "Span flag corrupted");
@@ -2493,7 +2501,7 @@ _rpmalloc_deallocate_large(span_t* span) {
 }
 
 //! Deallocate the given huge span
-static void
+static __declspec(noinline) void
 _rpmalloc_deallocate_huge(span_t* span) {
 	rpmalloc_assert(span->heap, "No span heap");
 #if RPMALLOC_FIRST_CLASS_HEAPS
