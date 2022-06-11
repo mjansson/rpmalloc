@@ -2915,6 +2915,8 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	memset(_memory_heaps, 0, sizeof(_memory_heaps));
 	atomic_store32_release(&_memory_global_lock, 0);
 
+	rpmalloc_linker_reference();
+
 	//Initialize this thread
 	rpmalloc_thread_initialize();
 	return 0;
@@ -3527,3 +3529,8 @@ rpmalloc_heap_thread_set_current(rpmalloc_heap_t* heap) {
 #include "malloc.c"
 
 #endif
+
+void
+rpmalloc_linker_reference(void) {
+	(void)sizeof(_rpmalloc_initialized);
+}

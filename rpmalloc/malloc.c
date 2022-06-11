@@ -37,7 +37,7 @@ _Static_assert(sizeof(void*) == 4, "Data type size mismatch");
 #define USE_INTERPOSE 0
 #define USE_ALIAS 0
 
-#if defined(__APPLE__) && ENABLE_PRELOAD
+#if defined(__APPLE__)
 #undef USE_INTERPOSE
 #define USE_INTERPOSE 1
 

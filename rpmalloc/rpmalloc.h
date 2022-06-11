@@ -292,6 +292,10 @@ rpposix_memalign(void** memptr, size_t alignment, size_t size);
 RPMALLOC_EXPORT size_t
 rpmalloc_usable_size(void* ptr);
 
+//! Dummy empty function for forcing linker symbol inclusion
+RPMALLOC_EXPORT void
+rpmalloc_linker_reference(void);
+
 #if RPMALLOC_FIRST_CLASS_HEAPS
 
 //! Heap type
