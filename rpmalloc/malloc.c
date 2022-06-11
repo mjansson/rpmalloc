@@ -39,7 +39,7 @@ _Static_assert(sizeof(void*) == 4, "Data type size mismatch");
 
 #if defined(__APPLE__) && ENABLE_PRELOAD
 #undef USE_INTERPOSE
-#define USE_INTERPOSE 0
+#define USE_INTERPOSE 1
 
 typedef struct interpose_t {
 	void* new_func;
@@ -138,6 +138,17 @@ extern void _ZdaPvjSt11align_val_t(void* p, uint32_t size, uint32_t align); void
 #endif
 #endif
 
+#if USE_INTERPOSE || USE_ALIAS
+
+static void* rpmalloc_nothrow(size_t size, rp_nothrow_t t) { (void)sizeof(t); return rpmalloc(size); }
+static void* rpaligned_alloc_reverse(size_t size, size_t align) { return rpaligned_alloc(align, size); }
+static void* rpaligned_alloc_reverse_nothrow(size_t size, size_t align, rp_nothrow_t t) { (void)sizeof(t); return rpaligned_alloc(align, size); }
+static void rpfree_size(void* p, size_t size) { (void)sizeof(size); rpfree(p); }
+static void rpfree_aligned(void* p, size_t align) { (void)sizeof(align); rpfree(p); }
+static void rpfree_size_aligned(void* p, size_t size, size_t align) { (void)sizeof(size); (void)sizeof(align); rpfree(p); }
+
+#endif
+
 #if USE_INTERPOSE
 
 __attribute__((used)) static const interpose_t macinterpose_malloc[]
@@ -145,9 +156,24 @@ __attribute__ ((section("__DATA, __interpose"))) = {
 	//new and new[]
 	MAC_INTERPOSE_PAIR(rpmalloc, _Znwm),
 	MAC_INTERPOSE_PAIR(rpmalloc, _Znam),
+	MAC_INTERPOSE_PAIR(rpaligned_alloc_reverse, _Znwmm),
+	MAC_INTERPOSE_PAIR(rpaligned_alloc_reverse, _Znamm),
+	MAC_INTERPOSE_PAIR(rpmalloc_nothrow, _ZnwmRKSt9nothrow_t),
+	MAC_INTERPOSE_PAIR(rpmalloc_nothrow, _ZnamRKSt9nothrow_t),
+	MAC_INTERPOSE_PAIR(rpaligned_alloc_reverse, _ZnwmSt11align_val_t),
+	MAC_INTERPOSE_PAIR(rpaligned_alloc_reverse, _ZnamSt11align_val_t),
+	MAC_INTERPOSE_PAIR(rpaligned_alloc_reverse_nothrow, _ZnwmSt11align_val_tRKSt9nothrow_t),
+	MAC_INTERPOSE_PAIR(rpaligned_alloc_reverse_nothrow, _ZnamSt11align_val_tRKSt9nothrow_t),
 	//delete and delete[]
-	MAC_INTERPOSE_PAIR(rpfree, _ZdlPvm),
-	MAC_INTERPOSE_PAIR(rpfree, _ZdaPvm),
+	MAC_INTERPOSE_PAIR(rpfree, _ZdlPv),
+	MAC_INTERPOSE_PAIR(rpfree, _ZdaPv),
+	MAC_INTERPOSE_PAIR(rpfree_size, _ZdlPvm),
+	MAC_INTERPOSE_PAIR(rpfree_size, _ZdaPvm),
+	MAC_INTERPOSE_PAIR(rpfree_aligned, _ZdlPvSt11align_val_t),
+	MAC_INTERPOSE_PAIR(rpfree_aligned, _ZdaPvSt11align_val_t),
+	MAC_INTERPOSE_PAIR(rpfree_size_aligned, _ZdlPvmSt11align_val_t),
+	MAC_INTERPOSE_PAIR(rpfree_size_aligned, _ZdaPvmSt11align_val_t),
+	//libc entry points
 	MAC_INTERPOSE_PAIR(rpmalloc, malloc),
 	MAC_INTERPOSE_PAIR(rpmalloc, calloc),
 	MAC_INTERPOSE_PAIR(rprealloc, realloc),
@@ -174,37 +200,45 @@ __attribute__ ((section("__DATA, __interpose"))) = {
 // operators delete and delete[]
 void _ZdlPv(void* p) RPALIAS(rpfree)
 void _ZdaPv(void* p) RPALIAS(rpfree)
-extern inline void _ZdlPvm(void* p, size_t n) { rpfree(p); (void)sizeof(n); }
-extern inline void _ZdaPvm(void* p, size_t n) { rpfree(p); (void)sizeof(n); }
-extern inline void _ZdlPvSt11align_val_t(void* p, size_t a) { rpfree(p); (void)sizeof(a); }
-extern inline void _ZdaPvSt11align_val_t(void* p, size_t a) { rpfree(p); (void)sizeof(a); }
-extern inline void _ZdlPvmSt11align_val_t(void* p, size_t n, size_t a) { rpfree(p); (void)sizeof(n); (void)sizeof(a); }
-extern inline void _ZdaPvmSt11align_val_t(void* p, size_t n, size_t a) { rpfree(p); (void)sizeof(n); (void)sizeof(a); }
 
 #if ARCH_64BIT
 // 64-bit operators new and new[], normal and aligned
 void* _Znwm(uint64_t size) RPALIAS(rpmalloc)
 void* _Znam(uint64_t size) RPALIAS(rpmalloc)
-extern inline void* _Znwmm(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
-extern inline void* _Znamm(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
-extern inline void* _ZnwmSt11align_val_t(size_t size, size_t align) { return rpaligned_alloc(align, size); }
-extern inline void* _ZnamSt11align_val_t(size_t size, size_t align) { return rpaligned_alloc(align, size); }
-extern inline void* _ZnwmRKSt9nothrow_t(size_t size, rp_nothrow_t t) { (void)sizeof(t); return rpmalloc(size); }
-extern inline void* _ZnamRKSt9nothrow_t(size_t size, rp_nothrow_t t) { (void)sizeof(t); return rpmalloc(size); }
-extern inline void* _ZnwmSt11align_val_tRKSt9nothrow_t(size_t size, size_t align, rp_nothrow_t t) { (void)sizeof(t); return rpaligned_alloc(align, size); }
-extern inline void* _ZnamSt11align_val_tRKSt9nothrow_t(size_t size, size_t align, rp_nothrow_t t) { (void)sizeof(t); return rpaligned_alloc(align, size); }
+void* _Znwmm(uint64_t size, uint64_t align) RPALIAS(rpaligned_alloc_reverse)
+void* _Znamm(uint64_t size, uint64_t align) RPALIAS(rpaligned_alloc_reverse)
+void* _ZnwmSt11align_val_t(size_t size, size_t align) RPALIAS(rpaligned_alloc_reverse)
+void* _ZnamSt11align_val_t(size_t size, size_t align) RPALIAS(rpaligned_alloc_reverse)
+void* _ZnwmRKSt9nothrow_t(size_t size, rp_nothrow_t t) RPALIAS(rpmalloc_nothrow)
+void* _ZnamRKSt9nothrow_t(size_t size, rp_nothrow_t t) RPALIAS(rpmalloc_nothrow)
+void* _ZnwmSt11align_val_tRKSt9nothrow_t(size_t size, size_t align, rp_nothrow_t t) RPALIAS(rpaligned_alloc_reverse_nothrow)
+void* _ZnamSt11align_val_tRKSt9nothrow_t(size_t size, size_t align, rp_nothrow_t t) RPALIAS(rpaligned_alloc_reverse_nothrow)
+// 64-bit operators delete and delete[], sized and aligned
+void _ZdlPvm(void* p, size_t n) RPALIAS(rpfree_size)
+void _ZdaPvm(void* p, size_t n) RPALIAS(rpfree_size)
+void _ZdlPvSt11align_val_t(void* p, size_t a) RPALIAS(rpfree_aligned)
+void _ZdaPvSt11align_val_t(void* p, size_t a) RPALIAS(rpfree_aligned)
+void _ZdlPvmSt11align_val_t(void* p, size_t n, size_t a) RPALIAS(rpfree_size_aligned)
+void _ZdaPvmSt11align_val_t(void* p, size_t n, size_t a) RPALIAS(rpfree_size_aligned)
 #else
 // 32-bit operators new and new[], normal and aligned
 void* _Znwj(uint32_t size) RPALIAS(rpmalloc)
 void* _Znaj(uint32_t size) RPALIAS(rpmalloc)
-extern inline void* _Znwjj(uint32_t size, uint32_t align) { return rpaligned_alloc(align, size); }
-extern inline void* _Znajj(uint32_t size, uint32_t align) { return rpaligned_alloc(align, size); }
-extern inline void* _ZnwjSt11align_val_t(size_t size, size_t align) { return rpaligned_alloc(align, size); }
-extern inline void* _ZnajSt11align_val_t(size_t size, size_t align) { return rpaligned_alloc(align, size); }
-extern inline void* _ZnwjRKSt9nothrow_t(size_t size, rp_nothrow_t t) { (void)sizeof(t); return rpmalloc(size); }
-extern inline void* _ZnajRKSt9nothrow_t(size_t size, rp_nothrow_t t) { (void)sizeof(t); return rpmalloc(size); }
-extern inline void* _ZnwjSt11align_val_tRKSt9nothrow_t(size_t size, size_t align, rp_nothrow_t t) { (void)sizeof(t); return rpaligned_alloc(align, size); }
-extern inline void* _ZnajSt11align_val_tRKSt9nothrow_t(size_t size, size_t align, rp_nothrow_t t) { (void)sizeof(t); return rpaligned_alloc(align, size); }
+void* _Znwjj(uint32_t size, uint32_t align) RPALIAS(rpaligned_alloc_reverse)
+void* _Znajj(uint32_t size, uint32_t align) RPALIAS(rpaligned_alloc_reverse)
+void* _ZnwjSt11align_val_t(size_t size, size_t align) RPALIAS(rpaligned_alloc_reverse)
+void* _ZnajSt11align_val_t(size_t size, size_t align) RPALIAS(rpaligned_alloc_reverse)
+void* _ZnwjRKSt9nothrow_t(size_t size, rp_nothrow_t t) RPALIAS(rpmalloc_nothrow)
+void* _ZnajRKSt9nothrow_t(size_t size, rp_nothrow_t t) RPALIAS(rpmalloc_nothrow)
+void* _ZnwjSt11align_val_tRKSt9nothrow_t(size_t size, size_t align, rp_nothrow_t t) RPALIAS(rpaligned_alloc_reverse_nothrow)
+void* _ZnajSt11align_val_tRKSt9nothrow_t(size_t size, size_t align, rp_nothrow_t t) RPALIAS(rpaligned_alloc_reverse_nothrow)
+// 32-bit operators delete and delete[], sized and aligned
+void _ZdlPvj(void* p, size_t n) RPALIAS(rpfree_size)
+void _ZdaPvj(void* p, size_t n) RPALIAS(rpfree_size)
+void _ZdlPvSt11align_val_t(void* p, size_t a) RPALIAS(rpfree_aligned)
+void _ZdaPvSt11align_val_t(void* p, size_t a) RPALIAS(rpfree_aligned)
+void _ZdlPvjSt11align_val_t(void* p, size_t n, size_t a) RPALIAS(rpfree_size_aligned)
+void _ZdaPvjSt11align_val_t(void* p, size_t n, size_t a) RPALIAS(rpfree_size_aligned)
 #endif
 
 void* malloc(size_t size) RPALIAS(rpmalloc)
