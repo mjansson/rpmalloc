@@ -325,7 +325,7 @@ class ClangToolchain(toolchain.Toolchain):
       if arch == 'x86':
         flags += ['-arch', 'x86']
       elif arch == 'x86-64':
-        flags += ['-arch', 'x86_64', '-mavx2']
+        flags += ['-arch', 'x86_64']
       elif arch == 'arm7':
         flags += ['-arch', 'armv7']
       elif arch == 'arm64':
