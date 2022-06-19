@@ -28,6 +28,35 @@
 #pragma GCC diagnostic ignored "-Wunused-function"
 #endif
 
+#if defined(__GNUC__)
+#if !defined(__has_builtin)
+#define __has_builtin(b) 0
+#endif
+
+#if __has_builtin(__builtin_memcpy_inline)
+#define _rpmalloc_memcpy_const(x, y, s) __builtin_memcpy_inline(x, y, s)
+#else
+#define _rpmalloc_memcpy_const(x, y, s)											\
+	do {														\
+		_Static_assert(__builtin_choose_expr(__builtin_constant_p(s), 1, 0), "len must be a constant integer");	\
+		memcpy(x, y, s);											\
+	} while (0)
+#endif
+
+#if __has_builtin(__builtin_memset_inline)
+#define _rpmalloc_memset_const(x, y, s) __builtin_memset_inline(x, y, s)
+#else
+#define _rpmalloc_memset_const(x, y, s)											\
+	do {														\
+		_Static_assert(__builtin_choose_expr(__builtin_constant_p(s), 1, 0), "len must be a constant integer");	\
+		memset(x, y, s);											\
+	} while (0)
+#endif
+#else
+#define _rpmalloc_memcpy_const(x, y, s) memcpy(x, y, s)
+#define _rpmalloc_memset_const(x, y, s) memset(x, y, s)
+#endif
+
 #ifndef HEAP_ARRAY_SIZE
 //! Size of heap hashmap
 #define HEAP_ARRAY_SIZE           47
@@ -1834,7 +1863,7 @@ _rpmalloc_heap_extract_new_span(heap_t* heap, heap_size_class_t* heap_size_class
 
 static void
 _rpmalloc_heap_initialize(heap_t* heap) {
-	memset(heap, 0, sizeof(heap_t));
+	_rpmalloc_memset_const(heap, 0, sizeof(heap_t));
 	//Get a new heap ID
 	heap->id = 1 + atomic_incr32(&_memory_heap_id);
 
@@ -2694,7 +2723,7 @@ _rpmalloc_adjust_size_class(size_t iclass) {
 			--prevclass;
 			//A class can be merged if number of pages and number of blocks are equal
 			if (_memory_size_class[prevclass].block_count == _memory_size_class[iclass].block_count)
-				memcpy(_memory_size_class + prevclass, _memory_size_class + iclass, sizeof(_memory_size_class[iclass]));
+				_rpmalloc_memcpy_const(_memory_size_class + prevclass, _memory_size_class + iclass, sizeof(_memory_size_class[iclass]));
 			else
 				break;
 		}
@@ -2722,7 +2751,7 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	if (config)
 		memcpy(&_memory_config, config, sizeof(rpmalloc_config_t));
 	else
-		memset(&_memory_config, 0, sizeof(rpmalloc_config_t));
+		_rpmalloc_memset_const(&_memory_config, 0, sizeof(rpmalloc_config_t));
 
 	if (!_memory_config.memory_map || !_memory_config.memory_unmap) {
 		_memory_config.memory_map = _rpmalloc_mmap_os;
