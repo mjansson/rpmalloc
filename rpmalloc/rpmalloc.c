@@ -23,6 +23,9 @@
 #if __has_warning("-Wreserved-identifier")
 #pragma clang diagnostic ignored "-Wreserved-identifier"
 #endif
+#if __has_warning("-Wstatic-in-inline")
+#pragma clang diagnostic ignored "-Wstatic-in-inline"
+#endif
 #elif defined(__GNUC__)
 #pragma GCC diagnostic ignored "-Wunused-macros"
 #pragma GCC diagnostic ignored "-Wunused-function"
