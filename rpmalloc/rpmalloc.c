@@ -1987,7 +1987,8 @@ _rpmalloc_heap_allocate(int first_class) {
 	if (!heap)
 		heap = _rpmalloc_heap_allocate_new();
 	atomic_store32_release(&_memory_global_lock, 0);
-	_rpmalloc_heap_cache_adopt_deferred(heap, 0);
+	if (heap)
+		_rpmalloc_heap_cache_adopt_deferred(heap, 0);
 	return heap;
 }
 
