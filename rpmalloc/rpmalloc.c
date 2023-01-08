@@ -1543,7 +1543,7 @@ _rpmalloc_global_cache_extract_spans(span_t** span, size_t span_count, size_t co
 
 #if ENABLE_ASSERTS
 	for (size_t ispan = 0; ispan < extract_count; ++ispan) {
-		assert(span[ispan]->span_count == span_count);
+		rpmalloc_assert(span[ispan]->span_count == span_count, "Global cache span count mismatch");
 	}
 #endif
 
