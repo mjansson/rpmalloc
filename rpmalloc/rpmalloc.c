@@ -794,11 +794,11 @@ get_thread_id(void) {
 	__asm__ volatile ("mrs %0, tpidr_el0" : "=r" (tid));
 #    endif
 #  else
-	tid = (uintptr_t)((void*)get_thread_heap_raw());
+#    error This platform needs implementation of get_thread_id()
 #  endif
 	return tid;
 #else
-	return (uintptr_t)((void*)get_thread_heap_raw());
+#    error This platform needs implementation of get_thread_id()
 #endif
 }
 
