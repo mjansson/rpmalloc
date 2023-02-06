@@ -31,10 +31,11 @@
 #pragma GCC diagnostic ignored "-Wunused-function"
 #endif
 
-#if defined(__GNUC__) || defined(__clang__)
 #if !defined(__has_builtin)
 #define __has_builtin(b) 0
 #endif
+
+#if defined(__GNUC__) || defined(__clang__)
 
 #if __has_builtin(__builtin_memcpy_inline)
 #define _rpmalloc_memcpy_const(x, y, s) __builtin_memcpy_inline(x, y, s)
@@ -58,6 +59,20 @@
 #else
 #define _rpmalloc_memcpy_const(x, y, s) memcpy(x, y, s)
 #define _rpmalloc_memset_const(x, y, s) memset(x, y, s)
+#endif
+
+#if __has_builtin(__builtin_assume)
+#define rpmalloc_assume(cond) __builtin_assume(cond)
+#elif defined(__GNUC__)
+#define rpmalloc_assume(cond) 												\
+	do {														\
+		if (!__builtin_expect(cond, false))												\
+			__builtin_unreachable();									\
+	} while (0)
+#elif defined(_MSC_VER)
+#define rpmalloc_assume(cond) __assume(cond)
+#else
+#define rpmalloc_assume(cond) 0
 #endif
 
 #ifndef HEAP_ARRAY_SIZE
@@ -2125,6 +2140,7 @@ free_list_pop(void** list) {
 static void*
 _rpmalloc_allocate_from_heap_fallback(heap_t* heap, heap_size_class_t* heap_size_class, uint32_t class_idx) {
 	span_t* span = heap_size_class->partial_span;
+	rpmalloc_assume(heap);
 	if (EXPECTED(span != 0)) {
 		rpmalloc_assert(span->block_count == _memory_size_class[span->size_class].block_count, "Span block count corrupted");
 		rpmalloc_assert(!_rpmalloc_span_is_fully_utilized(span), "Internal failure");
@@ -3384,6 +3400,7 @@ rpmalloc_heap_acquire(void) {
 	// heap is cleared with rpmalloc_heap_free_all(). Also heaps guaranteed to be
 	// pristine from the dedicated orphan list can be used.
 	heap_t* heap = _rpmalloc_heap_allocate(1);
+	rpmalloc_assume(heap != NULL);
 	heap->owner_thread = 0;
 	_rpmalloc_stat_inc(&_memory_active_heaps);
 	return heap;
