@@ -3199,7 +3199,7 @@ rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats) {
 			if (span->free_list_limit < block_count)
 				block_count = span->free_list_limit;
 			free_count += (block_count - span->used_count);
-			stats->sizecache = free_count * size_class->block_size;
+			stats->sizecache += free_count * size_class->block_size;
 			span = span->next;
 		}
 	}
@@ -3211,14 +3211,14 @@ rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats) {
 			span_cache = &heap->span_cache;
 		else
 			span_cache = (span_cache_t*)(heap->span_large_cache + (iclass - 1));
-		stats->spancache = span_cache->count * (iclass + 1) * _memory_span_size;
+		stats->spancache += span_cache->count * (iclass + 1) * _memory_span_size;
 	}
 #endif
 
 	span_t* deferred = (span_t*)atomic_load_ptr(&heap->span_free_deferred);
 	while (deferred) {
 		if (deferred->size_class != SIZE_CLASS_HUGE)
-			stats->spancache = (size_t)deferred->span_count * _memory_span_size;
+			stats->spancache += (size_t)deferred->span_count * _memory_span_size;
 		deferred = (span_t*)deferred->free_list;
 	}
 
