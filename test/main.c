@@ -96,7 +96,11 @@ test_alloc(void) {
 	}
 
 	//Verify medium block sizes (until class merging kicks in)
-	for (iloop = 1025; iloop <= 6000; ++iloop) {
+	unsigned int medium_size_limit = (unsigned int)(rpmalloc_config()->span_size / 2);
+	unsigned int check_size_limit = 1024 + 512;
+	while ((medium_size_limit / check_size_limit) != (medium_size_limit / (check_size_limit + 512)))
+		check_size_limit += 512;
+	for (iloop = 1025; iloop <= check_size_limit; ++iloop) {
 		testptr = rpmalloc(iloop);
 		wanted_usable_size = 512 * ((iloop / 512) + ((iloop % 512) ? 1 : 0));
 		if (rpmalloc_usable_size(testptr) != wanted_usable_size)
@@ -411,6 +415,8 @@ test_superalign(void) {
 	for (size_t ipass = 0; ipass < 8; ++ipass) {
 		for (size_t iloop = 0; iloop < 4096; ++iloop) {
 			for (size_t ialign = 0, asize = sizeof(alignment) / sizeof(alignment[0]); ialign < asize; ++ialign) {
+				if (alignment[ialign] >= rpmalloc_config()->span_size)
+					continue;
 				for (size_t isize = 0, ssize = sizeof(sizes) / sizeof(sizes[0]); isize < ssize; ++isize) {
 					size_t alloc_size = sizes[isize] + iloop + ipass;
 					uint8_t* ptr = rpaligned_alloc(alignment[ialign], alloc_size);

@@ -2302,7 +2302,7 @@ _rpmalloc_aligned_allocate(heap_t* heap, size_t alignment, size_t size) {
 	}
 #endif
 
-	if ((alignment <= SPAN_HEADER_SIZE) && (size < _memory_medium_size_limit)) {
+	if ((alignment <= SPAN_HEADER_SIZE) && ((size + SPAN_HEADER_SIZE) < _memory_medium_size_limit)) {
 		// If alignment is less or equal to span header size (which is power of two),
 		// and size aligned to span header size multiples is less than size + alignment,
 		// then use natural alignment of blocks to provide alignment
@@ -2940,8 +2940,10 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 		_memory_medium_size_limit = MEDIUM_SIZE_LIMIT;
 	for (iclass = 0; iclass < MEDIUM_CLASS_COUNT; ++iclass) {
 		size_t size = SMALL_SIZE_LIMIT + ((iclass + 1) * MEDIUM_GRANULARITY);
-		if (size > _memory_medium_size_limit)
+		if (size > _memory_medium_size_limit) {
+			_memory_medium_size_limit = SMALL_SIZE_LIMIT + (iclass * MEDIUM_GRANULARITY);
 			break;
+		}
 		_memory_size_class[SMALL_CLASS_COUNT + iclass].block_size = (uint32_t)size;
 		_rpmalloc_adjust_size_class(SMALL_CLASS_COUNT + iclass);
 	}
