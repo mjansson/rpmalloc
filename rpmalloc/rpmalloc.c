@@ -256,6 +256,33 @@ extern int madvise(caddr_t, size_t, int);
 #  include <stdio.h>
 #endif
 
+
+#if defined(__GNUC__) || defined(__clang__)
+
+#include <limits.h>
+static inline size_t rpmalloc_clz(uintptr_t x) {
+#if (INTPTR_MAX == LONG_MAX)
+	return (size_t)__builtin_clzl(x);
+#else
+	return (size_t)__builtin_clzll(x);
+#endif
+}
+
+#elif defined(_MSC_VER)
+
+#include <limits.h>
+static inline size_t rpmalloc_clz(uintptr_t x) {
+#if (INTPTR_MAX == LONG_MAX)
+	return (size_t)__builtin_clzl(x);
+#else
+	return (size_t)__builtin_clzll(x);
+#endif
+}
+
+#else
+#error Not implemented
+#endif
+
 //////
 ///
 /// Atomic access abstraction (since MSVC does not do C11 yet)
@@ -366,7 +393,7 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 //! Medium granularity shift count
 #define MEDIUM_GRANULARITY_SHIFT  9
 //! Number of medium block size classes
-#define MEDIUM_CLASS_COUNT        61
+#define MEDIUM_CLASS_COUNT        64
 //! Total number of small + medium size classes
 #define SIZE_CLASS_COUNT          (SMALL_CLASS_COUNT + MEDIUM_CLASS_COUNT)
 //! Number of large block size classes
@@ -617,9 +644,7 @@ struct size_class_t {
 	//! Size of blocks in this class
 	uint32_t block_size;
 	//! Number of blocks in each chunk
-	uint16_t block_count;
-	//! Class index this class is merged with
-	uint16_t class_idx;
+	uint32_t block_count;
 };
 _Static_assert(sizeof(size_class_t) == 8, "Size class size mismatch");
 
@@ -734,6 +759,24 @@ static atomic32_t _huge_pages_current;
 //! Peak number of currently allocated pages in huge allocations
 static int32_t _huge_pages_peak;
 #endif
+
+static inline uint32_t rpmalloc_size_class(size_t size) {
+	uintptr_t wsize = (size + (SMALL_GRANULARITY - 1)) / SMALL_GRANULARITY;
+	if (wsize <= 16) {
+	    rpmalloc_assert(_memory_size_class[wsize].block_size >= size, "Size class misconfiguration");
+		return (uint32_t)wsize;
+	}
+	--wsize;
+#if (INTPTR_MAX == LONG_MAX)
+    const uint32_t bsr = (uint32_t)(64 - 1 - (int)rpmalloc_clz(wsize));
+#else
+    const uint32_t bsr = (uint32_t)(32 - 1 - (int)rpmalloc_clz(wsize));
+#endif
+    const uint32_t shifted_bits = (wsize >> (bsr - 2)) & 0x03;
+    const uint32_t iclass = (uint32_t)((bsr << 2) + shifted_bits) + 1;
+    rpmalloc_assert(_memory_size_class[iclass].block_size >= size, "Size class misconfiguration");
+    return iclass;
+}
 
 ////////////
 ///
@@ -2191,8 +2234,7 @@ _rpmalloc_allocate_from_heap_fallback(heap_t* heap, heap_size_class_t* heap_size
 static void*
 _rpmalloc_allocate_small(heap_t* heap, size_t size) {
 	rpmalloc_assert(heap, "No thread heap");
-	//Small sizes have unique size classes
-	const uint32_t class_idx = (uint32_t)((size + (SMALL_GRANULARITY - 1)) >> SMALL_GRANULARITY_SHIFT);
+	const uint32_t class_idx = rpmalloc_size_class(size);
 	heap_size_class_t* heap_size_class = heap->size_class + class_idx;
 	_rpmalloc_stat_inc_alloc(heap, class_idx);
 	if (EXPECTED(heap_size_class->free_list != 0))
@@ -2204,9 +2246,7 @@ _rpmalloc_allocate_small(heap_t* heap, size_t size) {
 static void*
 _rpmalloc_allocate_medium(heap_t* heap, size_t size) {
 	rpmalloc_assert(heap, "No thread heap");
-	//Calculate the size class index and do a dependent lookup of the final class index (in case of merged classes)
-	const uint32_t base_idx = (uint32_t)(SMALL_CLASS_COUNT + ((size - (SMALL_SIZE_LIMIT + 1)) >> MEDIUM_GRANULARITY_SHIFT));
-	const uint32_t class_idx = _memory_size_class[base_idx].class_idx;
+	const uint32_t class_idx = rpmalloc_size_class(size);
 	heap_size_class_t* heap_size_class = heap->size_class + class_idx;
 	_rpmalloc_stat_inc_alloc(heap, class_idx);
 	if (EXPECTED(heap_size_class->free_list != 0))
@@ -2733,9 +2773,8 @@ _rpmalloc_adjust_size_class(size_t iclass) {
 	size_t block_size = _memory_size_class[iclass].block_size;
 	size_t block_count = (_memory_span_size - SPAN_HEADER_SIZE) / block_size;
 
-	_memory_size_class[iclass].block_count = (uint16_t)block_count;
-	_memory_size_class[iclass].class_idx = (uint16_t)iclass;
-
+	_memory_size_class[iclass].block_count = (uint32_t)block_count;
+/*
 	//Check if previous size classes can be merged
 	if (iclass >= SMALL_CLASS_COUNT) {
 		size_t prevclass = iclass;
@@ -2748,6 +2787,7 @@ _rpmalloc_adjust_size_class(size_t iclass) {
 				break;
 		}
 	}
+*/
 }
 
 //! Initialize the allocator and setup global data
@@ -2925,27 +2965,34 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 	fls_key = FlsAlloc(&_rpmalloc_thread_destructor);
 #endif
 
-	//Setup all small and medium size classes
-	size_t iclass = 0;
-	_memory_size_class[iclass].block_size = SMALL_GRANULARITY;
-	_rpmalloc_adjust_size_class(iclass);
-	for (iclass = 1; iclass < SMALL_CLASS_COUNT; ++iclass) {
-		size_t size = iclass * SMALL_GRANULARITY;
-		_memory_size_class[iclass].block_size = (uint32_t)size;
+	memset(_memory_size_class, 0, sizeof(_memory_size_class));
+
+	//Setup all small size classes with unique sizes (up to 16 * SMALL_GRANULARITY)
+	for (uint32_t iclass = 0; iclass < 16; ++iclass) {
+		_memory_size_class[iclass].block_size = iclass ? (iclass * SMALL_GRANULARITY) : SMALL_GRANULARITY;
 		_rpmalloc_adjust_size_class(iclass);
 	}
+
 	//At least two blocks per span, then fall back to large allocations
 	_memory_medium_size_limit = (_memory_span_size - SPAN_HEADER_SIZE) >> 1;
 	if (_memory_medium_size_limit > MEDIUM_SIZE_LIMIT)
 		_memory_medium_size_limit = MEDIUM_SIZE_LIMIT;
-	for (iclass = 0; iclass < MEDIUM_CLASS_COUNT; ++iclass) {
-		size_t size = SMALL_SIZE_LIMIT + ((iclass + 1) * MEDIUM_GRANULARITY);
-		if (size > _memory_medium_size_limit) {
-			_memory_medium_size_limit = SMALL_SIZE_LIMIT + (iclass * MEDIUM_GRANULARITY);
+
+	uint32_t bits = 4;
+	uint32_t shift = 1;
+	for (uint32_t iclass = 16; iclass < MEDIUM_CLASS_COUNT; ++iclass) {
+		uint32_t block_size = bits << (5 + shift);
+		if (block_size > _memory_medium_size_limit) {
+			_memory_medium_size_limit = _memory_size_class[iclass - 1].block_size;
 			break;
 		}
-		_memory_size_class[SMALL_CLASS_COUNT + iclass].block_size = (uint32_t)size;
-		_rpmalloc_adjust_size_class(SMALL_CLASS_COUNT + iclass);
+		_memory_size_class[iclass].block_size = block_size;
+		_rpmalloc_adjust_size_class(iclass);
+		bits = (bits + 1) & 0x7;
+		if (!bits) {
+			bits = 4;
+			++shift;
+		}
 	}
 
 	_memory_orphan_heaps = 0;
