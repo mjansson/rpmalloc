@@ -17,39 +17,39 @@
 extern "C" {
 #endif
 
+#define RPMALLOC_CACHE_LINE_SIZE 64
 #if defined(__clang__) || defined(__GNUC__)
-# define RPMALLOC_EXPORT __attribute__((visibility("default")))
-# define RPMALLOC_ALLOCATOR 
-# if (defined(__clang_major__) && (__clang_major__ < 4)) || (defined(__GNUC__) && defined(ENABLE_PRELOAD) && ENABLE_PRELOAD)
-# define RPMALLOC_ATTRIB_MALLOC
-# define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
-# define RPMALLOC_ATTRIB_ALLOC_SIZE2(count, size)
-# else
-# define RPMALLOC_ATTRIB_MALLOC __attribute__((__malloc__))
-# define RPMALLOC_ATTRIB_ALLOC_SIZE(size) __attribute__((alloc_size(size)))
-# define RPMALLOC_ATTRIB_ALLOC_SIZE2(count, size)  __attribute__((alloc_size(count, size)))
-# endif
-# define RPMALLOC_CDECL
-#elif defined(_MSC_VER)
-# define RPMALLOC_EXPORT
-# define RPMALLOC_ALLOCATOR __declspec(allocator) __declspec(restrict)
-# define RPMALLOC_ATTRIB_MALLOC
-# define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
-# define RPMALLOC_ATTRIB_ALLOC_SIZE2(count,size)
-# define RPMALLOC_CDECL __cdecl
+#define RPMALLOC_EXPORT __attribute__((visibility("default")))
+#define RPMALLOC_RESTRICT __restrict
+#define RPMALLOC_ALLOCATOR
+#define RPMALLOC_CACHE_ALIGNED __attribute__((aligned(RPMALLOC_CACHE_LINE_SIZE)))
+#if (defined(__clang_major__) && (__clang_major__ < 4)) || \
+    (defined(__GNUC__) && defined(ENABLE_PRELOAD) && ENABLE_PRELOAD)
+#define RPMALLOC_ATTRIB_MALLOC
+#define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
+#define RPMALLOC_ATTRIB_ALLOC_SIZE2(count, size)
 #else
-# define RPMALLOC_EXPORT
-# define RPMALLOC_ALLOCATOR
-# define RPMALLOC_ATTRIB_MALLOC
-# define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
-# define RPMALLOC_ATTRIB_ALLOC_SIZE2(count,size)
-# define RPMALLOC_CDECL
+#define RPMALLOC_ATTRIB_MALLOC __attribute__((__malloc__))
+#define RPMALLOC_ATTRIB_ALLOC_SIZE(size) __attribute__((alloc_size(size)))
+#define RPMALLOC_ATTRIB_ALLOC_SIZE2(count, size) __attribute__((alloc_size(count, size)))
 #endif
-
-//! Define RPMALLOC_CONFIGURABLE to enable configuring sizes. Will introduce
-//  a very small overhead due to some size calculations not being compile time constants
-#ifndef RPMALLOC_CONFIGURABLE
-#define RPMALLOC_CONFIGURABLE 0
+#define RPMALLOC_CDECL
+#elif defined(_MSC_VER)
+#define RPMALLOC_EXPORT
+#define RPMALLOC_RESTRICT __declspec(restrict)
+#define RPMALLOC_ALLOCATOR __declspec(allocator) __declspec(restrict)
+#define RPMALLOC_CACHE_ALIGNED __declspec(align(RPMALLOC_CACHE_LINE_SIZE))
+#define RPMALLOC_ATTRIB_MALLOC
+#define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
+#define RPMALLOC_ATTRIB_ALLOC_SIZE2(count, size)
+#define RPMALLOC_CDECL __cdecl
+#else
+#define RPMALLOC_EXPORT
+#define RPMALLOC_ALLOCATOR
+#define RPMALLOC_ATTRIB_MALLOC
+#define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
+#define RPMALLOC_ATTRIB_ALLOC_SIZE2(count, size)
+#define RPMALLOC_CDECL
 #endif
 
 //! Define RPMALLOC_FIRST_CLASS_HEAPS to enable heap based API (rpmalloc_heap_* functions).
@@ -59,22 +59,25 @@ extern "C" {
 #endif
 
 //! Flag to rpaligned_realloc to not preserve content in reallocation
-#define RPMALLOC_NO_PRESERVE    1
+#define RPMALLOC_NO_PRESERVE 1
 //! Flag to rpaligned_realloc to fail and return null pointer if grow cannot be done in-place,
 //  in which case the original pointer is still valid (just like a call to realloc which failes to allocate
 //  a new block).
-#define RPMALLOC_GROW_OR_FAIL   2
+#define RPMALLOC_GROW_OR_FAIL 2
 
 typedef struct rpmalloc_global_statistics_t {
-	//! Current amount of virtual memory mapped, all of which might not have been committed (only if ENABLE_STATISTICS=1)
+	//! Current amount of virtual memory mapped, all of which might not have been committed (only if
+	//! ENABLE_STATISTICS=1)
 	size_t mapped;
 	//! Peak amount of virtual memory mapped, all of which might not have been committed (only if ENABLE_STATISTICS=1)
 	size_t mapped_peak;
 	//! Current amount of memory in global caches for small and medium sizes (<32KiB)
 	size_t cached;
-	//! Current amount of memory allocated in huge allocations, i.e larger than LARGE_SIZE_LIMIT which is 2MiB by default (only if ENABLE_STATISTICS=1)
+	//! Current amount of memory allocated in huge allocations, i.e larger than LARGE_SIZE_LIMIT which is 2MiB by
+	//! default (only if ENABLE_STATISTICS=1)
 	size_t huge_alloc;
-	//! Peak amount of memory allocated in huge allocations, i.e larger than LARGE_SIZE_LIMIT which is 2MiB by default (only if ENABLE_STATISTICS=1)
+	//! Peak amount of memory allocated in huge allocations, i.e larger than LARGE_SIZE_LIMIT which is 2MiB by default
+	//! (only if ENABLE_STATISTICS=1)
 	size_t huge_alloc_peak;
 	//! Total amount of memory mapped since initialization (only if ENABLE_STATISTICS=1)
 	size_t mapped_total;
@@ -133,7 +136,7 @@ typedef struct rpmalloc_thread_statistics_t {
 	} size_use[128];
 } rpmalloc_thread_statistics_t;
 
-typedef struct rpmalloc_config_t {
+typedef struct rpmalloc_interface_t {
 	//! Map memory pages for the given number of bytes. The returned address MUST be
 	//  aligned to the rpmalloc span size, which will always be a power of two.
 	//  Optionally the function can store an alignment offset in the offset variable
@@ -164,6 +167,9 @@ typedef struct rpmalloc_config_t {
 	//  passed is the number of bytes that was requested in the map call. Only used if
 	//  the default system memory map function is used (memory_map callback is not set).
 	int (*map_fail_callback)(size_t size);
+} rpmalloc_interface_t;
+
+typedef struct rpmalloc_config_t {
 	//! Size of memory pages. The page size MUST be a power of two. All memory mapping
 	//  requests to memory_map will be made with size set to a multiple of the page size.
 	//  Used if RPMALLOC_CONFIGURABLE is defined to 1, otherwise system page size is used.
@@ -188,17 +194,13 @@ typedef struct rpmalloc_config_t {
 	int enable_huge_pages;
 	//! Respectively allocated pages and huge allocated pages names for systems
 	//  supporting it to be able to distinguish among anonymous regions.
-	const char *page_name;
-	const char *huge_page_name;
+	const char* page_name;
+	const char* huge_page_name;
 } rpmalloc_config_t;
 
-//! Initialize allocator with default configuration
+//! Initialize allocator
 RPMALLOC_EXPORT int
-rpmalloc_initialize(void);
-
-//! Initialize allocator with given configuration
-RPMALLOC_EXPORT int
-rpmalloc_initialize_config(const rpmalloc_config_t* config);
+rpmalloc_initialize(rpmalloc_interface_t* memory_interface);
 
 //! Get allocator configuration
 RPMALLOC_EXPORT const rpmalloc_config_t*
@@ -258,7 +260,8 @@ rprealloc(void* ptr, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_S
 //  and should ideally be less than memory page size. A caveat of rpmalloc
 //  internals is that this must also be strictly less than the span size (default 64KiB)
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
-rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize, unsigned int flags) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(3);
+rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize, unsigned int flags) RPMALLOC_ATTRIB_MALLOC
+    RPMALLOC_ATTRIB_ALLOC_SIZE(3);
 
 //! Allocate a memory block of at least the given size and alignment.
 //  Alignment must be a power of two and a multiple of sizeof(void*),
@@ -307,7 +310,8 @@ typedef struct heap_t rpmalloc_heap_t;
 RPMALLOC_EXPORT rpmalloc_heap_t*
 rpmalloc_heap_acquire(void);
 
-//! Release a heap (does NOT free the memory allocated by the heap, use rpmalloc_heap_free_all before destroying the heap).
+//! Release a heap (does NOT free the memory allocated by the heap, use rpmalloc_heap_free_all before destroying the
+//! heap).
 //  Releasing a heap will enable it to be reused by other threads. Safe to pass a null pointer.
 RPMALLOC_EXPORT void
 rpmalloc_heap_release(rpmalloc_heap_t* heap);
@@ -321,23 +325,27 @@ rpmalloc_heap_alloc(rpmalloc_heap_t* heap, size_t size) RPMALLOC_ATTRIB_MALLOC R
 //  and should ideally be less than memory page size. A caveat of rpmalloc
 //  internals is that this must also be strictly less than the span size (default 64KiB).
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
-rpmalloc_heap_aligned_alloc(rpmalloc_heap_t* heap, size_t alignment, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(3);
+rpmalloc_heap_aligned_alloc(rpmalloc_heap_t* heap, size_t alignment, size_t size) RPMALLOC_ATTRIB_MALLOC
+    RPMALLOC_ATTRIB_ALLOC_SIZE(3);
 
 //! Allocate a memory block of at least the given size using the given heap and zero initialize it.
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
-rpmalloc_heap_calloc(rpmalloc_heap_t* heap, size_t num, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE2(2, 3);
+rpmalloc_heap_calloc(rpmalloc_heap_t* heap, size_t num, size_t size) RPMALLOC_ATTRIB_MALLOC
+    RPMALLOC_ATTRIB_ALLOC_SIZE2(2, 3);
 
 //! Allocate a memory block of at least the given size using the given heap and zero initialize it. The returned
-//  block will have the requested alignment. Alignment must either be zero, or a power of two and a multiple of sizeof(void*),
-//  and should ideally be less than memory page size. A caveat of rpmalloc
-//  internals is that this must also be strictly less than the span size (default 64KiB).
+//  block will have the requested alignment. Alignment must either be zero, or a power of two and a multiple of
+//  sizeof(void*), and should ideally be less than memory page size. A caveat of rpmalloc internals is that this must
+//  also be strictly less than the span size (default 64KiB).
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
-rpmalloc_heap_aligned_calloc(rpmalloc_heap_t* heap, size_t alignment, size_t num, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE2(2, 3);
+rpmalloc_heap_aligned_calloc(rpmalloc_heap_t* heap, size_t alignment, size_t num, size_t size) RPMALLOC_ATTRIB_MALLOC
+    RPMALLOC_ATTRIB_ALLOC_SIZE2(2, 3);
 
 //! Reallocate the given block to at least the given size. The memory block MUST be allocated
 //  by the same heap given to this function.
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
-rpmalloc_heap_realloc(rpmalloc_heap_t* heap, void* ptr, size_t size, unsigned int flags) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(3);
+rpmalloc_heap_realloc(rpmalloc_heap_t* heap, void* ptr, size_t size, unsigned int flags) RPMALLOC_ATTRIB_MALLOC
+    RPMALLOC_ATTRIB_ALLOC_SIZE(3);
 
 //! Reallocate the given block to at least the given size. The memory block MUST be allocated
 //  by the same heap given to this function. The returned block will have the requested alignment.
@@ -345,7 +353,8 @@ rpmalloc_heap_realloc(rpmalloc_heap_t* heap, void* ptr, size_t size, unsigned in
 //  less than memory page size. A caveat of rpmalloc internals is that this must also be strictly less than
 //  the span size (default 64KiB).
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
-rpmalloc_heap_aligned_realloc(rpmalloc_heap_t* heap, void* ptr, size_t alignment, size_t size, unsigned int flags) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(4);
+rpmalloc_heap_aligned_realloc(rpmalloc_heap_t* heap, void* ptr, size_t alignment, size_t size,
+                              unsigned int flags) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(4);
 
 //! Free the given memory block from the given heap. The memory block MUST be allocated
 //  by the same heap given to this function.
