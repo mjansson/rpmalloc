@@ -353,12 +353,8 @@ struct page_t {
 struct span_t {
 	//! Page header
 	page_t page;
-	//! Number of bytes initialized by pages
-	uint32_t span_initialized;
-	//! Number of bytes in total
-	uint32_t span_capacity;
-	//! Number of pages currently in use
-	uint32_t page_used;
+	//! Number of pages initialized
+	uint32_t page_initialized;
 	//! Number of pages in use
 	uint32_t page_count;
 	//! Number of bytes per page
@@ -391,10 +387,10 @@ struct heap_t {
 	page_t* page_free[3];
 	//! Multithreaded free pages for each page type
 	atomicptr_t page_free_thread[3];
-	//! Available spans for each page type
-	span_t* span_available[3];
-	//! Full spans
-	span_t* span_full;
+	//! Available partially initialized spans for each page type
+	span_t* span_partial[3];
+	//! Spans in full use for each page type
+	span_t* span_used[3];
 	//! Next heap in queue
 	heap_t* next;
 	//! Memory map region offset
@@ -667,13 +663,13 @@ os_munmap(void* address, size_t size, size_t alignment, size_t offset, size_t re
 			rpmalloc_assert(0, "Failed to unmap virtual memory block");
 		}
 	} else {
-#if defined(MADV_FREE_REUSABLE)
+#if defined(MADV_DONTNEED)
+		if (madvise(address, size, MADV_DONTNEED)) {
+#elif defined(MADV_FREE_REUSABLE)
 		int ret;
 		while ((ret = madvise(address, size, MADV_FREE_REUSABLE)) == -1 && (errno == EAGAIN))
 			errno = 0;
 		if ((ret == -1) && (errno != 0)) {
-#elif defined(MADV_DONTNEED)
-		if (madvise(address, size, MADV_DONTNEED)) {
 #elif defined(MADV_PAGEOUT)
 		if (madvise(address, size, MADV_PAGEOUT)) {
 #elif defined(MADV_FREE)
@@ -699,6 +695,18 @@ os_munmap(void* address, size_t size, size_t alignment, size_t offset, size_t re
 static inline span_t*
 page_get_span(page_t* page) {
 	return (span_t*)((uintptr_t)page & SPAN_MASK);
+}
+
+static inline size_t
+page_get_size(page_t* page) {
+	if (page->page_type == PAGE_SMALL)
+		return SMALL_PAGE_SIZE;
+	else if (page->page_type == PAGE_MEDIUM)
+		return MEDIUM_PAGE_SIZE;
+	else if (page->page_type == PAGE_LARGE)
+		return LARGE_PAGE_SIZE;
+	else
+		return page_get_span(page)->page_size;
 }
 
 static inline block_t*
@@ -751,14 +759,37 @@ page_get_local_free_block(page_t* page) {
 }
 
 static inline void
+page_evict_memory_pages(page_t* page) {
+	if (page->block_initialized < (page->block_count >> 1))
+		return;
+	void* extra_page = pointer_offset(page, os_page_size);
+	size_t extra_page_size = page_get_size(page) - os_page_size;
+	global_memory_interface->memory_unmap(extra_page, extra_page_size, 0, 0, 0);
+}
+
+static inline void
 page_put_local_free_block(page_t* page, block_t* block) {
 	block->next = page->local_free;
 	page->local_free = block;
 	++page->local_free_count;
 	--page->block_used;
 
-	if (page->is_full) {
-		heap_t* heap = page->heap;
+	heap_t* heap = page->heap;
+	if (page->block_used == 0) {
+		rpmalloc_assert(page->is_available, "Internal page state failure");
+		if (heap->page_available[page->size_class] == page) {
+			heap->page_available[page->size_class] = page->next;
+		} else {
+			page->prev->next = page->next;
+			if (page->next)
+				page->next->prev = page->prev;
+		}
+		page->is_available = 0;
+		page->is_free = 1;
+		page_evict_memory_pages(page);
+		page->next = heap->page_free[page->page_type];
+		heap->page_free[page->page_type] = page;
+	} else if (page->is_full) {
 		page->next = heap->page_available[page->size_class];
 		if (page->next)
 			page->next->prev = page;
@@ -768,24 +799,30 @@ page_put_local_free_block(page_t* page, block_t* block) {
 	}
 }
 
-static inline block_t*
-page_get_thread_free_block(page_t* page) {
+static inline void
+page_adopt_thread_free_block_list(page_t* page) {
 	uint64_t thread_free = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
 	if (EXPECTED(thread_free != 0)) {
 		// Other threads can only replace with another valid list head, this will never change to 0 in other threads
 		while (!atomic_compare_exchange_weak_explicit(&page->thread_free, &thread_free, 0, memory_order_relaxed,
 		                                              memory_order_relaxed))
 			wait_spin();
-		block_t* block;
-		uint32_t list_count = page_block_from_thread_free_list(page, thread_free, &block);
-		page->local_free = block->next;
-		--list_count;
-		page->local_free_count = list_count;
-		rpmalloc_assert(list_count <= page->block_used, "Page thread free list count internal failure");
-		page->block_used -= list_count;
-		return block;
+		page->local_free_count = page_block_from_thread_free_list(page, thread_free, &page->local_free);
+		rpmalloc_assert(page->local_free_count <= page->block_used, "Page thread free list count internal failure");
+		page->block_used -= page->local_free_count;
 	}
-	return 0;
+}
+
+static inline block_t*
+page_get_thread_free_block(page_t* page) {
+	page_adopt_thread_free_block_list(page);
+	block_t* block = page->local_free;
+	if (block) {
+		page->local_free = block->next;
+		--page->local_free_count;
+		++page->block_used;
+	}
+	return block;
 }
 
 static inline void
@@ -808,6 +845,7 @@ page_put_thread_free_block(page_t* page, block_t* block) {
 		// Page is completely freed by multithreaded deallocations, clean up
 		// Safe since the page is marked as full and will never be touched by owning heap
 		rpmalloc_assert(page->is_full, "Mismatch between page full flag and thread free list");
+		page_evict_memory_pages(page);
 		heap_t* heap = page->heap;
 		void* prev_head = atomic_load_explicit(&heap->page_free_thread[page->page_type], memory_order_relaxed);
 		page->next = prev_head;
@@ -819,49 +857,64 @@ page_put_thread_free_block(page_t* page, block_t* block) {
 	}
 }
 
-static inline RPMALLOC_ALLOCATOR void*
-page_allocate_block(page_t* page, unsigned int zero) {
-	unsigned int is_zero = 0;
-	block_t* block = page_get_local_free_block(page);
-	if (UNEXPECTED(block == 0)) {
-		block = page_get_thread_free_block(page);
-		if (UNEXPECTED(block == 0)) {
-			rpmalloc_assert(page->block_initialized < page->block_count, "Block initialization internal failure");
-			block = page_block(page, page->block_initialized++);
-			is_zero = page->is_zero;
-			++page->block_used;
-			if (page->block_size < (os_page_size >> 1)) {
-				// Link up until next memory page in free list
-				void* memory_page_start = (void*)((uintptr_t)block & ~(uintptr_t)(os_page_size - 1));
-				void* memory_page_next = pointer_offset(memory_page_start, os_page_size);
-				block_t* free_block = pointer_offset(block, page->block_size);
-				block_t* first_block = free_block;
-				block_t* last_block = free_block;
-				while (((void*)free_block < memory_page_next) && (page->block_initialized < page->block_count)) {
-					last_block = free_block;
-					free_block->next = pointer_offset(free_block, page->block_size);
-					free_block = free_block->next;
-					++page->block_initialized;
-					++page->local_free_count;
-				}
-				if (first_block != free_block) {
-					last_block->next = 0;
-					page->local_free = first_block;
-				} else {
-					page->local_free_count = 0;
-				}
-			}
-		}
-	}
-	rpmalloc_assert(page->block_used <= page->block_count, "Page block use counter out of sync");
-
-	if (page->size_class < SMALL_SIZE_CLASS_COUNT) {
+static inline void
+page_push_local_free_to_heap(page_t* page) {
+	if ((page->size_class < SMALL_SIZE_CLASS_COUNT) && page->local_free) {
 		// Push the page free list as the fast track list of free blocks for heap
 		page->heap->small_free[page->size_class] = page->local_free;
 		page->block_used += page->local_free_count;
 		page->local_free = 0;
 		page->local_free_count = 0;
 	}
+}
+
+static inline void*
+page_initialize_blocks(page_t* page) {
+	rpmalloc_assert(page->block_initialized < page->block_count, "Block initialization internal failure");
+	block_t* block = page_block(page, page->block_initialized++);
+	++page->block_used;
+	if ((page->page_type == PAGE_SMALL) && (page->block_size < (os_page_size >> 1))) {
+		// Link up until next memory page in free list
+		void* memory_page_start = (void*)((uintptr_t)block & ~(uintptr_t)(os_page_size - 1));
+		void* memory_page_next = pointer_offset(memory_page_start, os_page_size);
+		block_t* free_block = pointer_offset(block, page->block_size);
+		block_t* first_block = free_block;
+		block_t* last_block = free_block;
+		while (((void*)free_block < memory_page_next) && (page->block_initialized < page->block_count)) {
+			last_block = free_block;
+			free_block->next = pointer_offset(free_block, page->block_size);
+			free_block = free_block->next;
+			++page->block_initialized;
+			++page->local_free_count;
+		}
+		if (first_block != free_block) {
+			last_block->next = 0;
+			page->local_free = first_block;
+		} else {
+			page->local_free_count = 0;
+		}
+	}
+	return block;
+}
+
+static inline RPMALLOC_ALLOCATOR void*
+page_allocate_block(page_t* page, unsigned int zero) {
+	unsigned int is_zero = 0;
+	block_t* block = page_get_local_free_block(page);
+	if (UNEXPECTED(block == 0)) {
+		block = page_get_thread_free_block(page);
+		if (block == 0) {
+			block = page_initialize_blocks(page);
+			is_zero = page->is_zero;
+		}
+	}
+
+	rpmalloc_assert(page->block_used <= page->block_count, "Page block use counter out of sync");
+
+	page_push_local_free_to_heap(page);
+
+	if (page->block_used == page->block_count)
+		page_adopt_thread_free_block_list(page);
 
 	if (page->block_used == page->block_count) {
 		// Page is fully utilized
@@ -923,30 +976,31 @@ span_get_page_from_block(span_t* span, void* block) {
 static inline page_t*
 span_allocate_page(span_t* span, uint32_t size_class) {
 	// Allocate path, initialize a new chunk of memory for a page in the given span
-	rpmalloc_assert((span->span_initialized + span->page_size) <= span->span_capacity,
-	                "Page initialization internal failure");
-	page_t* page = pointer_offset(span, span->span_initialized);
+	rpmalloc_assert(span->page_initialized < span->page_count, "Page initialization internal failure");
+	page_t* page = pointer_offset(span, span->page_size * span->page_initialized);
 	page->size_class = size_class;
 	page->block_size = global_size_class[size_class].block_size;
 	page->block_count = global_size_class[size_class].block_count;
 	page->block_initialized = 0;
 	page->block_used = 0;
-	if (span->span_initialized) {
+	if (span->page_initialized) {
 		page->page_type = span->page.page_type;
 		page->heap = span->page.heap;
 	}
 	page->is_zero = 1;
-	span->span_initialized += span->page_size;
+	++span->page_initialized;
 
-	if (++span->page_used == span->page_count) {
+	if (span->page_initialized == span->page_count) {
 		// Span fully utilized, unlink from available list and add to full list
 		heap_t* heap = span->page.heap;
-		if (span == heap->span_available[span->page.page_type])
-			heap->span_available[span->page.page_type] = span->next;
+		if (span == heap->span_partial[span->page.page_type])
+			heap->span_partial[span->page.page_type] = span->next;
 		else
 			span->prev->next = span->next;
-		span->next = heap->span_full;
-		heap->span_full = span;
+		span->next = heap->span_used[span->page.page_type];
+		if (span->next)
+			span->next->prev = span;
+		heap->span_used[span->page.page_type] = span;
 	}
 
 	return page;
@@ -1085,8 +1139,8 @@ heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page) {
 static inline span_t*
 heap_get_span(heap_t* heap, page_type_t page_type) {
 	// Fast path, available span for given page type
-	if (EXPECTED(heap->span_available[page_type] != 0))
-		return heap->span_available[page_type];
+	if (EXPECTED(heap->span_partial[page_type] != 0))
+		return heap->span_partial[page_type];
 
 	// Fallback path, map more memory
 	size_t offset = 0;
@@ -1101,11 +1155,10 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 		span->page.heap = heap;
 		span->page_count = SPAN_SIZE / page_size;
 		span->page_size = page_size;
-		span->span_capacity = SPAN_SIZE;
 		span->offset = (uint32_t)offset;
 		span->mapped_size = mapped_size;
 
-		heap->span_available[page_type] = span;
+		heap->span_partial[page_type] = span;
 	}
 
 	// Make sure default heap has owning thread
@@ -1301,7 +1354,7 @@ heap_reallocate_block(heap_t* heap, void* block, size_t size, size_t old_size, u
 	if (block) {
 		// Grab the span using guaranteed span alignment
 		span_t* span = block_get_span(block);
-		if (EXPECTED(span->page.size_class < SIZE_CLASS_COUNT)) {
+		if (EXPECTED(span->page.page_type <= PAGE_LARGE)) {
 			// Normal sized block
 			page_t* page = span_get_page_from_block(span, block);
 			void* blocks_start = pointer_offset(page, PAGE_HEADER_SIZE);
