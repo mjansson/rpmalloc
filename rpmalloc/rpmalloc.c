@@ -316,8 +316,6 @@ struct page_t {
 	block_t* local_free;
 	//! Local free list count
 	uint32_t local_free_count;
-	//! Multithreaded free list, block index is in low 32 bit, list count is high 32 bit
-	atomic64_t thread_free;
 	//! Size class of blocks
 	uint32_t size_class;
 	//! Block size
@@ -332,8 +330,6 @@ struct page_t {
 	page_type_t page_type;
 	//! Flag set if part of heap full list
 	uint32_t is_full : 1;
-	//! Flag set if part of heap available list
-	uint32_t is_available : 1;
 	//! Flag set if part of heap free list
 	uint32_t is_free : 1;
 	//! Flag set if blocks are zero initialied
@@ -341,13 +337,15 @@ struct page_t {
 	//! Flag set if containing aligned blocks
 	uint32_t has_aligned_block : 1;
 	//! Unused flags
-	uint32_t unused : 30;
+	uint32_t unused : 28;
 	//! Owning heap
 	heap_t* heap;
 	//! Next page in list
 	page_t* next;
 	//! Previous page in list
 	page_t* prev;
+	//! Multithreaded free list, block index is in low 32 bit, list count is high 32 bit
+	atomic64_t thread_free;
 };
 
 //! A span contains pages of a given type
@@ -360,6 +358,8 @@ struct span_t {
 	uint32_t page_count;
 	//! Number of bytes per page
 	uint32_t page_size;
+	//! Page type
+	page_type_t page_type;
 	//! Offset to start of mapped memory region
 	uint32_t offset;
 	//! Mapped size
@@ -368,6 +368,8 @@ struct span_t {
 	span_t* next;
 	//! Previous span in list
 	span_t* prev;
+	//! Owning heap
+	heap_t* heap;
 };
 
 // Control structure for a heap, either a thread heap or a first class heap if enabled
@@ -589,7 +591,7 @@ get_page_aligned_size(size_t size) {
 static void
 os_set_page_name(void* address, size_t size) {
 #if defined(__linux__) || defined(__ANDROID__)
-	const char *name = global_use_huge_pages ? global_huge_page_name : global_page_name;
+	const char* name = global_use_huge_pages ? global_huge_page_name : global_page_name;
 	if ((address == MAP_FAILED) || !name)
 		return;
 	// If the kernel does not support CONFIG_ANON_VMA_NAME or if the call fails
@@ -598,6 +600,8 @@ os_set_page_name(void* address, size_t size) {
 #else
 	(void)sizeof(size);
 	(void)sizeof(address);
+	(void)sizeof(global_huge_page_name);
+	(void)sizeof(global_page_name);
 #endif
 }
 
@@ -782,9 +786,11 @@ static inline void
 page_evict_memory_pages(page_t* page) {
 	if (page->block_initialized < (page->block_count >> 1))
 		return;
+	/*
 	void* extra_page = pointer_offset(page, os_page_size);
 	size_t extra_page_size = page_get_size(page) - os_page_size;
 	global_memory_interface->memory_unmap(extra_page, extra_page_size, 0, 0, 0);
+	*/
 }
 
 static inline void
@@ -796,7 +802,7 @@ page_put_local_free_block(page_t* page, block_t* block) {
 
 	heap_t* heap = page->heap;
 	if (page->block_used == 0) {
-		rpmalloc_assert(page->is_available, "Internal page state failure");
+		rpmalloc_assert(!page->is_full, "Internal page state failure");
 		if (heap->page_available[page->size_class] == page) {
 			heap->page_available[page->size_class] = page->next;
 		} else {
@@ -804,7 +810,6 @@ page_put_local_free_block(page_t* page, block_t* block) {
 			if (page->next)
 				page->next->prev = page->prev;
 		}
-		page->is_available = 0;
 		page->is_free = 1;
 		page_evict_memory_pages(page);
 		page->next = heap->page_free[page->page_type];
@@ -815,7 +820,6 @@ page_put_local_free_block(page_t* page, block_t* block) {
 			page->next->prev = page;
 		heap->page_available[page->size_class] = page;
 		page->is_full = 0;
-		page->is_available = 1;
 	}
 }
 
@@ -938,7 +942,7 @@ page_allocate_block(page_t* page, unsigned int zero) {
 
 	if (page->block_used == page->block_count) {
 		// Page is fully utilized
-		if (page->is_available) {
+		if (!page->is_full) {
 			heap_t* heap = page->heap;
 			if (heap->page_available[page->size_class] == page) {
 				heap->page_available[page->size_class] = page->next;
@@ -950,7 +954,6 @@ page_allocate_block(page_t* page, unsigned int zero) {
 		}
 		page->is_full = 1;
 		page->is_zero = 0;
-		page->is_available = 0;
 	}
 
 	if (zero && !is_zero && block)
@@ -1003,24 +1006,22 @@ span_allocate_page(span_t* span, uint32_t size_class) {
 	page->block_count = global_size_class[size_class].block_count;
 	page->block_initialized = 0;
 	page->block_used = 0;
-	if (span->page_initialized) {
-		page->page_type = span->page.page_type;
-		page->heap = span->page.heap;
-	}
+	page->page_type = span->page_type;
 	page->is_zero = 1;
+	page->heap = span->heap;
 	++span->page_initialized;
 
 	if (span->page_initialized == span->page_count) {
 		// Span fully utilized, unlink from available list and add to full list
-		heap_t* heap = span->page.heap;
-		if (span == heap->span_partial[span->page.page_type])
-			heap->span_partial[span->page.page_type] = span->next;
+		heap_t* heap = span->heap;
+		if (span == heap->span_partial[span->page_type])
+			heap->span_partial[span->page_type] = span->next;
 		else
 			span->prev->next = span->next;
-		span->next = heap->span_used[span->page.page_type];
+		span->next = heap->span_used[span->page_type];
 		if (span->next)
 			span->next->prev = span;
-		heap->span_used[span->page.page_type] = span;
+		heap->span_used[span->page_type] = span;
 	}
 
 	return page;
@@ -1145,7 +1146,6 @@ heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page) {
 	atomic_store_explicit(&page->thread_free, 0, memory_order_relaxed);
 	page->is_full = 0;
 	page->is_free = 0;
-	page->is_available = 1;
 	page->has_aligned_block = 0;
 	page_t* head = heap->page_available[size_class];
 	page->next = head;
@@ -1170,9 +1170,8 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 		uint32_t page_size = (page_type == PAGE_SMALL) ?
 		                         SMALL_PAGE_SIZE :
                                  ((page_type == PAGE_MEDIUM) ? MEDIUM_PAGE_SIZE : LARGE_PAGE_SIZE);
-		span->page.page_type = page_type;
-		span->page.is_zero = 1;
-		span->page.heap = heap;
+		span->page_type = page_type;
+		span->heap = heap;
 		span->page_count = SPAN_SIZE / page_size;
 		span->page_size = page_size;
 		span->offset = (uint32_t)offset;
@@ -1248,7 +1247,7 @@ heap_allocate_block(heap_t* heap, size_t size, unsigned int zero) {
 		void* block = global_memory_interface->memory_map(alloc_size, SPAN_SIZE, &offset, &mapped_size);
 		if (block) {
 			span_t* span = block;
-			span->page.page_type = PAGE_HUGE;
+			span->page_type = PAGE_HUGE;
 			span->page_size = (uint32_t)size;
 			span->offset = (uint32_t)offset;
 			span->mapped_size = mapped_size;
@@ -1374,7 +1373,7 @@ heap_reallocate_block(heap_t* heap, void* block, size_t size, size_t old_size, u
 	if (block) {
 		// Grab the span using guaranteed span alignment
 		span_t* span = block_get_span(block);
-		if (EXPECTED(span->page.page_type <= PAGE_LARGE)) {
+		if (EXPECTED(span->page_type <= PAGE_LARGE)) {
 			// Normal sized block
 			page_t* page = span_get_page_from_block(span, block);
 			void* blocks_start = pointer_offset(page, PAGE_HEADER_SIZE);
