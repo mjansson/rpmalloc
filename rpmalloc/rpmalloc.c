@@ -2821,8 +2821,22 @@ rpmalloc_initialize_config(const rpmalloc_config_t* config) {
 			size_t sz = sizeof(rc);
 
 			if (sysctlbyname("vm.pmap.pg_ps_enabled", &rc, &sz, NULL, 0) == 0 && rc == 1) {
+				static size_t defsize = 2 * 1024 * 1024;
+				int nsize = 0;
+				size_t sizes[4] = {0};
 				_memory_huge_pages = 1;
-				_memory_page_size = 2 * 1024 * 1024;
+				_memory_page_size = defsize;
+				if ((nsize = getpagesizes(sizes, 4)) >= 2) {
+					nsize --;
+					for (size_t csize = sizes[nsize]; nsize >= 0 && csize; --nsize, csize = sizes[nsize]) {
+						//! Unlikely, but as a precaution..
+						rpmalloc_assert(!(csize & (csize -1)) && !(csize % 1024), "Invalid page size");
+						if (defsize < csize) {
+							_memory_page_size = csize;
+							break;
+						}
+					}
+				}
 				_memory_map_granularity = _memory_page_size;
 			}
 #elif defined(__APPLE__) || defined(__NetBSD__)
