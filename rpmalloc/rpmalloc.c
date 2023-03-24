@@ -66,7 +66,7 @@
 #elif defined(__GNUC__)
 #define rpmalloc_assume(cond) 												\
 	do {														\
-		if (!__builtin_expect(cond, false))												\
+		if (!__builtin_expect(cond, 0))										\
 			__builtin_unreachable();									\
 	} while (0)
 #elif defined(_MSC_VER)
