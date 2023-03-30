@@ -323,14 +323,14 @@ DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
     WARN_SUPPRESS_UNUSED(reserved);
     WARN_SUPPRESS_UNUSED(instance);
     if (reason == DLL_PROCESS_ATTACH)
-    	rpmalloc_initialize();
-	else if (reason == DLL_PROCESS_DETACH)
-		rpmalloc_finalize();
-	else if (reason == DLL_THREAD_ATTACH)
-		rpmalloc_thread_initialize();
-	else if (reason == DLL_THREAD_DETACH)
-		rpmalloc_thread_finalize(1);
-	return TRUE;
+        rpmalloc_initialize();
+    else if (reason == DLL_PROCESS_DETACH)
+        rpmalloc_finalize();
+    else if (reason == DLL_THREAD_ATTACH)
+        rpmalloc_thread_initialize();
+    else if (reason == DLL_THREAD_DETACH)
+        rpmalloc_thread_finalize(1);
+    return TRUE;
 }
 
 //end BUILD_DYNAMIC_LINK
@@ -338,15 +338,15 @@ DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
 
 extern void
 _global_rpmalloc_init(void) {
-	rpmalloc_set_main_thread();
-	rpmalloc_initialize();
+    rpmalloc_set_main_thread();
+    rpmalloc_initialize();
 }
 
 #if defined(__clang__) || defined(__GNUC__)
 
 static void __attribute__((constructor))
 initializer(void) {
-	_global_rpmalloc_init();
+    _global_rpmalloc_init();
 }
 
 #elif defined(_MSC_VER)
@@ -377,36 +377,36 @@ thread_destructor(void*);
 
 static void __attribute__((constructor))
 initializer(void) {
-	rpmalloc_set_main_thread();
-	rpmalloc_initialize();
-	pthread_key_create(&destructor_key, thread_destructor);
+    rpmalloc_set_main_thread();
+    rpmalloc_initialize();
+    pthread_key_create(&destructor_key, thread_destructor);
 }
 
 static void __attribute__((destructor))
 finalizer(void) {
-	rpmalloc_finalize();
+    rpmalloc_finalize();
 }
 
 typedef struct {
-	void* (*real_start)(void*);
-	void* real_arg;
+    void* (*real_start)(void*);
+    void* real_arg;
 } thread_starter_arg;
 
 static void*
 thread_starter(void* argptr) {
-	thread_starter_arg* arg = argptr;
-	void* (*real_start)(void*) = arg->real_start;
-	void* real_arg = arg->real_arg;
-	rpmalloc_thread_initialize();
-	rpfree(argptr);
-	pthread_setspecific(destructor_key, (void*)1);
-	return (*real_start)(real_arg);
+    thread_starter_arg* arg = argptr;
+    void* (*real_start)(void*) = arg->real_start;
+    void* real_arg = arg->real_arg;
+    rpmalloc_thread_initialize();
+    rpfree(argptr);
+    pthread_setspecific(destructor_key, (void*)1);
+    return (*real_start)(real_arg);
 }
 
 static void
 thread_destructor(void* value) {
     WARN_SUPPRESS_UNUSED(value);
-	rpmalloc_thread_finalize(1);
+    rpmalloc_thread_finalize(1);
 }
 
 #ifdef __APPLE__
@@ -416,11 +416,11 @@ pthread_create_proxy(pthread_t* thread,
                      const pthread_attr_t* attr,
                      void* (*start_routine)(void*),
                      void* arg) {
-	rpmalloc_initialize();
-	thread_starter_arg* starter_arg = rpmalloc(sizeof(thread_starter_arg));
-	starter_arg->real_start = start_routine;
-	starter_arg->real_arg = arg;
-	return pthread_create(thread, attr, thread_starter, starter_arg);
+    rpmalloc_initialize();
+    thread_starter_arg* starter_arg = rpmalloc(sizeof(thread_starter_arg));
+    starter_arg->real_start = start_routine;
+    starter_arg->real_arg = arg;
+    return pthread_create(thread, attr, thread_starter, starter_arg);
 }
 
 MAC_INTERPOSE_SINGLE(pthread_create_proxy, pthread_create);
@@ -434,7 +434,7 @@ pthread_create(pthread_t* thread,
                const pthread_attr_t* attr,
                void* (*start_routine)(void*),
                void* arg) {
-	void* real_pthread_create = dlsym(RTLD_NEXT,
+    void* real_pthread_create = dlsym(RTLD_NEXT,
 #if defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__) || \
     defined(__APPLE__) || defined(__HAIKU__)
                                       "pthread_create"
@@ -442,12 +442,12 @@ pthread_create(pthread_t* thread,
                                       "_pthread_create"
 #endif
       );
-	rpmalloc_thread_initialize();
-	thread_starter_arg* starter_arg = rpmalloc(sizeof(thread_starter_arg));
-	starter_arg->real_start = start_routine;
-	starter_arg->real_arg = arg;
+    rpmalloc_thread_initialize();
+    thread_starter_arg* starter_arg = rpmalloc(sizeof(thread_starter_arg));
+    starter_arg->real_start = start_routine;
+    starter_arg->real_arg = arg;
     // NOTE: `__extension__` suppresses warning "ISO C forbids cast to function pointer"
-	return __extension__( (*(int (*)(pthread_t*, const pthread_attr_t*, void* (*)(void*), void*))real_pthread_create)(thread, attr, thread_starter, starter_arg) );
+    return __extension__( (*(int (*)(pthread_t*, const pthread_attr_t*, void* (*)(void*), void*))real_pthread_create)(thread, attr, thread_starter, starter_arg) );
 }
 
 #endif
@@ -473,12 +473,12 @@ extern void* __libc_pvalloc(size_t size);
 
 void*
 __libc_valloc(size_t size) {
-	return valloc(size);
+    return valloc(size);
 }
 
 void*
 __libc_pvalloc(size_t size) {
-	return pvalloc(size);
+    return pvalloc(size);
 }
 
 #endif
