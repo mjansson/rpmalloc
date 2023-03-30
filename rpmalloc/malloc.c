@@ -42,11 +42,11 @@ _Static_assert(sizeof(void*) == 4, "Data type size mismatch");
 #define USE_INTERPOSE 1
 
 typedef struct interpose_t {
-	void* new_func;
-	void* orig_func;
+    void* new_func;
+    void* orig_func;
 } interpose_t;
 
-#define MAC_INTERPOSE_PAIR(newf, oldf) 	{ (void*)newf, (void*)oldf }
+#define MAC_INTERPOSE_PAIR(newf, oldf)     { (void*)newf, (void*)oldf }
 #define MAC_INTERPOSE_SINGLE(newf, oldf) \
 __attribute__((used)) static const interpose_t macinterpose##newf##oldf \
 __attribute__ ((section("__DATA, __interpose"))) = MAC_INTERPOSE_PAIR(newf, oldf)
@@ -104,17 +104,17 @@ extern void* _Znwmm(uint64_t size, uint64_t align); void* RPDEFVIS _Znwmm(uint64
 extern void* _Znamm(uint64_t size, uint64_t align); void* RPDEFVIS _Znamm(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
 extern void* _ZnwmSt11align_val_t(uint64_t size, uint64_t align); void* RPDEFVIS _ZnwmSt11align_val_t(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
 extern void* _ZnamSt11align_val_t(uint64_t size, uint64_t align); void* RPDEFVIS _ZnamSt11align_val_t(uint64_t size, uint64_t align) { return rpaligned_alloc(align, size); }
-extern void* _ZnwmRKSt9nothrow_t(uint64_t size, rp_nothrow_t t); void* RPDEFVIS _ZnwmRKSt9nothrow_t(uint64_t size, rp_nothrow_t t) { (void)sizeof(t); return rpmalloc(size); }
-extern void* _ZnamRKSt9nothrow_t(uint64_t size, rp_nothrow_t t); void* RPDEFVIS _ZnamRKSt9nothrow_t(uint64_t size, rp_nothrow_t t) { (void)sizeof(t); return rpmalloc(size); }
-extern void* _ZnwmSt11align_val_tRKSt9nothrow_t(uint64_t size, uint64_t align, rp_nothrow_t t); void* RPDEFVIS _ZnwmSt11align_val_tRKSt9nothrow_t(uint64_t size, uint64_t align, rp_nothrow_t t) { (void)sizeof(t); return rpaligned_alloc(align, size); }
-extern void* _ZnamSt11align_val_tRKSt9nothrow_t(uint64_t size, uint64_t align, rp_nothrow_t t); void* RPDEFVIS _ZnamSt11align_val_tRKSt9nothrow_t(uint64_t size, uint64_t align, rp_nothrow_t t) { (void)sizeof(t); return rpaligned_alloc(align, size); }
+extern void* _ZnwmRKSt9nothrow_t(uint64_t size, rp_nothrow_t t); void* RPDEFVIS _ZnwmRKSt9nothrow_t(uint64_t size, rp_nothrow_t t) { WARN_SUPPRESS_UNUSED(t); return rpmalloc(size); }
+extern void* _ZnamRKSt9nothrow_t(uint64_t size, rp_nothrow_t t); void* RPDEFVIS _ZnamRKSt9nothrow_t(uint64_t size, rp_nothrow_t t) { WARN_SUPPRESS_UNUSED(t); return rpmalloc(size); }
+extern void* _ZnwmSt11align_val_tRKSt9nothrow_t(uint64_t size, uint64_t align, rp_nothrow_t t); void* RPDEFVIS _ZnwmSt11align_val_tRKSt9nothrow_t(uint64_t size, uint64_t align, rp_nothrow_t t) { WARN_SUPPRESS_UNUSED(t); return rpaligned_alloc(align, size); }
+extern void* _ZnamSt11align_val_tRKSt9nothrow_t(uint64_t size, uint64_t align, rp_nothrow_t t); void* RPDEFVIS _ZnamSt11align_val_tRKSt9nothrow_t(uint64_t size, uint64_t align, rp_nothrow_t t) { WARN_SUPPRESS_UNUSED(t); return rpaligned_alloc(align, size); }
 // 64-bit operators sized delete and delete[], normal and aligned
-extern void _ZdlPvm(void* p, uint64_t size); void RPDEFVIS _ZdlPvm(void* p, uint64_t size) { rpfree(p); (void)sizeof(size); }
-extern void _ZdaPvm(void* p, uint64_t size); void RPDEFVIS _ZdaPvm(void* p, uint64_t size) { rpfree(p); (void)sizeof(size); }
-extern void _ZdlPvSt11align_val_t(void* p, uint64_t align); void RPDEFVIS _ZdlPvSt11align_val_t(void* p, uint64_t align) { rpfree(p); (void)sizeof(align); }
-extern void _ZdaPvSt11align_val_t(void* p, uint64_t align); void RPDEFVIS _ZdaPvSt11align_val_t(void* p, uint64_t align) { rpfree(p); (void)sizeof(align); }
-extern void _ZdlPvmSt11align_val_t(void* p, uint64_t size, uint64_t align); void RPDEFVIS _ZdlPvmSt11align_val_t(void* p, uint64_t size, uint64_t align) { rpfree(p); (void)sizeof(size); (void)sizeof(align); }
-extern void _ZdaPvmSt11align_val_t(void* p, uint64_t size, uint64_t align); void RPDEFVIS _ZdaPvmSt11align_val_t(void* p, uint64_t size, uint64_t align) { rpfree(p); (void)sizeof(size); (void)sizeof(align); }
+extern void _ZdlPvm(void* p, uint64_t size); void RPDEFVIS _ZdlPvm(void* p, uint64_t size) { rpfree(p); WARN_SUPPRESS_UNUSED(size); }
+extern void _ZdaPvm(void* p, uint64_t size); void RPDEFVIS _ZdaPvm(void* p, uint64_t size) { rpfree(p); WARN_SUPPRESS_UNUSED(size); }
+extern void _ZdlPvSt11align_val_t(void* p, uint64_t align); void RPDEFVIS _ZdlPvSt11align_val_t(void* p, uint64_t align) { rpfree(p); WARN_SUPPRESS_UNUSED(align); }
+extern void _ZdaPvSt11align_val_t(void* p, uint64_t align); void RPDEFVIS _ZdaPvSt11align_val_t(void* p, uint64_t align) { rpfree(p); WARN_SUPPRESS_UNUSED(align); }
+extern void _ZdlPvmSt11align_val_t(void* p, uint64_t size, uint64_t align); void RPDEFVIS _ZdlPvmSt11align_val_t(void* p, uint64_t size, uint64_t align) { rpfree(p); WARN_SUPPRESS_UNUSED(size); WARN_SUPPRESS_UNUSED(align); }
+extern void _ZdaPvmSt11align_val_t(void* p, uint64_t size, uint64_t align); void RPDEFVIS _ZdaPvmSt11align_val_t(void* p, uint64_t size, uint64_t align) { rpfree(p); WARN_SUPPRESS_UNUSED(size); WARN_SUPPRESS_UNUSED(align); }
 #else
 // 32-bit operators new and new[], normal and aligned
 extern void* _Znwj(uint32_t size); void* RPDEFVIS _Znwj(uint32_t size) { return rpmalloc(size); }
@@ -123,29 +123,29 @@ extern void* _Znwjj(uint32_t size, uint32_t align); void* RPDEFVIS _Znwjj(uint32
 extern void* _Znajj(uint32_t size, uint32_t align); void* RPDEFVIS _Znajj(uint32_t size, uint32_t align) { return rpaligned_alloc(align, size); }
 extern void* _ZnwjSt11align_val_t(size_t size, size_t align); void* RPDEFVIS _ZnwjSt11align_val_t(size_t size, size_t align) { return rpaligned_alloc(align, size); }
 extern void* _ZnajSt11align_val_t(size_t size, size_t align); void* RPDEFVIS _ZnajSt11align_val_t(size_t size, size_t align) { return rpaligned_alloc(align, size); }
-extern void* _ZnwjRKSt9nothrow_t(size_t size, rp_nothrow_t t); void* RPDEFVIS _ZnwjRKSt9nothrow_t(size_t size, rp_nothrow_t t) { (void)sizeof(t); return rpmalloc(size); }
-extern void* _ZnajRKSt9nothrow_t(size_t size, rp_nothrow_t t); void* RPDEFVIS _ZnajRKSt9nothrow_t(size_t size, rp_nothrow_t t) { (void)sizeof(t); return rpmalloc(size); }
-extern void* _ZnwjSt11align_val_tRKSt9nothrow_t(size_t size, size_t align, rp_nothrow_t t); void* RPDEFVIS _ZnwjSt11align_val_tRKSt9nothrow_t(size_t size, size_t align, rp_nothrow_t t) { (void)sizeof(t); return rpaligned_alloc(align, size); }
-extern void* _ZnajSt11align_val_tRKSt9nothrow_t(size_t size, size_t align, rp_nothrow_t t); void* RPDEFVIS _ZnajSt11align_val_tRKSt9nothrow_t(size_t size, size_t align, rp_nothrow_t t) { (void)sizeof(t); return rpaligned_alloc(align, size); }
+extern void* _ZnwjRKSt9nothrow_t(size_t size, rp_nothrow_t t); void* RPDEFVIS _ZnwjRKSt9nothrow_t(size_t size, rp_nothrow_t t) { WARN_SUPPRESS_UNUSED(t); return rpmalloc(size); }
+extern void* _ZnajRKSt9nothrow_t(size_t size, rp_nothrow_t t); void* RPDEFVIS _ZnajRKSt9nothrow_t(size_t size, rp_nothrow_t t) { WARN_SUPPRESS_UNUSED(t); return rpmalloc(size); }
+extern void* _ZnwjSt11align_val_tRKSt9nothrow_t(size_t size, size_t align, rp_nothrow_t t); void* RPDEFVIS _ZnwjSt11align_val_tRKSt9nothrow_t(size_t size, size_t align, rp_nothrow_t t) { WARN_SUPPRESS_UNUSED(t); return rpaligned_alloc(align, size); }
+extern void* _ZnajSt11align_val_tRKSt9nothrow_t(size_t size, size_t align, rp_nothrow_t t); void* RPDEFVIS _ZnajSt11align_val_tRKSt9nothrow_t(size_t size, size_t align, rp_nothrow_t t) { WARN_SUPPRESS_UNUSED(t); return rpaligned_alloc(align, size); }
 // 32-bit operators sized delete and delete[], normal and aligned
-extern void _ZdlPvj(void* p, uint64_t size); void RPDEFVIS _ZdlPvj(void* p, uint64_t size) { rpfree(p); (void)sizeof(size); }
-extern void _ZdaPvj(void* p, uint64_t size); void RPDEFVIS _ZdaPvj(void* p, uint64_t size) { rpfree(p); (void)sizeof(size); }
-extern void _ZdlPvSt11align_val_t(void* p, uint32_t align); void RPDEFVIS _ZdlPvSt11align_val_t(void* p, uint64_t a) { rpfree(p); (void)sizeof(align); }
-extern void _ZdaPvSt11align_val_t(void* p, uint32_t align); void RPDEFVIS _ZdaPvSt11align_val_t(void* p, uint64_t a) { rpfree(p); (void)sizeof(align); }
-extern void _ZdlPvjSt11align_val_t(void* p, uint32_t size, uint32_t align); void RPDEFVIS _ZdlPvjSt11align_val_t(void* p, uint64_t size, uint64_t align) { rpfree(p); (void)sizeof(size); (void)sizeof(a); }
-extern void _ZdaPvjSt11align_val_t(void* p, uint32_t size, uint32_t align); void RPDEFVIS _ZdaPvjSt11align_val_t(void* p, uint64_t size, uint64_t align) { rpfree(p); (void)sizeof(size); (void)sizeof(a); }
+extern void _ZdlPvj(void* p, uint64_t size); void RPDEFVIS _ZdlPvj(void* p, uint64_t size) { rpfree(p); WARN_SUPPRESS_UNUSED(size); }
+extern void _ZdaPvj(void* p, uint64_t size); void RPDEFVIS _ZdaPvj(void* p, uint64_t size) { rpfree(p); WARN_SUPPRESS_UNUSED(size); }
+extern void _ZdlPvSt11align_val_t(void* p, uint32_t align); void RPDEFVIS _ZdlPvSt11align_val_t(void* p, uint64_t a) { rpfree(p); WARN_SUPPRESS_UNUSED(align); }
+extern void _ZdaPvSt11align_val_t(void* p, uint32_t align); void RPDEFVIS _ZdaPvSt11align_val_t(void* p, uint64_t a) { rpfree(p); WARN_SUPPRESS_UNUSED(align); }
+extern void _ZdlPvjSt11align_val_t(void* p, uint32_t size, uint32_t align); void RPDEFVIS _ZdlPvjSt11align_val_t(void* p, uint64_t size, uint64_t align) { rpfree(p); WARN_SUPPRESS_UNUSED(size); WARN_SUPPRESS_UNUSED(a); }
+extern void _ZdaPvjSt11align_val_t(void* p, uint32_t size, uint32_t align); void RPDEFVIS _ZdaPvjSt11align_val_t(void* p, uint64_t size, uint64_t align) { rpfree(p); WARN_SUPPRESS_UNUSED(size); WARN_SUPPRESS_UNUSED(a); }
 #endif
 #endif
 #endif
 
 #if USE_INTERPOSE || USE_ALIAS
 
-static void* rpmalloc_nothrow(size_t size, rp_nothrow_t t) { (void)sizeof(t); return rpmalloc(size); }
+static void* rpmalloc_nothrow(size_t size, rp_nothrow_t t) { WARN_SUPPRESS_UNUSED(t); return rpmalloc(size); }
 static void* rpaligned_alloc_reverse(size_t size, size_t align) { return rpaligned_alloc(align, size); }
-static void* rpaligned_alloc_reverse_nothrow(size_t size, size_t align, rp_nothrow_t t) { (void)sizeof(t); return rpaligned_alloc(align, size); }
-static void rpfree_size(void* p, size_t size) { (void)sizeof(size); rpfree(p); }
-static void rpfree_aligned(void* p, size_t align) { (void)sizeof(align); rpfree(p); }
-static void rpfree_size_aligned(void* p, size_t size, size_t align) { (void)sizeof(size); (void)sizeof(align); rpfree(p); }
+static void* rpaligned_alloc_reverse_nothrow(size_t size, size_t align, rp_nothrow_t t) { WARN_SUPPRESS_UNUSED(t); return rpaligned_alloc(align, size); }
+static void rpfree_size(void* p, size_t size) { WARN_SUPPRESS_UNUSED(size); rpfree(p); }
+static void rpfree_aligned(void* p, size_t align) { WARN_SUPPRESS_UNUSED(align); rpfree(p); }
+static void rpfree_size_aligned(void* p, size_t size, size_t align) { WARN_SUPPRESS_UNUSED(size); WARN_SUPPRESS_UNUSED(align); rpfree(p); }
 
 #endif
 
@@ -153,40 +153,40 @@ static void rpfree_size_aligned(void* p, size_t size, size_t align) { (void)size
 
 __attribute__((used)) static const interpose_t macinterpose_malloc[]
 __attribute__ ((section("__DATA, __interpose"))) = {
-	//new and new[]
-	MAC_INTERPOSE_PAIR(rpmalloc, _Znwm),
-	MAC_INTERPOSE_PAIR(rpmalloc, _Znam),
-	MAC_INTERPOSE_PAIR(rpaligned_alloc_reverse, _Znwmm),
-	MAC_INTERPOSE_PAIR(rpaligned_alloc_reverse, _Znamm),
-	MAC_INTERPOSE_PAIR(rpmalloc_nothrow, _ZnwmRKSt9nothrow_t),
-	MAC_INTERPOSE_PAIR(rpmalloc_nothrow, _ZnamRKSt9nothrow_t),
-	MAC_INTERPOSE_PAIR(rpaligned_alloc_reverse, _ZnwmSt11align_val_t),
-	MAC_INTERPOSE_PAIR(rpaligned_alloc_reverse, _ZnamSt11align_val_t),
-	MAC_INTERPOSE_PAIR(rpaligned_alloc_reverse_nothrow, _ZnwmSt11align_val_tRKSt9nothrow_t),
-	MAC_INTERPOSE_PAIR(rpaligned_alloc_reverse_nothrow, _ZnamSt11align_val_tRKSt9nothrow_t),
-	//delete and delete[]
-	MAC_INTERPOSE_PAIR(rpfree, _ZdlPv),
-	MAC_INTERPOSE_PAIR(rpfree, _ZdaPv),
-	MAC_INTERPOSE_PAIR(rpfree_size, _ZdlPvm),
-	MAC_INTERPOSE_PAIR(rpfree_size, _ZdaPvm),
-	MAC_INTERPOSE_PAIR(rpfree_aligned, _ZdlPvSt11align_val_t),
-	MAC_INTERPOSE_PAIR(rpfree_aligned, _ZdaPvSt11align_val_t),
-	MAC_INTERPOSE_PAIR(rpfree_size_aligned, _ZdlPvmSt11align_val_t),
-	MAC_INTERPOSE_PAIR(rpfree_size_aligned, _ZdaPvmSt11align_val_t),
-	//libc entry points
-	MAC_INTERPOSE_PAIR(rpmalloc, malloc),
-	MAC_INTERPOSE_PAIR(rpmalloc, calloc),
-	MAC_INTERPOSE_PAIR(rprealloc, realloc),
-	MAC_INTERPOSE_PAIR(rprealloc, reallocf),
+    //new and new[]
+    MAC_INTERPOSE_PAIR(rpmalloc, _Znwm),
+    MAC_INTERPOSE_PAIR(rpmalloc, _Znam),
+    MAC_INTERPOSE_PAIR(rpaligned_alloc_reverse, _Znwmm),
+    MAC_INTERPOSE_PAIR(rpaligned_alloc_reverse, _Znamm),
+    MAC_INTERPOSE_PAIR(rpmalloc_nothrow, _ZnwmRKSt9nothrow_t),
+    MAC_INTERPOSE_PAIR(rpmalloc_nothrow, _ZnamRKSt9nothrow_t),
+    MAC_INTERPOSE_PAIR(rpaligned_alloc_reverse, _ZnwmSt11align_val_t),
+    MAC_INTERPOSE_PAIR(rpaligned_alloc_reverse, _ZnamSt11align_val_t),
+    MAC_INTERPOSE_PAIR(rpaligned_alloc_reverse_nothrow, _ZnwmSt11align_val_tRKSt9nothrow_t),
+    MAC_INTERPOSE_PAIR(rpaligned_alloc_reverse_nothrow, _ZnamSt11align_val_tRKSt9nothrow_t),
+    //delete and delete[]
+    MAC_INTERPOSE_PAIR(rpfree, _ZdlPv),
+    MAC_INTERPOSE_PAIR(rpfree, _ZdaPv),
+    MAC_INTERPOSE_PAIR(rpfree_size, _ZdlPvm),
+    MAC_INTERPOSE_PAIR(rpfree_size, _ZdaPvm),
+    MAC_INTERPOSE_PAIR(rpfree_aligned, _ZdlPvSt11align_val_t),
+    MAC_INTERPOSE_PAIR(rpfree_aligned, _ZdaPvSt11align_val_t),
+    MAC_INTERPOSE_PAIR(rpfree_size_aligned, _ZdlPvmSt11align_val_t),
+    MAC_INTERPOSE_PAIR(rpfree_size_aligned, _ZdaPvmSt11align_val_t),
+    //libc entry points
+    MAC_INTERPOSE_PAIR(rpmalloc, malloc),
+    MAC_INTERPOSE_PAIR(rpmalloc, calloc),
+    MAC_INTERPOSE_PAIR(rprealloc, realloc),
+    MAC_INTERPOSE_PAIR(rprealloc, reallocf),
 #if defined(__MAC_10_15) && __MAC_OS_X_VERSION_MIN_REQUIRED >= __MAC_10_15
-	MAC_INTERPOSE_PAIR(rpaligned_alloc, aligned_alloc),
+    MAC_INTERPOSE_PAIR(rpaligned_alloc, aligned_alloc),
 #endif
-	MAC_INTERPOSE_PAIR(rpmemalign, memalign),
-	MAC_INTERPOSE_PAIR(rpposix_memalign, posix_memalign),
-	MAC_INTERPOSE_PAIR(rpfree, free),
-	MAC_INTERPOSE_PAIR(rpfree, cfree),
-	MAC_INTERPOSE_PAIR(rpmalloc_usable_size, malloc_usable_size),
-	MAC_INTERPOSE_PAIR(rpmalloc_usable_size, malloc_size)
+    MAC_INTERPOSE_PAIR(rpmemalign, memalign),
+    MAC_INTERPOSE_PAIR(rpposix_memalign, posix_memalign),
+    MAC_INTERPOSE_PAIR(rpfree, free),
+    MAC_INTERPOSE_PAIR(rpfree, cfree),
+    MAC_INTERPOSE_PAIR(rpmalloc_usable_size, malloc_usable_size),
+    MAC_INTERPOSE_PAIR(rpmalloc_usable_size, malloc_size)
 };
 
 #endif
@@ -261,50 +261,50 @@ size_t malloc_size(void* ptr) RPALIAS(rpmalloc_usable_size)
 
 static inline size_t
 _rpmalloc_page_size(void) {
-	return _memory_page_size;
+    return _memory_page_size;
 }
 
 extern inline void* RPMALLOC_CDECL
 reallocarray(void* ptr, size_t count, size_t size) {
-	size_t total;
+    size_t total;
 #if ENABLE_VALIDATE_ARGS
 #ifdef _MSC_VER
-	int err = SizeTMult(count, size, &total);
-	if ((err != S_OK) || (total >= MAX_ALLOC_SIZE)) {
-		errno = EINVAL;
-		return 0;
-	}
+    int err = SizeTMult(count, size, &total);
+    if ((err != S_OK) || (total >= MAX_ALLOC_SIZE)) {
+        errno = EINVAL;
+        return 0;
+    }
 #else
-	int err = __builtin_umull_overflow(count, size, &total);
-	if (err || (total >= MAX_ALLOC_SIZE)) {
-		errno = EINVAL;
-		return 0;
-	}
+    int err = __builtin_umull_overflow(count, size, &total);
+    if (err || (total >= MAX_ALLOC_SIZE)) {
+        errno = EINVAL;
+        return 0;
+    }
 #endif
 #else
-	total = count * size;
+    total = count * size;
 #endif
-	return realloc(ptr, total);
+    return realloc(ptr, total);
 }
 
 extern inline void* RPMALLOC_CDECL
 valloc(size_t size) {
-	get_thread_heap();
-	return rpaligned_alloc(_rpmalloc_page_size(), size);
+    get_thread_heap();
+    return rpaligned_alloc(_rpmalloc_page_size(), size);
 }
 
 extern inline void* RPMALLOC_CDECL
 pvalloc(size_t size) {
-	get_thread_heap();
-	const size_t page_size = _rpmalloc_page_size();
-	const size_t aligned_size = ((size + page_size - 1) / page_size) * page_size;
+    get_thread_heap();
+    const size_t page_size = _rpmalloc_page_size();
+    const size_t aligned_size = ((size + page_size - 1) / page_size) * page_size;
 #if ENABLE_VALIDATE_ARGS
-	if (aligned_size < size) {
-		errno = EINVAL;
-		return 0;
-	}
+    if (aligned_size < size) {
+        errno = EINVAL;
+        return 0;
+    }
 #endif
-	return rpaligned_alloc(_rpmalloc_page_size(), aligned_size);
+    return rpaligned_alloc(_rpmalloc_page_size(), aligned_size);
 }
 
 #endif // ENABLE_OVERRIDE
@@ -320,10 +320,10 @@ DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved);
 
 extern __declspec(dllexport) BOOL WINAPI
 DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
-	(void)sizeof(reserved);
-	(void)sizeof(instance);
-	if (reason == DLL_PROCESS_ATTACH)
-		rpmalloc_initialize();
+    WARN_SUPPRESS_UNUSED(reserved);
+    WARN_SUPPRESS_UNUSED(instance);
+    if (reason == DLL_PROCESS_ATTACH)
+    	rpmalloc_initialize();
 	else if (reason == DLL_PROCESS_DETACH)
 		rpmalloc_finalize();
 	else if (reason == DLL_THREAD_ATTACH)
@@ -358,7 +358,7 @@ __declspec(allocate(".CRT$XIB")) void (*_rpmalloc_module_init)(void) = _global_r
 #endif
 
 //end !BUILD_DYNAMIC_LINK
-#endif 
+#endif
 
 #else
 
@@ -405,7 +405,7 @@ thread_starter(void* argptr) {
 
 static void
 thread_destructor(void* value) {
-	(void)sizeof(value);
+    WARN_SUPPRESS_UNUSED(value);
 	rpmalloc_thread_finalize(1);
 }
 
@@ -434,18 +434,20 @@ pthread_create(pthread_t* thread,
                const pthread_attr_t* attr,
                void* (*start_routine)(void*),
                void* arg) {
+	void* real_pthread_create = dlsym(RTLD_NEXT,
 #if defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__) || \
     defined(__APPLE__) || defined(__HAIKU__)
-	char fname[] = "pthread_create";
+                                      "pthread_create"
 #else
-	char fname[] = "_pthread_create";
+                                      "_pthread_create"
 #endif
-	void* real_pthread_create = dlsym(RTLD_NEXT, fname);
+      );
 	rpmalloc_thread_initialize();
 	thread_starter_arg* starter_arg = rpmalloc(sizeof(thread_starter_arg));
 	starter_arg->real_start = start_routine;
 	starter_arg->real_arg = arg;
-	return (*(int (*)(pthread_t*, const pthread_attr_t*, void* (*)(void*), void*))real_pthread_create)(thread, attr, thread_starter, starter_arg);
+    // NOTE: `__extension__` suppresses warning "ISO C forbids cast to function pointer"
+	return __extension__( (*(int (*)(pthread_t*, const pthread_attr_t*, void* (*)(void*), void*))real_pthread_create)(thread, attr, thread_starter, starter_arg) );
 }
 
 #endif
