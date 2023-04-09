@@ -264,7 +264,7 @@ _rpmalloc_page_size(void) {
 	return _memory_page_size;
 }
 
-extern inline void* RPMALLOC_CDECL
+extern void* RPMALLOC_CDECL
 reallocarray(void* ptr, size_t count, size_t size) {
 	size_t total;
 #if ENABLE_VALIDATE_ARGS

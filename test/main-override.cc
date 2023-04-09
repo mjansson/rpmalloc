@@ -18,6 +18,10 @@
 #include <inttypes.h>
 #include <new>
 
+#if defined(__GNUC__)
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
+#endif
+
 extern "C" void* RPMALLOC_CDECL pvalloc(size_t size);
 extern "C" void* RPMALLOC_CDECL valloc(size_t size);
 
