@@ -341,7 +341,7 @@ test_alloc(void) {
 	rpmalloc_initialize();
 	{
 		addr[0] = rpmalloc(23457);
-	
+
 		thread_arg targ;
 		targ.fn = defer_free_thread;
 		targ.arg = addr[0];
@@ -792,7 +792,7 @@ initfini_thread(void* argp) {
 				ret = test_fail("Data corrupted");
 				goto end;
 			}
-			
+
 			rpfree(addr[ipass]);
 		}
 
@@ -880,7 +880,7 @@ test_threaded(void) {
 	return ret;
 }
 
-static int 
+static int
 test_crossthread(void) {
 	uintptr_t thread[32];
 	allocator_thread_arg_t arg[32];
@@ -953,7 +953,7 @@ test_crossthread(void) {
 	return 0;
 }
 
-static int 
+static int
 test_threadspam(void) {
 	uintptr_t thread[64];
 	uintptr_t threadres[64];

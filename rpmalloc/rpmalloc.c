@@ -311,7 +311,7 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 
 #define EXPECTED(x) __builtin_expect((x), 1)
 #define UNEXPECTED(x) __builtin_expect((x), 0)
-    
+
 #endif
 
 ////////////
@@ -1350,7 +1350,7 @@ _rpmalloc_span_initialize_new(heap_t* heap, heap_size_class_t* heap_size_class, 
 
 	//Setup free list. Only initialize one system page worth of free blocks in list
 	void* block;
-	span->free_list_limit = free_list_partial_init(&heap_size_class->free_list, &block, 
+	span->free_list_limit = free_list_partial_init(&heap_size_class->free_list, &block,
 		span, pointer_offset(span, SPAN_HEADER_SIZE), size_class->block_count, size_class->block_size);
 	//Link span as partial if there remains blocks to be initialized as free list, or full if fully initialized
 	if (span->free_list_limit < span->block_count) {
@@ -1454,7 +1454,7 @@ _rpmalloc_global_cache_finalize(global_cache_t* cache) {
 
 static void
 _rpmalloc_global_cache_insert_spans(span_t** span, size_t span_count, size_t count) {
-	const size_t cache_limit = (span_count == 1) ? 
+	const size_t cache_limit = (span_count == 1) ?
 		GLOBAL_CACHE_MULTIPLIER * MAX_THREAD_SPAN_CACHE :
 		GLOBAL_CACHE_MULTIPLIER * (MAX_THREAD_SPAN_LARGE_CACHE - (span_count >> 1));
 
@@ -1479,7 +1479,7 @@ _rpmalloc_global_cache_insert_spans(span_t** span, size_t span_count, size_t cou
 	// Enable unlimited cache if huge pages, or we will leak since it is unlikely that an entire huge page
 	// will be unmapped, and we're unable to partially decommit a huge page
 	while ((_memory_page_size > _memory_span_size) && (insert_count < count)) {
-#endif		
+#endif
 		span_t* current_span = span[insert_count++];
 		current_span->next = cache->overflow;
 		cache->overflow = current_span;
@@ -2151,7 +2151,7 @@ _rpmalloc_allocate_from_heap_fallback(heap_t* heap, heap_size_class_t* heap_size
 			heap_size_class->free_list = span->free_list;
 			span->free_list = 0;
 		} else {
-			//If the span did not fully initialize free list, link up another page worth of blocks			
+			//If the span did not fully initialize free list, link up another page worth of blocks
 			void* block_start = pointer_offset(span, SPAN_HEADER_SIZE + ((size_t)span->free_list_limit * span->block_size));
 			span->free_list_limit += free_list_partial_init(&heap_size_class->free_list, &block,
 				(void*)((uintptr_t)block_start & ~(_memory_page_size - 1)), block_start,
@@ -2999,7 +2999,7 @@ rpmalloc_finalize(void) {
 		_memory_global_reserve_count = 0;
 		_memory_global_reserve = 0;
 	}
-	atomic_store32_release(&_memory_global_lock, 0);	
+	atomic_store32_release(&_memory_global_lock, 0);
 
 	//Free all thread caches and fully free spans
 	for (size_t list_idx = 0; list_idx < HEAP_ARRAY_SIZE; ++list_idx) {
@@ -3502,7 +3502,7 @@ rpmalloc_heap_aligned_realloc(rpmalloc_heap_t* heap, void* ptr, size_t alignment
 		return 0;
 	}
 #endif
-	return _rpmalloc_aligned_reallocate(heap, ptr, alignment, size, 0, flags);	
+	return _rpmalloc_aligned_reallocate(heap, ptr, alignment, size, 0, flags);
 }
 
 extern inline void

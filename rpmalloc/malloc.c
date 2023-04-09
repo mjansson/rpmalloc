@@ -358,7 +358,7 @@ __declspec(allocate(".CRT$XIB")) void (*_rpmalloc_module_init)(void) = _global_r
 #endif
 
 //end !BUILD_DYNAMIC_LINK
-#endif 
+#endif
 
 #else
 

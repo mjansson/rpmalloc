@@ -120,7 +120,7 @@ test_free(void) {
 	free(new int[16]);
 	free(pvalloc(1275));
 	printf("Free tests passed\n");
-	return 0;	
+	return 0;
 }
 
 static void
