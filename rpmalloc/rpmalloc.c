@@ -3365,6 +3365,7 @@ rpmalloc_dump_statistics(void* file) {
 	fprintf(file, "HugeCurrentMiB HugePeakMiB\n");
 	fprintf(file, "%14zu %11zu\n", huge_current / (size_t)(1024 * 1024), huge_peak / (size_t)(1024 * 1024));
 
+#if ENABLE_GLOBAL_CACHE
 	fprintf(file, "GlobalCacheMiB\n");
 	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
 		global_cache_t* cache = _memory_span_cache + iclass;
@@ -3379,6 +3380,7 @@ rpmalloc_dump_statistics(void* file) {
 		if (global_cache || global_overflow_cache || cache->insert_count || cache->extract_count)
 			fprintf(file, "%4zu: %8zuMiB (%8zuMiB overflow) %14zu insert %14zu extract\n", iclass + 1, global_cache / (size_t)(1024 * 1024), global_overflow_cache / (size_t)(1024 * 1024), cache->insert_count, cache->extract_count);
 	}
+#endif
 
 	size_t mapped = (size_t)atomic_load32(&_mapped_pages) * _memory_page_size;
 	size_t mapped_os = (size_t)atomic_load32(&_mapped_pages_os) * _memory_page_size;
