@@ -203,8 +203,8 @@ void _ZdaPv(void* p) RPALIAS(rpfree)
 
 #if ARCH_64BIT
 // 64-bit operators new and new[], normal and aligned
-void* _Znwm(uint64_t size) RPALIAS(rpmalloc)
-void* _Znam(uint64_t size) RPALIAS(rpmalloc)
+void* _Znwm(uint64_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(1) RPALIAS(rpmalloc)
+void* _Znam(uint64_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(1) RPALIAS(rpmalloc)
 void* _Znwmm(uint64_t size, uint64_t align) RPALIAS(rpaligned_alloc_reverse)
 void* _Znamm(uint64_t size, uint64_t align) RPALIAS(rpaligned_alloc_reverse)
 void* _ZnwmSt11align_val_t(size_t size, size_t align) RPALIAS(rpaligned_alloc_reverse)
@@ -222,8 +222,8 @@ void _ZdlPvmSt11align_val_t(void* p, size_t n, size_t a) RPALIAS(rpfree_size_ali
 void _ZdaPvmSt11align_val_t(void* p, size_t n, size_t a) RPALIAS(rpfree_size_aligned)
 #else
 // 32-bit operators new and new[], normal and aligned
-void* _Znwj(uint32_t size) RPALIAS(rpmalloc)
-void* _Znaj(uint32_t size) RPALIAS(rpmalloc)
+void* _Znwj(uint32_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(1) RPALIAS(rpmalloc)
+void* _Znaj(uint32_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(1) RPALIAS(rpmalloc)
 void* _Znwjj(uint32_t size, uint32_t align) RPALIAS(rpaligned_alloc_reverse)
 void* _Znajj(uint32_t size, uint32_t align) RPALIAS(rpaligned_alloc_reverse)
 void* _ZnwjSt11align_val_t(size_t size, size_t align) RPALIAS(rpaligned_alloc_reverse)
@@ -241,12 +241,12 @@ void _ZdlPvjSt11align_val_t(void* p, size_t n, size_t a) RPALIAS(rpfree_size_ali
 void _ZdaPvjSt11align_val_t(void* p, size_t n, size_t a) RPALIAS(rpfree_size_aligned)
 #endif
 
-void* malloc(size_t size) RPALIAS(rpmalloc)
+void* malloc(size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(1) RPALIAS(rpmalloc)
 void* calloc(size_t count, size_t size) RPALIAS(rpcalloc)
 void* realloc(void* ptr, size_t size) RPALIAS(rprealloc)
-void* reallocf(void* ptr, size_t size) RPALIAS(rprealloc)
+void* reallocf(void* ptr, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(2) RPALIAS(rprealloc)
 void* aligned_alloc(size_t alignment, size_t size) RPALIAS(rpaligned_alloc)
-void* memalign(size_t alignment, size_t size) RPALIAS(rpmemalign)
+void* memalign(size_t alignment, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(2) RPALIAS(rpmemalign)
 int posix_memalign(void** memptr, size_t alignment, size_t size) RPALIAS(rpposix_memalign)
 void free(void* ptr) RPALIAS(rpfree)
 void cfree(void* ptr) RPALIAS(rpfree)
@@ -458,12 +458,12 @@ pthread_create(pthread_t* thread,
 
 #if defined(__GLIBC__) && defined(__linux__)
 
-void* __libc_malloc(size_t size) RPALIAS(rpmalloc)
-void* __libc_calloc(size_t count, size_t size) RPALIAS(rpcalloc)
-void* __libc_realloc(void* p, size_t size) RPALIAS(rprealloc)
+void* __libc_malloc(size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(1) RPALIAS(rpmalloc)
+void* __libc_calloc(size_t count, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE2(1, 2) RPALIAS(rpcalloc)
+void* __libc_realloc(void* p, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(2) RPALIAS(rprealloc)
 void __libc_free(void* p) RPALIAS(rpfree)
 void __libc_cfree(void* p) RPALIAS(rpfree)
-void* __libc_memalign(size_t align, size_t size) RPALIAS(rpmemalign)
+void* __libc_memalign(size_t align, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(2) RPALIAS(rpmemalign)
 int __posix_memalign(void** p, size_t align, size_t size) RPALIAS(rpposix_memalign)
 
 extern void* __libc_valloc(size_t size);
