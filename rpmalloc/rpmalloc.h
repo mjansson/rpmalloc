@@ -362,6 +362,10 @@ rpmalloc_heap_free_all(rpmalloc_heap_t* heap);
 RPMALLOC_EXPORT void
 rpmalloc_heap_thread_set_current(rpmalloc_heap_t* heap);
 
+//! Returns which heap the given pointer is allocated on
+RPMALLOC_EXPORT rpmalloc_heap_t*
+rpmalloc_get_heap_for_ptr(void* ptr);
+
 #endif
 
 #ifdef __cplusplus
