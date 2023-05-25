@@ -2995,6 +2995,11 @@ rpmalloc_finalize(void) {
 
 	if (_memory_global_reserve) {
 		atomic_add32(&_memory_global_reserve_master->remaining_spans, -(int32_t)_memory_global_reserve_count);
+		_rpmalloc_unmap(_memory_global_reserve_master, 
+			(size_t)_memory_global_reserve_master->total_spans * get_memory_span_size,
+			_memory_global_reserve_master->align_offset, 
+			(size_t)_memory_global_reserve_master->total_spans * get_memory_span_size, 
+			_memory_global_reserve_master->extra);
 		_memory_global_reserve_master = 0;
 		_memory_global_reserve_count = 0;
 		_memory_global_reserve = 0;
