@@ -3590,6 +3590,18 @@ rpmalloc_heap_thread_set_current(rpmalloc_heap_t* heap) {
 	}
 }
 
+extern inline rpmalloc_heap_t*
+rpmalloc_get_heap_for_ptr(void* ptr)
+{
+	//Grab the span, and then the heap from the span
+	span_t* span = (span_t*)((uintptr_t)ptr & _memory_span_mask);
+	if (span)
+	{
+		return span->heap;
+	}
+	return 0;
+}
+
 #endif
 
 #if ENABLE_PRELOAD || ENABLE_OVERRIDE
