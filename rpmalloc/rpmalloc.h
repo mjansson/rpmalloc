@@ -146,13 +146,12 @@ typedef struct rpmalloc_interface_t {
 	//! set a memory_unmap function or else the default implementation will be used for both. This function must be
 	//! thread safe, it can be called by multiple threads simultaneously.
 	void* (*memory_map)(size_t size, size_t alignment, size_t* offset, size_t* mapped_size);
-	//! Unmap the memory pages starting at address and spanning the given number of bytes. If release is set to
-	//! non-zero, the unmap is for an entire span range as returned by a previous call to memory_map and that the entire
-	//! range should be released. The release argument holds the size of the entire span range. If release is set to 0,
-	//! the unmap is a partial decommit of a subset of the mapped memory range. If you set a memory_unmap function, you
-	//! must also set a memory_map function or else the default implementation will be used for both. This function must
-	//! be thread safe, it can be called by multiple threads simultaneously.
-	void (*memory_unmap)(void* address, size_t size, size_t alignment, size_t offset, size_t release);
+	//! Decommit a range of memory pages
+	void (*memory_decommit)(void* address, size_t size);
+	//! Unmap the memory pages starting at address and spanning the given number of bytes. If you set a memory_unmap
+	//! function, you must also set a memory_map function or else the default implementation will be used for both. This
+	//! function must be thread safe, it can be called by multiple threads simultaneously.
+	void (*memory_unmap)(void* address, size_t offset, size_t mapped_size);
 	//! Called when a call to map memory pages fails (out of memory). If this callback is not set or returns zero the
 	//! library will return a null pointer in the allocation call. If this callback returns non-zero the map call will
 	//! be retried. The argument passed is the number of bytes that was requested in the map call. Only used if the

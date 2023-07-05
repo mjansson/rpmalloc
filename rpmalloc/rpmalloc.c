@@ -336,8 +336,6 @@ struct page_t {
 	uint32_t is_zero : 1;
 	//! Flag set if containing aligned blocks
 	uint32_t has_aligned_block : 1;
-	//! Unused flags
-	uint32_t unused : 28;
 	//! Owning heap
 	heap_t* heap;
 	//! Next page in list
@@ -672,41 +670,45 @@ os_mmap(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
 }
 
 static void
-os_munmap(void* address, size_t size, size_t alignment, size_t offset, size_t release) {
-	(void)sizeof(alignment);
-	if (release)
-		address = pointer_offset(address, -(int32_t)offset);
+os_mdecommit(void* address, size_t size) {
 #if ENABLE_UNMAP
 #if PLATFORM_WINDOWS
-	if (!VirtualFree(address, release ? 0 : size, release ? MEM_RELEASE : MEM_DECOMMIT)) {
+	if (!VirtualFree(address, size, MEM_DECOMMIT)) {
+		rpmalloc_assert(0, "Failed to decmmit virtual memory block");
+	}
+#else
+#if defined(MADV_DONTNEED) && !defined(__APPLE__)
+	if (madvise(address, size, MADV_DONTNEED)) {
+#elif defined(MADV_FREE_REUSABLE)
+	int ret;
+	while ((ret = madvise(address, size, MADV_FREE_REUSABLE)) == -1 && (errno == EAGAIN))
+		errno = 0;
+	if ((ret == -1) && (errno != 0)) {
+#elif defined(MADV_PAGEOUT)
+	if (madvise(address, size, MADV_PAGEOUT)) {
+#elif defined(MADV_FREE)
+	if (madvise(address, size, MADV_FREE)) {
+#else
+	if (posix_madvise(address, size, POSIX_MADV_DONTNEED)) {
+#endif
+		rpmalloc_assert(0, "Failed to decommit virtual memory block");
+	}
+#endif
+#endif
+}
+
+static void
+os_munmap(void* address, size_t offset, size_t mapped_size) {
+	address = pointer_offset(address, -(int32_t)offset);
+#if ENABLE_UNMAP
+#if PLATFORM_WINDOWS
+	if (!VirtualFree(address, 0, MEM_RELEASE)) {
 		rpmalloc_assert(0, "Failed to unmap virtual memory block");
 	}
 #else
-	if (release) {
-		if (munmap(address, release)) {
-			rpmalloc_assert(0, "Failed to unmap virtual memory block");
-		}
-	} else {
-#if defined(MADV_DONTNEED)
-		if (madvise(address, size, MADV_DONTNEED)) {
-#elif defined(MADV_FREE_REUSABLE)
-		int ret;
-		while ((ret = madvise(address, size, MADV_FREE_REUSABLE)) == -1 && (errno == EAGAIN))
-			errno = 0;
-		if ((ret == -1) && (errno != 0)) {
-#elif defined(MADV_PAGEOUT)
-		if (madvise(address, size, MADV_PAGEOUT)) {
-#elif defined(MADV_FREE)
-		if (madvise(address, size, MADV_FREE)) {
-#else
-		if (posix_madvise(address, size, POSIX_MADV_DONTNEED)) {
+	if (munmap(address, mapped_size))
+		rpmalloc_assert(0, "Failed to unmap virtual memory block");
 #endif
-			rpmalloc_assert(0, "Failed to madvise virtual memory block as free");
-		}
-	}
-#endif
-#else
-	(void)sizeof(size);
 #endif
 }
 
@@ -786,11 +788,9 @@ static inline void
 page_evict_memory_pages(page_t* page) {
 	if (page->block_initialized < (page->block_count >> 1))
 		return;
-	/*
 	void* extra_page = pointer_offset(page, os_page_size);
 	size_t extra_page_size = page_get_size(page) - os_page_size;
-	global_memory_interface->memory_unmap(extra_page, extra_page_size, 0, 0, 0);
-	*/
+	global_memory_interface->memory_decommit(extra_page, extra_page_size);
 }
 
 static inline void
@@ -895,7 +895,8 @@ page_push_local_free_to_heap(page_t* page) {
 static inline void*
 page_initialize_blocks(page_t* page) {
 	rpmalloc_assert(page->block_initialized < page->block_count, "Block initialization internal failure");
-	block_t* block = page_block(page, page->block_initialized++);
+	block_t* block = page_block(page, page->block_initialized);
+	++page->block_initialized;
 	++page->block_used;
 	if ((page->page_type == PAGE_SMALL) && (page->block_size < (os_page_size >> 1))) {
 		// Link up until next memory page in free list
@@ -975,7 +976,7 @@ page_deallocate_block(page_t* page, block_t* block) {
 	} else {
 		if (page->page_type == PAGE_HUGE) {
 			span_t* span = page_get_span(page);
-			global_memory_interface->memory_unmap(span, span->page_size, SPAN_SIZE, span->offset, span->mapped_size);
+			global_memory_interface->memory_unmap(span, span->mapped_size, span->offset);
 		} else {
 			// Multithreaded deallocation, push to deferred deallocation list
 			page_put_thread_free_block(page, block);
@@ -1143,13 +1144,13 @@ heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page) {
 	page->block_initialized = 0;
 	page->local_free = 0;
 	page->local_free_count = 0;
-	atomic_store_explicit(&page->thread_free, 0, memory_order_relaxed);
 	page->is_full = 0;
 	page->is_free = 0;
 	page->has_aligned_block = 0;
 	page_t* head = heap->page_available[size_class];
 	page->next = head;
 	page->prev = 0;
+	atomic_store_explicit(&page->thread_free, 0, memory_order_relaxed);
 	if (head)
 		head->prev = page;
 	heap->page_available[size_class] = page;
@@ -1207,7 +1208,10 @@ heap_get_page(heap_t* heap, uint32_t size_class) {
 	// Check if there is a free page from multithreaded deallocations
 	page = atomic_load_explicit(&heap->page_free_thread[page_type], memory_order_relaxed);
 	if (UNEXPECTED(page != 0)) {
-		atomic_store_explicit(&heap->page_free_thread[page_type], 0, memory_order_relaxed);
+		while (!atomic_compare_exchange_weak_explicit(&heap->page_free_thread[page->page_type], &page, 0,
+		                                              memory_order_relaxed, memory_order_relaxed)) {
+			wait_spin();
+		}
 		heap->page_free[page_type] = page->next;
 		heap_make_free_page_available(heap, size_class, page);
 		return page;
@@ -1272,100 +1276,21 @@ heap_allocate_block_aligned(heap_t* heap, size_t alignment, size_t size, unsigne
 		return 0;
 	}
 #endif
-
-	block_t* block = 0;
-	size_t align_mask = alignment - 1;
-	if (alignment <= MEDIUM_BLOCK_SIZE_LIMIT) {
-		block = heap_allocate_block(heap, size + alignment, zero);
-		if ((uintptr_t)block & align_mask) {
-			block = (void*)(((uintptr_t)block & ~(uintptr_t)align_mask) + alignment);
-			// Mark as having aligned blocks
-			span_t* span = block_get_span(block);
-			page_t* page = span_get_page_from_block(span, block);
-			page->has_aligned_block = 1;
-		}
-		return block;
-	}
-#if 0
-	// Fallback to mapping new pages for this request. Since pointers passed
-	// to rpfree must be able to reach the start of the span by bitmasking of
-	// the address with the span size, the returned aligned pointer from this
-	// function must be with a span size of the start of the mapped area.
-	// In worst case this requires us to loop and map pages until we get a
-	// suitable memory address. It also means we can never align to span size
-	// or greater, since the span header will push alignment more than one
-	// span size away from span start (thus causing pointer mask to give us
-	// an invalid span start on free)
-	if (alignment & align_mask) {
-		errno = EINVAL;
-		return 0;
-	}
 	if (alignment >= MAX_ALIGNMENT) {
 		errno = EINVAL;
 		return 0;
 	}
 
-	size_t extra_pages = alignment / _memory_page_size;
-
-	// Since each span has a header, we will at least need one extra memory page
-	size_t num_pages = 1 + (size / _memory_page_size);
-	if (size & (_memory_page_size - 1))
-		++num_pages;
-
-	if (extra_pages > num_pages)
-		num_pages = 1 + extra_pages;
-
-	size_t original_pages = num_pages;
-	size_t limit_pages = (_memory_span_size / _memory_page_size) * 2;
-	if (limit_pages < (original_pages * 2))
-		limit_pages = original_pages * 2;
-
-	size_t mapped_size, align_offset;
-	span_t* span;
-
-retry:
-	align_offset = 0;
-	mapped_size = num_pages * _memory_page_size;
-
-	span = (span_t*)_rpmalloc_mmap(mapped_size, &align_offset);
-	if (!span) {
-		errno = ENOMEM;
-		return 0;
+	size_t align_mask = alignment - 1;
+	block_t* block = heap_allocate_block(heap, size + alignment, zero);
+	if ((uintptr_t)block & align_mask) {
+		block = (void*)(((uintptr_t)block & ~(uintptr_t)align_mask) + alignment);
+		// Mark as having aligned blocks
+		span_t* span = block_get_span(block);
+		page_t* page = span_get_page_from_block(span, block);
+		page->has_aligned_block = 1;
 	}
-	ptr = pointer_offset(span, SPAN_HEADER_SIZE);
-
-	if ((uintptr_t)ptr & align_mask)
-		ptr = (void*)(((uintptr_t)ptr & ~(uintptr_t)align_mask) + alignment);
-
-	if (((size_t)pointer_diff(ptr, span) >= _memory_span_size) ||
-	    (pointer_offset(ptr, size) > pointer_offset(span, mapped_size)) ||
-	    (((uintptr_t)ptr & _memory_span_mask) != (uintptr_t)span)) {
-		_rpmalloc_unmap(span, mapped_size, align_offset, mapped_size);
-		++num_pages;
-		if (num_pages > limit_pages) {
-			errno = EINVAL;
-			return 0;
-		}
-		goto retry;
-	}
-
-	// Store page count in span_count
-	span->size_class = SIZE_CLASS_HUGE;
-	span->span_count = (uint32_t)num_pages;
-	span->align_offset = (uint32_t)align_offset;
-	span->heap = heap;
-	_rpmalloc_stat_add_peak(&_huge_pages_current, num_pages, _huge_pages_peak);
-
-#if RPMALLOC_FIRST_CLASS_HEAPS
-	_rpmalloc_span_double_link_list_add(&heap->large_huge_span, span);
-#endif
-	++heap->full_span_count;
-
-	_rpmalloc_stat_add64(&_allocation_counter, 1);
-
-	return ptr;
-#endif
-	return 0;
+	return block;
 }
 
 static void*
@@ -1389,24 +1314,17 @@ heap_reallocate_block(heap_t* heap, void* block, size_t size, size_t old_size, u
 				return block_origin;
 			}
 		} else {
-// Oversized block
-#if 0
-			size_t total_size = size + SPAN_HEADER_SIZE;
-			size_t num_pages = total_size >> _memory_page_size_shift;
-			if (total_size & (_memory_page_size - 1))
-				++num_pages;
-			// Page count is stored in span_count
-			size_t current_pages = span->span_count;
-			void* block = pointer_offset(span, SPAN_HEADER_SIZE);
-			if (!oldsize)
-				oldsize = (current_pages * _memory_page_size) - (size_t)pointer_diff(p, block) - SPAN_HEADER_SIZE;
-			if ((current_pages >= num_pages) && (num_pages >= (current_pages / 2))) {
+			// Oversized block
+			void* block_start = pointer_offset(span, SPAN_HEADER_SIZE);
+			if (!old_size)
+				old_size = span->page_size;
+			if (size < span->mapped_size) {
 				// Still fits in block, never mind trying to save memory, but preserve data if alignment changed
-				if ((p != block) && !(flags & RPMALLOC_NO_PRESERVE))
-					memmove(block, p, oldsize);
-				return block;
+				if ((block_start != block) && !(flags & RPMALLOC_NO_PRESERVE))
+					memmove(block_start, block, old_size);
+				span->page_size = size;
+				return block_start;
 			}
-#endif
 		}
 	} else {
 		old_size = 0;
@@ -1597,6 +1515,7 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 	global_memory_interface = memory_interface ? memory_interface : &global_memory_interface_default;
 	if (!global_memory_interface->memory_map || !global_memory_interface->memory_unmap) {
 		global_memory_interface->memory_map = os_mmap;
+		global_memory_interface->memory_decommit = os_mdecommit;
 		global_memory_interface->memory_unmap = os_munmap;
 	}
 
