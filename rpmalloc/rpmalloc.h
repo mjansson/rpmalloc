@@ -146,6 +146,8 @@ typedef struct rpmalloc_interface_t {
 	//! set a memory_unmap function or else the default implementation will be used for both. This function must be
 	//! thread safe, it can be called by multiple threads simultaneously.
 	void* (*memory_map)(size_t size, size_t alignment, size_t* offset, size_t* mapped_size);
+	//! Commit a range of memory pages
+	void (*memory_commit)(void* address, size_t size);
 	//! Decommit a range of memory pages
 	void (*memory_decommit)(void* address, size_t size);
 	//! Unmap the memory pages starting at address and spanning the given number of bytes. If you set a memory_unmap

@@ -31,7 +31,7 @@ class MSVCToolchain(toolchain.Toolchain):
     self.linkcmd = '$toolchain$link $libpaths $configlibpaths $linkflags $linkarchflags $linkconfigflags /DEBUG /NOLOGO /SUBSYSTEM:CONSOLE /DYNAMICBASE /NXCOMPAT /MANIFEST /MANIFESTUAC:\"level=\'asInvoker\' uiAccess=\'false\'\" /TLBID:1 /PDB:$pdbpath /OUT:$out $in $libs $archlibs $oslibs'
     self.dllcmd = self.linkcmd + ' /DLL'
 
-    self.cflags = ['/D', '"' + project.upper() + '_COMPILE=1"', '/D', '"_UNICODE"',  '/D', '"UNICODE"', '/std:c17', '/Zi', '/Oi', '/Oy-', '/GS-', '/Gy-', '/Qpar-', '/fp:fast', '/fp:except-', '/Zc:forScope', '/Zc:wchar_t', '/GR-', '/openmp-']
+    self.cflags = ['/D', '"' + project.upper() + '_COMPILE=1"', '/D', '"_UNICODE"',  '/D', '"UNICODE"', '/std:c17', '/experimental:c11atomics', '/Zi', '/Oi', '/Oy-', '/GS-', '/Gy-', '/Qpar-', '/fp:fast', '/fp:except-', '/Zc:forScope', '/Zc:wchar_t', '/GR-', '/openmp-']
     self.cwarnflags = ['/W4', '/WX', '/wd4201'] #Ignore nameless union/struct which is allowed in C11
     self.cmoreflags = []
     self.arflags = ['/ignore:4221'] #Ignore empty object file warning]
