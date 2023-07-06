@@ -345,6 +345,8 @@ struct span_t {
 	uint32_t page_count;
 	//! Number of bytes per page
 	uint32_t page_size;
+	//! Page size bit shift
+	uint32_t page_size_shift;
 	//! Page type
 	page_type_t page_type;
 	//! Offset to start of mapped memory region
@@ -525,12 +527,12 @@ get_thread_heap(void) {
 	return heap;
 }
 
-//! Get the size class from given size in bytes (must not be zero)
+//! Get the size class from given size in bytes
 static inline uint32_t
 get_size_class(size_t size) {
 	uintptr_t minblock_count = (size + (SMALL_GRANULARITY - 1)) / SMALL_GRANULARITY;
 	// For sizes up to 8 times the minimum granularity the size class is equal to number of such blocks
-	if (minblock_count <= 8) {
+	if (size <= (SMALL_GRANULARITY * 8)) { //(minblock_count <= 8) 
 		rpmalloc_assert(global_size_class[minblock_count].block_size >= size, "Size class misconfiguration");
 		return (uint32_t)(minblock_count ? minblock_count : 1);
 	}
@@ -555,9 +557,9 @@ static inline page_type_t
 get_page_type(uint32_t size_class) {
 	if (size_class < SMALL_SIZE_CLASS_COUNT)
 		return PAGE_SMALL;
-	if (size_class < (SMALL_SIZE_CLASS_COUNT + MEDIUM_SIZE_CLASS_COUNT))
+	else if (size_class < (SMALL_SIZE_CLASS_COUNT + MEDIUM_SIZE_CLASS_COUNT))
 		return PAGE_MEDIUM;
-	if (size_class < SIZE_CLASS_COUNT)
+	else if (size_class < SIZE_CLASS_COUNT)
 		return PAGE_LARGE;
 	return PAGE_HUGE;
 }
@@ -1006,25 +1008,21 @@ page_deallocate_block(page_t* page, block_t* block) {
 
 static inline page_t*
 span_get_page_from_block(span_t* span, void* block) {
-	size_t page_count = (size_t)pointer_diff(block, span) / span->page_size;
+	size_t page_count = (size_t)pointer_diff(block, span) >> span->page_size_shift;
 	return pointer_offset(span, page_count * span->page_size);
 }
 
 //! Find or allocate a page from the given span
 static inline page_t*
-span_allocate_page(span_t* span, uint32_t size_class) {
+span_allocate_page(span_t* span) {
 	// Allocate path, initialize a new chunk of memory for a page in the given span
 	rpmalloc_assert(span->page_initialized < span->page_count, "Page initialization internal failure");
 	page_t* page = pointer_offset(span, span->page_size * span->page_initialized);
-	page->size_class = size_class;
-	page->block_size = global_size_class[size_class].block_size;
-	page->block_count = global_size_class[size_class].block_count;
-	page->block_initialized = 0;
-	page->block_used = 0;
+	++span->page_initialized;
+
 	page->page_type = span->page_type;
 	page->is_zero = 1;
 	page->heap = span->heap;
-	++span->page_initialized;
 
 	if (span->page_initialized == span->page_count) {
 		// Span fully utilized, unlink from available list and add to full list
@@ -1172,8 +1170,11 @@ heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page, i
 	if (head)
 		head->prev = page;
 	heap->page_available[size_class] = page;
-	if (commit)
+	if (commit) {
+		//TODO: If page is recommitted, the blocks in the second memory page and forward
+		// will be zeroed out by OS - take advantage in calloc calls
 		page_commit_memory_pages(page);
+	}
 }
 
 //! Find or allocate a span for the given page type with the given size class
@@ -1188,13 +1189,21 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 	size_t mapped_size = 0;
 	span_t* span = global_memory_interface->memory_map(SPAN_SIZE, SPAN_SIZE, &offset, &mapped_size);
 	if (EXPECTED(span != 0)) {
-		uint32_t page_size = (page_type == PAGE_SMALL) ?
-		                         SMALL_PAGE_SIZE :
-                                 ((page_type == PAGE_MEDIUM) ? MEDIUM_PAGE_SIZE : LARGE_PAGE_SIZE);
 		span->page_type = page_type;
 		span->heap = heap;
-		span->page_count = SPAN_SIZE / page_size;
-		span->page_size = page_size;
+		if (page_type == PAGE_SMALL) {
+			span->page_count = SPAN_SIZE / SMALL_PAGE_SIZE;
+			span->page_size = SMALL_PAGE_SIZE;
+			span->page_size_shift = 16;
+		} else if (page_type == PAGE_MEDIUM) {
+			span->page_count = SPAN_SIZE / MEDIUM_PAGE_SIZE;
+			span->page_size = MEDIUM_PAGE_SIZE;
+			span->page_size_shift = 22;
+		} else {
+			span->page_count = SPAN_SIZE / LARGE_PAGE_SIZE;
+			span->page_size = LARGE_PAGE_SIZE;
+			span->page_size_shift = 26;
+		}
 		span->offset = (uint32_t)offset;
 		span->mapped_size = mapped_size;
 
@@ -1243,7 +1252,7 @@ heap_get_page(heap_t* heap, uint32_t size_class) {
 	// Fallback path, find or allocate span for given size class
 	span_t* span = heap_get_span(heap, page_type);
 	if (EXPECTED(span != 0)) {
-		page = span_allocate_page(span, size_class);
+		page = span_allocate_page(span);
 		heap_make_free_page_available(heap, size_class, page, 0);
 	}
 
@@ -1263,7 +1272,7 @@ heap_allocate_block(heap_t* heap, size_t size, unsigned int zero) {
 		}
 	}
 	// Fallback path. find or allocate page and span for block
-	if (size <= LARGE_BLOCK_SIZE_LIMIT) {
+	if (EXPECTED(size <= LARGE_BLOCK_SIZE_LIMIT)) {
 		page_t* page = heap_get_page(heap, size_class);
 		if (EXPECTED(page != 0))
 			return page_allocate_block(page, zero);
@@ -1276,6 +1285,7 @@ heap_allocate_block(heap_t* heap, size_t size, unsigned int zero) {
 			span_t* span = block;
 			span->page_type = PAGE_HUGE;
 			span->page_size = (uint32_t)size;
+			span->page_size_shift = 0;
 			span->offset = (uint32_t)offset;
 			span->mapped_size = mapped_size;
 			return pointer_offset(block, SPAN_HEADER_SIZE);
