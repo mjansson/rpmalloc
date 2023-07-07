@@ -135,7 +135,7 @@ madvise(caddr_t, size_t, int);
 #define PAGE_HEADER_SIZE 128
 #define SPAN_HEADER_SIZE PAGE_HEADER_SIZE
 
-#define SMALL_GRANULARITY 16
+#define SMALL_GRANULARITY 32
 
 #define SMALL_BLOCK_SIZE_LIMIT (4 * 1024)
 #define MEDIUM_BLOCK_SIZE_LIMIT (256 * 1024)
@@ -146,9 +146,12 @@ madvise(caddr_t, size_t, int);
 #define LARGE_SIZE_CLASS_COUNT 20
 #define SIZE_CLASS_COUNT (SMALL_SIZE_CLASS_COUNT + MEDIUM_SIZE_CLASS_COUNT + LARGE_SIZE_CLASS_COUNT)
 
-#define SMALL_PAGE_SIZE (64 * 1024)
-#define MEDIUM_PAGE_SIZE (4 * 1024 * 1024)
-#define LARGE_PAGE_SIZE (64 * 1024 * 1024)
+#define SMALL_PAGE_SIZE_SHIFT 16
+#define SMALL_PAGE_SIZE (1 << SMALL_PAGE_SIZE_SHIFT)
+#define MEDIUM_PAGE_SIZE_SHIFT 22
+#define MEDIUM_PAGE_SIZE (1 << MEDIUM_PAGE_SIZE_SHIFT)
+#define LARGE_PAGE_SIZE_SHIFT 22
+#define LARGE_PAGE_SIZE (1 << LARGE_PAGE_SIZE_SHIFT)
 
 #define SPAN_SIZE (256 * 1024 * 1024)
 #define SPAN_MASK (~((uintptr_t)(SPAN_SIZE - 1)))
@@ -204,7 +207,7 @@ rpmalloc_clz(uintptr_t x) {
 #endif
 }
 
-static void
+static inline void
 wait_spin(void) {
 #if defined(_MSC_VER)
 	_mm_pause();
@@ -301,10 +304,6 @@ struct block_t {
 
 //! A page contains blocks of a given size
 struct page_t {
-	//! Local free list
-	block_t* local_free;
-	//! Local free list count
-	uint32_t local_free_count;
 	//! Size class of blocks
 	uint32_t size_class;
 	//! Block size
@@ -323,8 +322,14 @@ struct page_t {
 	uint32_t is_free : 1;
 	//! Flag set if blocks are zero initialied
 	uint32_t is_zero : 1;
+	//! Flag set if memory pages have been decommitted
+	uint32_t is_decommitted : 1;
 	//! Flag set if containing aligned blocks
 	uint32_t has_aligned_block : 1;
+	//! Local free list count
+	uint32_t local_free_count;
+	//! Local free list
+	block_t* local_free;
 	//! Owning heap
 	heap_t* heap;
 	//! Next page in list
@@ -365,12 +370,8 @@ struct span_t {
 struct heap_t {
 	//! Owning thread ID
 	uintptr_t owner_thread;
-	//! Heap ID
-	uint32_t id;
-	//! Finalization state flag
-	int finalize;
 	//! Heap local free list for small size classes
-	block_t* small_free[SMALL_SIZE_CLASS_COUNT];
+	block_t* local_free[SIZE_CLASS_COUNT];
 	//! Available non-full pages for each size class
 	page_t* page_available[SIZE_CLASS_COUNT];
 	//! Full pages
@@ -385,6 +386,10 @@ struct heap_t {
 	span_t* span_used[3];
 	//! Next heap in queue
 	heap_t* next;
+	//! Heap ID
+	uint32_t id;
+	//! Finalization state flag
+	uint32_t finalize;
 	//! Memory map region offset
 	uint32_t offset;
 	//! Memory map size
@@ -424,16 +429,16 @@ static rpmalloc_interface_t global_memory_interface_default;
 	{ (n * SMALL_GRANULARITY), (LARGE_PAGE_SIZE - PAGE_HEADER_SIZE) / (n * SMALL_GRANULARITY) }
 static const size_class_t global_size_class[SIZE_CLASS_COUNT] = {
     SCLASS(1),      SCLASS(1),      SCLASS(2),      SCLASS(3),      SCLASS(4),      SCLASS(5),      SCLASS(6),
-    SCLASS(7),      SCLASS(8),      SCLASS(10),     SCLASS(12),     SCLASS(14),     SCLASS(16),     SCLASS(20),
-    SCLASS(24),     SCLASS(28),     SCLASS(32),     SCLASS(40),     SCLASS(48),     SCLASS(56),     SCLASS(64),
-    SCLASS(80),     SCLASS(96),     SCLASS(112),    SCLASS(128),    SCLASS(160),    SCLASS(192),    SCLASS(224),
-    SCLASS(256),    MCLASS(320),    MCLASS(384),    MCLASS(448),    MCLASS(512),    MCLASS(640),    MCLASS(768),
-    MCLASS(896),    MCLASS(1024),   MCLASS(1280),   MCLASS(1536),   MCLASS(1792),   MCLASS(2048),   MCLASS(2560),
-    MCLASS(3072),   MCLASS(3584),   MCLASS(4096),   MCLASS(5120),   MCLASS(6144),   MCLASS(7168),   MCLASS(8192),
-    MCLASS(10240),  MCLASS(12288),  MCLASS(14336),  MCLASS(16384),  LCLASS(20480),  LCLASS(24576),  LCLASS(28672),
-    LCLASS(32768),  LCLASS(40960),  LCLASS(49152),  LCLASS(57344),  LCLASS(65536),  LCLASS(81920),  LCLASS(98304),
-    LCLASS(114688), LCLASS(131072), LCLASS(163840), LCLASS(196608), LCLASS(229376), LCLASS(262144), LCLASS(327680),
-    LCLASS(393216), LCLASS(458752), LCLASS(524288)};
+    SCLASS(7),      SCLASS(8),      SCLASS(9),      SCLASS(10),     SCLASS(11),     SCLASS(12),     SCLASS(13),
+    SCLASS(14),     SCLASS(15),     SCLASS(16),     SCLASS(20),     SCLASS(24),     SCLASS(28),     SCLASS(32),
+    SCLASS(40),     SCLASS(48),     SCLASS(56),     SCLASS(64),     SCLASS(80),     SCLASS(96),     SCLASS(112),
+    SCLASS(128),    MCLASS(160),    MCLASS(192),    MCLASS(224),    MCLASS(256),    MCLASS(320),    MCLASS(384),
+    MCLASS(448),    MCLASS(512),    MCLASS(640),    MCLASS(768),    MCLASS(896),    MCLASS(1024),   MCLASS(1280),
+    MCLASS(1536),   MCLASS(1792),   MCLASS(2048),   MCLASS(2560),   MCLASS(3072),   MCLASS(3584),   MCLASS(4096),
+    MCLASS(5120),   MCLASS(6144),   MCLASS(7168),   MCLASS(8192),   LCLASS(10240),  LCLASS(12288),  LCLASS(14336),
+    LCLASS(16384),  LCLASS(20480),  LCLASS(24576),  LCLASS(28672),  LCLASS(32768),  LCLASS(40960),  LCLASS(49152),
+    LCLASS(57344),  LCLASS(65536),  LCLASS(81920),  LCLASS(98304),  LCLASS(114688), LCLASS(131072), LCLASS(163840),
+    LCLASS(196608), LCLASS(229376), LCLASS(262144)};
 
 //! Flag indicating huge pages are used
 static int global_use_huge_pages;
@@ -527,18 +532,24 @@ get_thread_heap(void) {
 	return heap;
 }
 
+//! Get the size class from given size in bytes for tiny blocks (below 16 times the minimum granularity)
+static inline uint32_t
+get_size_class_tiny(size_t size) {
+	return (((uint32_t)size + (SMALL_GRANULARITY - 1)) / SMALL_GRANULARITY);
+}
+
 //! Get the size class from given size in bytes
 static inline uint32_t
 get_size_class(size_t size) {
 	uintptr_t minblock_count = (size + (SMALL_GRANULARITY - 1)) / SMALL_GRANULARITY;
-	// For sizes up to 8 times the minimum granularity the size class is equal to number of such blocks
-	if (size <= (SMALL_GRANULARITY * 8)) { //(minblock_count <= 8) 
+	// For sizes up to 16 times the minimum granularity the size class is equal to number of such blocks
+	if (size <= (SMALL_GRANULARITY * 16)) {
 		rpmalloc_assert(global_size_class[minblock_count].block_size >= size, "Size class misconfiguration");
 		return (uint32_t)(minblock_count ? minblock_count : 1);
 	}
 	--minblock_count;
-	// Calculate position of most significant bit, since minblock_count now guaranteed to be > 8 this position is
-	// guaranteed to be >= 2
+	// Calculate position of most significant bit, since minblock_count now guaranteed to be > 16 this position is
+	// guaranteed to be >= 3
 #if ARCH_64BIT
 	const uint32_t most_significant_bit = (uint32_t)(63 - (int)rpmalloc_clz(minblock_count));
 #else
@@ -547,7 +558,7 @@ get_size_class(size_t size) {
 	// Class sizes are of the bit format [..]000xxx000[..] where we already have the position of the most significant
 	// bit, now calculate the subclass from the remaining two bits
 	const uint32_t subclass_bits = (minblock_count >> (most_significant_bit - 2)) & 0x03;
-	const uint32_t class_idx = (uint32_t)((most_significant_bit << 2) + subclass_bits) - 3;
+	const uint32_t class_idx = (uint32_t)((most_significant_bit << 2) + subclass_bits) + 1;
 	rpmalloc_assert((class_idx >= SIZE_CLASS_COUNT) || (global_size_class[class_idx].block_size >= size),
 	                "Size class misconfiguration");
 	return class_idx;
@@ -797,11 +808,10 @@ page_get_local_free_block(page_t* page) {
 
 static inline void
 page_decommit_memory_pages(page_t* page) {
-	//if (page->block_initialized < (page->block_count >> 1))
-	//	return;
 	void* extra_page = pointer_offset(page, os_page_size);
 	size_t extra_page_size = page_get_size(page) - os_page_size;
 	global_memory_interface->memory_decommit(extra_page, extra_page_size);
+	page->is_decommitted = 1;
 }
 
 static inline void
@@ -809,37 +819,40 @@ page_commit_memory_pages(page_t* page) {
 	void* extra_page = pointer_offset(page, os_page_size);
 	size_t extra_page_size = page_get_size(page) - os_page_size;
 	global_memory_interface->memory_commit(extra_page, extra_page_size);
+	page->is_decommitted = 0;
 }
 
 static inline void
 page_put_local_free_block(page_t* page, block_t* block) {
-	heap_t* heap = page->heap;
-	if (page->block_used == 1) {
-		rpmalloc_assert(!page->is_full, "Internal page state failure");
-		if (heap->page_available[page->size_class] == page) {
-			heap->page_available[page->size_class] = page->next;
-		} else {
-			page->prev->next = page->next;
+	block->next = page->local_free;
+	page->local_free = block;
+	++page->local_free_count;
+	--page->block_used;
+
+	if (EXPECTED(page->is_full == 0)) {
+		if (UNEXPECTED(page->block_used == 0)) {
+			heap_t* heap = page->heap;
+			if (heap->page_available[page->size_class] == page) {
+				heap->page_available[page->size_class] = page->next;
+			} else {
+				page->prev->next = page->next;
+				if (page->next)
+					page->next->prev = page->prev;
+			}
+			page->is_free = 1;
+			page->next = heap->page_free[page->page_type];
+			heap->page_free[page->page_type] = page;
+			// Keep one page committed
 			if (page->next)
-				page->next->prev = page->prev;
+				page_decommit_memory_pages(page->next);
 		}
-		page->is_free = 1;
-		page_decommit_memory_pages(page);
-		page->next = heap->page_free[page->page_type];
-		heap->page_free[page->page_type] = page;
 	} else {
-		void* local_free = page->local_free;
-		--page->block_used;
-		++page->local_free_count;
-		if (page->is_full) {
-			page->next = heap->page_available[page->size_class];
-			if (page->next)
-				page->next->prev = page;
-			heap->page_available[page->size_class] = page;
-			page->is_full = 0;
-		}
-		block->next = local_free;
-		page->local_free = block;
+		heap_t* heap = page->heap;
+		page->next = heap->page_available[page->size_class];
+		if (page->next)
+			page->next->prev = page;
+		heap->page_available[page->size_class] = page;
+		page->is_full = 0;
 	}
 }
 
@@ -903,9 +916,10 @@ page_put_thread_free_block(page_t* page, block_t* block) {
 
 static inline void
 page_push_local_free_to_heap(page_t* page) {
-	if ((page->size_class < SMALL_SIZE_CLASS_COUNT) && page->local_free) {
+	if (page->local_free) {
 		// Push the page free list as the fast track list of free blocks for heap
-		page->heap->small_free[page->size_class] = page->local_free;
+		rpmalloc_assert(!page->heap->local_free[page->size_class], "Local free list internal failure");
+		page->heap->local_free[page->size_class] = page->local_free;
 		page->block_used += page->local_free_count;
 		page->local_free = 0;
 		page->local_free_count = 0;
@@ -918,6 +932,7 @@ page_initialize_blocks(page_t* page) {
 	block_t* block = page_block(page, page->block_initialized);
 	++page->block_initialized;
 	++page->block_used;
+
 	if ((page->page_type == PAGE_SMALL) && (page->block_size < (os_page_size >> 1))) {
 		// Link up until next memory page in free list
 		void* memory_page_start = (void*)((uintptr_t)block & ~(uintptr_t)(os_page_size - 1));
@@ -939,6 +954,7 @@ page_initialize_blocks(page_t* page) {
 			page->local_free_count = 0;
 		}
 	}
+
 	return block;
 }
 
@@ -955,7 +971,6 @@ page_allocate_block(page_t* page, unsigned int zero) {
 	}
 
 	rpmalloc_assert(page->block_used <= page->block_count, "Page block use counter out of sync");
-
 	page_push_local_free_to_heap(page);
 
 	if (page->block_used == page->block_count)
@@ -985,13 +1000,15 @@ page_allocate_block(page_t* page, unsigned int zero) {
 
 static inline void
 page_deallocate_block(page_t* page, block_t* block) {
+	uintptr_t calling_thread = get_thread_id();
+	int is_local =  (!page->heap || (page->heap->owner_thread == calling_thread));
+
 	if (page->has_aligned_block) {
 		// Realign pointer to block start
 		block = page_block_realign(page, block);
 	}
 
-	uintptr_t calling_thread = get_thread_id();
-	if (EXPECTED(page->heap && (page->heap->owner_thread == calling_thread))) {
+	if (EXPECTED(is_local != 0)) {
 		page_put_local_free_block(page, block);
 	} else {
 		// Multithreaded deallocation, push to deferred deallocation list. This will
@@ -1025,12 +1042,12 @@ span_allocate_page(span_t* span) {
 	page->heap = span->heap;
 
 	if (span->page_initialized == span->page_count) {
-		// Span fully utilized, unlink from available list and add to full list
+		// Span fully utilized
 		heap_t* heap = span->heap;
-		if (span == heap->span_partial[span->page_type])
-			heap->span_partial[span->page_type] = span->next;
-		else
-			span->prev->next = span->next;
+
+		rpmalloc_assert(span == heap->span_partial[span->page_type], "Span partial tracking out of sync");
+		heap->span_partial[span->page_type] = 0;
+
 		span->next = heap->span_used[span->page_type];
 		if (span->next)
 			span->next->prev = span;
@@ -1067,9 +1084,13 @@ block_deallocate(block_t* block) {
 static inline size_t
 block_usable_size(block_t* block) {
 	span_t* span = (span_t*)((uintptr_t)block & SPAN_MASK);
-	page_t* page = span_get_page_from_block(span, block);
-	void* blocks_start = pointer_offset(page, PAGE_HEADER_SIZE);
-	return page->block_size - ((size_t)pointer_diff(block, blocks_start) % page->block_size);
+	if (EXPECTED(span->page_type <= PAGE_LARGE)) {
+		page_t* page = span_get_page_from_block(span, block);
+		void* blocks_start = pointer_offset(page, PAGE_HEADER_SIZE);
+		return page->block_size - ((size_t)pointer_diff(block, blocks_start) % page->block_size);
+	} else {
+		return span->mapped_size - (size_t)pointer_diff(block, span);
+	}
 }
 
 ////////////
@@ -1152,7 +1173,7 @@ heap_release(heap_t* heap) {
 }
 
 static inline void
-heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page, int commit) {
+heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page) {
 	page->size_class = size_class;
 	page->block_size = global_size_class[size_class].block_size;
 	page->block_count = global_size_class[size_class].block_count;
@@ -1170,7 +1191,7 @@ heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page, i
 	if (head)
 		head->prev = page;
 	heap->page_available[size_class] = page;
-	if (commit) {
+	if (page->is_decommitted) {
 		//TODO: If page is recommitted, the blocks in the second memory page and forward
 		// will be zeroed out by OS - take advantage in calloc calls
 		page_commit_memory_pages(page);
@@ -1194,15 +1215,15 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 		if (page_type == PAGE_SMALL) {
 			span->page_count = SPAN_SIZE / SMALL_PAGE_SIZE;
 			span->page_size = SMALL_PAGE_SIZE;
-			span->page_size_shift = 16;
+			span->page_size_shift =SMALL_PAGE_SIZE_SHIFT;
 		} else if (page_type == PAGE_MEDIUM) {
 			span->page_count = SPAN_SIZE / MEDIUM_PAGE_SIZE;
 			span->page_size = MEDIUM_PAGE_SIZE;
-			span->page_size_shift = 22;
+			span->page_size_shift = MEDIUM_PAGE_SIZE_SHIFT;
 		} else {
 			span->page_count = SPAN_SIZE / LARGE_PAGE_SIZE;
 			span->page_size = LARGE_PAGE_SIZE;
-			span->page_size_shift = 26;
+			span->page_size_shift = LARGE_PAGE_SIZE_SHIFT;
 		}
 		span->offset = (uint32_t)offset;
 		span->mapped_size = mapped_size;
@@ -1230,7 +1251,7 @@ heap_get_page(heap_t* heap, uint32_t size_class) {
 	page = heap->page_free[page_type];
 	if (EXPECTED(page != 0)) {
 		heap->page_free[page_type] = page->next;
-		heap_make_free_page_available(heap, size_class, page, 1);
+		heap_make_free_page_available(heap, size_class, page);
 		return page;
 	}
 
@@ -1244,7 +1265,7 @@ heap_get_page(heap_t* heap, uint32_t size_class) {
 		page = (void*)page_mt;
 		if (EXPECTED(page != 0)) {
 			heap->page_free[page_type] = page->next;
-			heap_make_free_page_available(heap, size_class, page, 1);
+			heap_make_free_page_available(heap, size_class, page);
 			return page;
 		}
 	}
@@ -1253,45 +1274,86 @@ heap_get_page(heap_t* heap, uint32_t size_class) {
 	span_t* span = heap_get_span(heap, page_type);
 	if (EXPECTED(span != 0)) {
 		page = span_allocate_page(span);
-		heap_make_free_page_available(heap, size_class, page, 0);
+		heap_make_free_page_available(heap, size_class, page);
 	}
 
 	return page;
 }
 
+//! Pop a block from the heap local free list
+static inline RPMALLOC_ALLOCATOR void*
+heap_pop_local_free(heap_t* heap, uint32_t size_class) {
+	block_t** free_list = heap->local_free + size_class;
+	block_t* block = *free_list;
+	if (EXPECTED(block != 0))
+		*free_list = block->next;
+	return block;
+}
+
+//! Generic allocation path from heap pages, spans or new mapping
+static RPMALLOC_ALLOCATOR void*
+heap_allocate_block_small_to_large(heap_t* heap, uint32_t size_class, unsigned int zero) {
+	page_t* page = heap_get_page(heap, size_class);
+	if (EXPECTED(page != 0))
+		return page_allocate_block(page, zero);
+	return 0;
+}
+
+//! Generic allocation path from heap pages, spans or new mapping
+static RPMALLOC_ALLOCATOR void*
+heap_allocate_block_huge(heap_t* heap, size_t size) {
+	(void)sizeof(heap);
+	size_t alloc_size = get_page_aligned_size(size + SPAN_HEADER_SIZE);
+	size_t offset = 0;
+	size_t mapped_size = 0;
+	void* block = global_memory_interface->memory_map(alloc_size, SPAN_SIZE, &offset, &mapped_size);
+	if (block) {
+		span_t* span = block;
+		span->page_type = PAGE_HUGE;
+		span->page_size = (uint32_t)size;
+		span->page_size_shift = 0;
+		span->offset = (uint32_t)offset;
+		span->mapped_size = mapped_size;
+		return pointer_offset(block, SPAN_HEADER_SIZE);
+	}
+	return 0;
+}
+
+//! Find or allocate a block of the given tiny size
+static inline RPMALLOC_ALLOCATOR void*
+heap_allocate_block_tiny(heap_t* heap, size_t size, unsigned int zero) {
+	uint32_t size_class = get_size_class_tiny(size);
+	block_t* block = heap_pop_local_free(heap, size_class);
+	if (EXPECTED(block != 0)) {
+		// Fast track with small block available in heap level local free list
+		if (zero)
+			memset(block, 0, global_size_class[size_class].block_size);
+		return block;
+	}
+
+	return heap_allocate_block_small_to_large(heap, size_class, zero);
+}
+
 //! Find or allocate a block of the given size
 static inline RPMALLOC_ALLOCATOR void*
 heap_allocate_block(heap_t* heap, size_t size, unsigned int zero) {
-	// Fast track with small block available in heap level local free list
+	if (size <= (SMALL_GRANULARITY * 16))
+		return heap_allocate_block_tiny(heap, size, zero);
+
 	uint32_t size_class = get_size_class(size);
-	if (EXPECTED(size <= SMALL_BLOCK_SIZE_LIMIT)) {
-		block_t* block = heap->small_free[size_class];
+	if (EXPECTED(size_class < SIZE_CLASS_COUNT)) {
+		block_t* block = heap_pop_local_free(heap, size_class);
 		if (EXPECTED(block != 0)) {
-			heap->small_free[size_class] = block->next;
+			// Fast track with small block available in heap level local free list
+			if (zero)
+				memset(block, 0, global_size_class[size_class].block_size);
 			return block;
 		}
+
+		return heap_allocate_block_small_to_large(heap, size_class, zero);
 	}
-	// Fallback path. find or allocate page and span for block
-	if (EXPECTED(size <= LARGE_BLOCK_SIZE_LIMIT)) {
-		page_t* page = heap_get_page(heap, size_class);
-		if (EXPECTED(page != 0))
-			return page_allocate_block(page, zero);
-	} else {
-		size_t alloc_size = get_page_aligned_size(size + SPAN_HEADER_SIZE);
-		size_t offset = 0;
-		size_t mapped_size = 0;
-		void* block = global_memory_interface->memory_map(alloc_size, SPAN_SIZE, &offset, &mapped_size);
-		if (block) {
-			span_t* span = block;
-			span->page_type = PAGE_HUGE;
-			span->page_size = (uint32_t)size;
-			span->page_size_shift = 0;
-			span->offset = (uint32_t)offset;
-			span->mapped_size = mapped_size;
-			return pointer_offset(block, SPAN_HEADER_SIZE);
-		}
-	}
-	return 0;
+
+	return heap_allocate_block_huge(heap, size);
 }
 
 static RPMALLOC_ALLOCATOR void*

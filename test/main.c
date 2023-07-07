@@ -66,20 +66,23 @@ test_alloc(void) {
 	// Query the small granularity
 	void* zero_alloc = rpmalloc(0);
 	size_t small_granularity = rpmalloc_usable_size(zero_alloc);
-	if (small_granularity != 16)
+	if (small_granularity != 32)
 		return test_fail("Unexpected block granularity");
 	rpfree(zero_alloc);
 
 	for (id = 0; id < 20000; ++id)
 		data[id] = (char)(id % 139 + id % 17);
 
-	// Verify that blocks are 16 byte size aligned
-	void* testptr = rpmalloc(16);
-	if (rpmalloc_usable_size(testptr) != 16)
+	// Verify that blocks are aligned to small granularity
+	void* testptr = rpmalloc(small_granularity);
+	if (rpmalloc_usable_size(testptr) != small_granularity)
 		return test_fail("Bad base alloc usable size");
 	rpfree(testptr);
-	testptr = rpmalloc(32);
-	if (rpmalloc_usable_size(testptr) != 32)
+	testptr = rpmalloc(small_granularity + 1);
+	if (rpmalloc_usable_size(testptr) != (small_granularity * 2))
+		return test_fail("Bad base alloc usable size");
+	testptr = rpmalloc(small_granularity * 2);
+	if (rpmalloc_usable_size(testptr) != (small_granularity * 2))
 		return test_fail("Bad base alloc usable size");
 	rpfree(testptr);
 	testptr = rpmalloc(128);
@@ -87,7 +90,7 @@ test_alloc(void) {
 		return test_fail("Bad base alloc usable size");
 	rpfree(testptr);
 	testptr = rpmalloc(129);
-	if (rpmalloc_usable_size(testptr) < 129)
+	if (rpmalloc_usable_size(testptr) < (128 + small_granularity))
 		return test_fail("Bad base alloc usable size");
 	rpfree(testptr);
 	for (iloop = 128; iloop <= 128 * 1024; ++iloop) {
