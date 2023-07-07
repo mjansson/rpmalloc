@@ -150,7 +150,7 @@ madvise(caddr_t, size_t, int);
 #define SMALL_PAGE_SIZE (1 << SMALL_PAGE_SIZE_SHIFT)
 #define MEDIUM_PAGE_SIZE_SHIFT 22
 #define MEDIUM_PAGE_SIZE (1 << MEDIUM_PAGE_SIZE_SHIFT)
-#define LARGE_PAGE_SIZE_SHIFT 22
+#define LARGE_PAGE_SIZE_SHIFT 26
 #define LARGE_PAGE_SIZE (1 << LARGE_PAGE_SIZE_SHIFT)
 
 #define SPAN_SIZE (256 * 1024 * 1024)
@@ -428,16 +428,16 @@ static rpmalloc_interface_t global_memory_interface_default;
 #define LCLASS(n) \
 	{ (n * SMALL_GRANULARITY), (LARGE_PAGE_SIZE - PAGE_HEADER_SIZE) / (n * SMALL_GRANULARITY) }
 static const size_class_t global_size_class[SIZE_CLASS_COUNT] = {
-    SCLASS(1),      SCLASS(1),      SCLASS(2),      SCLASS(3),      SCLASS(4),      SCLASS(5),      SCLASS(6),
-    SCLASS(7),      SCLASS(8),      SCLASS(9),      SCLASS(10),     SCLASS(11),     SCLASS(12),     SCLASS(13),
-    SCLASS(14),     SCLASS(15),     SCLASS(16),     SCLASS(20),     SCLASS(24),     SCLASS(28),     SCLASS(32),
-    SCLASS(40),     SCLASS(48),     SCLASS(56),     SCLASS(64),     SCLASS(80),     SCLASS(96),     SCLASS(112),
-    SCLASS(128),    MCLASS(160),    MCLASS(192),    MCLASS(224),    MCLASS(256),    MCLASS(320),    MCLASS(384),
-    MCLASS(448),    MCLASS(512),    MCLASS(640),    MCLASS(768),    MCLASS(896),    MCLASS(1024),   MCLASS(1280),
-    MCLASS(1536),   MCLASS(1792),   MCLASS(2048),   MCLASS(2560),   MCLASS(3072),   MCLASS(3584),   MCLASS(4096),
-    MCLASS(5120),   MCLASS(6144),   MCLASS(7168),   MCLASS(8192),   LCLASS(10240),  LCLASS(12288),  LCLASS(14336),
-    LCLASS(16384),  LCLASS(20480),  LCLASS(24576),  LCLASS(28672),  LCLASS(32768),  LCLASS(40960),  LCLASS(49152),
-    LCLASS(57344),  LCLASS(65536),  LCLASS(81920),  LCLASS(98304),  LCLASS(114688), LCLASS(131072), LCLASS(163840),
+    SCLASS(1),      SCLASS(1),      SCLASS(2),     SCLASS(3),     SCLASS(4),      SCLASS(5),      SCLASS(6),
+    SCLASS(7),      SCLASS(8),      SCLASS(9),     SCLASS(10),    SCLASS(11),     SCLASS(12),     SCLASS(13),
+    SCLASS(14),     SCLASS(15),     SCLASS(16),    SCLASS(20),    SCLASS(24),     SCLASS(28),     SCLASS(32),
+    SCLASS(40),     SCLASS(48),     SCLASS(56),    SCLASS(64),    SCLASS(80),     SCLASS(96),     SCLASS(112),
+    SCLASS(128),    MCLASS(160),    MCLASS(192),   MCLASS(224),   MCLASS(256),    MCLASS(320),    MCLASS(384),
+    MCLASS(448),    MCLASS(512),    MCLASS(640),   MCLASS(768),   MCLASS(896),    MCLASS(1024),   MCLASS(1280),
+    MCLASS(1536),   MCLASS(1792),   MCLASS(2048),  MCLASS(2560),  MCLASS(3072),   MCLASS(3584),   MCLASS(4096),
+    MCLASS(5120),   MCLASS(6144),   MCLASS(7168),  MCLASS(8192),  LCLASS(10240),  LCLASS(12288),  LCLASS(14336),
+    LCLASS(16384),  LCLASS(20480),  LCLASS(24576), LCLASS(28672), LCLASS(32768),  LCLASS(40960),  LCLASS(49152),
+    LCLASS(57344),  LCLASS(65536),  LCLASS(81920), LCLASS(98304), LCLASS(114688), LCLASS(131072), LCLASS(163840),
     LCLASS(196608), LCLASS(229376), LCLASS(262144)};
 
 //! Flag indicating huge pages are used
@@ -698,7 +698,7 @@ os_mdecommit(void* address, size_t size) {
 	if (mprotect(address, size, PROT_NONE)) {
 		rpmalloc_assert(0, "Failed to decommit virtual memory block");
 	}
-#if defined(MADV_DONTNEED) && !defined(__APPLE__)
+#if defined(MADV_DONTNEED)  //&& !defined(__APPLE__)
 	if (madvise(address, size, MADV_DONTNEED)) {
 #elif defined(MADV_FREE_REUSABLE)
 	int ret;
@@ -906,8 +906,8 @@ page_put_thread_free_block(page_t* page, block_t* block) {
 		heap_t* heap = page->heap;
 		uintptr_t prev_head = atomic_load_explicit(&heap->page_free_thread[page->page_type], memory_order_relaxed);
 		page->next = (void*)prev_head;
-		while (!atomic_compare_exchange_weak_explicit(&heap->page_free_thread[page->page_type], &prev_head, (uintptr_t)page,
-		                                              memory_order_relaxed, memory_order_relaxed)) {
+		while (!atomic_compare_exchange_weak_explicit(&heap->page_free_thread[page->page_type], &prev_head,
+		                                              (uintptr_t)page, memory_order_relaxed, memory_order_relaxed)) {
 			page->next = (void*)prev_head;
 			wait_spin();
 		}
@@ -940,18 +940,19 @@ page_initialize_blocks(page_t* page) {
 		block_t* free_block = pointer_offset(block, page->block_size);
 		block_t* first_block = free_block;
 		block_t* last_block = free_block;
-		while (((void*)free_block < memory_page_next) && (page->block_initialized < page->block_count)) {
+		uint32_t list_count = 0;
+		uint32_t max_list_count = page->block_count - page->block_initialized;
+		while (((void*)free_block < memory_page_next) && (list_count < max_list_count)) {
 			last_block = free_block;
 			free_block->next = pointer_offset(free_block, page->block_size);
 			free_block = free_block->next;
-			++page->block_initialized;
-			++page->local_free_count;
+			++list_count;
 		}
-		if (first_block != free_block) {
+		if (list_count) {
 			last_block->next = 0;
 			page->local_free = first_block;
-		} else {
-			page->local_free_count = 0;
+			page->block_initialized += list_count;
+			page->local_free_count = list_count;
 		}
 	}
 
@@ -1001,7 +1002,7 @@ page_allocate_block(page_t* page, unsigned int zero) {
 static inline void
 page_deallocate_block(page_t* page, block_t* block) {
 	uintptr_t calling_thread = get_thread_id();
-	int is_local =  (!page->heap || (page->heap->owner_thread == calling_thread));
+	int is_local = (!page->heap || (page->heap->owner_thread == calling_thread));
 
 	if (page->has_aligned_block) {
 		// Realign pointer to block start
@@ -1192,9 +1193,13 @@ heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page) {
 		head->prev = page;
 	heap->page_available[size_class] = page;
 	if (page->is_decommitted) {
-		//TODO: If page is recommitted, the blocks in the second memory page and forward
-		// will be zeroed out by OS - take advantage in calloc calls
 		page_commit_memory_pages(page);
+
+		// When page is recommitted, the blocks in the second memory page and forward
+		// will be zeroed out by OS - take advantage in calloc calls
+		void* first_page = pointer_offset(page, PAGE_HEADER_SIZE);
+		memset(first_page, 0, os_page_size - PAGE_HEADER_SIZE);
+		page->is_zero = 1;
 	}
 }
 
@@ -1215,7 +1220,7 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 		if (page_type == PAGE_SMALL) {
 			span->page_count = SPAN_SIZE / SMALL_PAGE_SIZE;
 			span->page_size = SMALL_PAGE_SIZE;
-			span->page_size_shift =SMALL_PAGE_SIZE_SHIFT;
+			span->page_size_shift = SMALL_PAGE_SIZE_SHIFT;
 		} else if (page_type == PAGE_MEDIUM) {
 			span->page_count = SPAN_SIZE / MEDIUM_PAGE_SIZE;
 			span->page_size = MEDIUM_PAGE_SIZE;

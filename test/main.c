@@ -150,8 +150,8 @@ test_alloc(void) {
 		rpfree(testptr);
 	}
 
-	static size_t alignment[5] = {0, 32, 64, 128, 256};
-	for (iloop = 0; iloop < 5; ++iloop) {
+	static size_t alignment[6] = {0, 32, 64, 128, 256, 1024};
+	for (iloop = 0; iloop < 6; ++iloop) {
 		for (ipass = 0; ipass < 128 * 1024; ++ipass) {
 			size_t this_alignment = alignment[iloop];
 			char* baseptr = rpaligned_alloc(this_alignment, ipass);
