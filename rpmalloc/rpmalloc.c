@@ -330,6 +330,8 @@ struct page_t {
 	uint32_t local_free_count;
 	//! Local free list
 	block_t* local_free;
+	//! Owning thread
+	uintptr_t owner_thread;
 	//! Owning heap
 	heap_t* heap;
 	//! Next page in list
@@ -362,8 +364,6 @@ struct span_t {
 	span_t* next;
 	//! Previous span in list
 	span_t* prev;
-	//! Owning heap
-	heap_t* heap;
 };
 
 // Control structure for a heap, either a thread heap or a first class heap if enabled
@@ -374,8 +374,6 @@ struct heap_t {
 	block_t* local_free[SIZE_CLASS_COUNT];
 	//! Available non-full pages for each size class
 	page_t* page_available[SIZE_CLASS_COUNT];
-	//! Full pages
-	page_t* page_full;
 	//! Free pages for each page type
 	page_t* page_free[3];
 	//! Multithreaded free pages for each page type
@@ -408,7 +406,7 @@ _Static_assert(sizeof(span_t) <= SPAN_HEADER_SIZE, "Invalid span header size");
 //! Fallback heap
 static RPMALLOC_CACHE_ALIGNED heap_t global_heap_fallback;
 //! Default heap
-static atomic_uintptr_t global_heap_default = (uintptr_t)&global_heap_fallback;
+static heap_t* global_heap_default = &global_heap_fallback;
 //! Available heaps
 static heap_t* global_heap_queue;
 //! Lock for heap queue
@@ -466,9 +464,9 @@ static size_t os_page_size;
 #else
 #define TLS_MODEL __attribute__((tls_model("initial-exec")))
 #endif
-static _Thread_local heap_t* global_thread_heap TLS_MODEL;
+static _Thread_local heap_t* global_thread_heap TLS_MODEL = &global_heap_fallback;
 
-static inline heap_t*
+static heap_t*
 heap_allocate(int first_class);
 
 //! Fast thread ID
@@ -515,21 +513,17 @@ set_thread_heap(heap_t* heap) {
 #endif
 }
 
-//! Get the current thread heap without automatically initializing thread
-static inline heap_t*
-get_thread_heap_raw(void) {
-	return global_thread_heap;
+static heap_t*
+get_thread_heap_allocate(void) {
+	heap_t* heap = heap_allocate(0);
+	set_thread_heap(heap);
+	return heap;
 }
 
 //! Get the current thread heap
 static inline heap_t*
 get_thread_heap(void) {
-	heap_t* heap = get_thread_heap_raw();
-	if (EXPECTED(heap != 0))
-		return heap;
-	heap = heap_allocate(0);
-	set_thread_heap(heap);
-	return heap;
+	return global_thread_heap;
 }
 
 //! Get the size class from given size in bytes for tiny blocks (below 16 times the minimum granularity)
@@ -822,6 +816,35 @@ page_commit_memory_pages(page_t* page) {
 	page->is_decommitted = 0;
 }
 
+static void
+page_available_to_free(page_t* page) {
+	rpmalloc_assert(page->is_full == 0, "Page full flag internal failure");
+	heap_t* heap = page->heap;
+	if (heap->page_available[page->size_class] == page) {
+		heap->page_available[page->size_class] = page->next;
+	} else {
+		page->prev->next = page->next;
+		if (page->next)
+			page->next->prev = page->prev;
+	}
+	page->is_free = 1;
+	page->next = heap->page_free[page->page_type];
+	heap->page_free[page->page_type] = page;
+	// Keep one page committed
+	if (page->next)
+		page_decommit_memory_pages(page->next);
+}
+
+static void
+page_full_to_available(page_t* page) {
+	heap_t* heap = page->heap;
+	page->next = heap->page_available[page->size_class];
+	if (page->next)
+		page->next->prev = page;
+	heap->page_available[page->size_class] = page;
+	page->is_full = 0;
+}
+
 static inline void
 page_put_local_free_block(page_t* page, block_t* block) {
 	block->next = page->local_free;
@@ -829,30 +852,10 @@ page_put_local_free_block(page_t* page, block_t* block) {
 	++page->local_free_count;
 	--page->block_used;
 
-	if (EXPECTED(page->is_full == 0)) {
-		if (UNEXPECTED(page->block_used == 0)) {
-			heap_t* heap = page->heap;
-			if (heap->page_available[page->size_class] == page) {
-				heap->page_available[page->size_class] = page->next;
-			} else {
-				page->prev->next = page->next;
-				if (page->next)
-					page->next->prev = page->prev;
-			}
-			page->is_free = 1;
-			page->next = heap->page_free[page->page_type];
-			heap->page_free[page->page_type] = page;
-			// Keep one page committed
-			if (page->next)
-				page_decommit_memory_pages(page->next);
-		}
-	} else {
-		heap_t* heap = page->heap;
-		page->next = heap->page_available[page->size_class];
-		if (page->next)
-			page->next->prev = page;
-		heap->page_available[page->size_class] = page;
-		page->is_full = 0;
+	if (UNEXPECTED(page->block_used == 0)) {
+		page_available_to_free(page);
+	} else if (UNEXPECTED(page->is_full != 0)) {
+		page_full_to_available(page);
 	}
 }
 
@@ -1002,9 +1005,9 @@ page_allocate_block(page_t* page, unsigned int zero) {
 static inline void
 page_deallocate_block(page_t* page, block_t* block) {
 	uintptr_t calling_thread = get_thread_id();
-	int is_local = (!page->heap || (page->heap->owner_thread == calling_thread));
+	int is_local = (!page->owner_thread || (page->owner_thread == calling_thread));
 
-	if (page->has_aligned_block) {
+	if (UNEXPECTED(page->has_aligned_block != 0)) {
 		// Realign pointer to block start
 		block = page_block_realign(page, block);
 	}
@@ -1027,7 +1030,7 @@ page_deallocate_block(page_t* page, block_t* block) {
 static inline page_t*
 span_get_page_from_block(span_t* span, void* block) {
 	size_t page_count = (size_t)pointer_diff(block, span) >> span->page_size_shift;
-	return pointer_offset(span, page_count * span->page_size);
+	return pointer_offset(span, page_count << span->page_size_shift);
 }
 
 //! Find or allocate a page from the given span
@@ -1035,17 +1038,17 @@ static inline page_t*
 span_allocate_page(span_t* span) {
 	// Allocate path, initialize a new chunk of memory for a page in the given span
 	rpmalloc_assert(span->page_initialized < span->page_count, "Page initialization internal failure");
+	heap_t* heap = span->page.heap;
 	page_t* page = pointer_offset(span, span->page_size * span->page_initialized);
 	++span->page_initialized;
 
 	page->page_type = span->page_type;
 	page->is_zero = 1;
-	page->heap = span->heap;
+	page->owner_thread = heap->owner_thread;
+	page->heap = heap;
 
 	if (span->page_initialized == span->page_count) {
 		// Span fully utilized
-		heap_t* heap = span->heap;
-
 		rpmalloc_assert(span == heap->span_partial[span->page_type], "Span partial tracking out of sync");
 		heap->span_partial[span->page_type] = 0;
 
@@ -1072,13 +1075,11 @@ block_get_span(block_t* block) {
 static inline void
 block_deallocate(block_t* block) {
 	span_t* span = (span_t*)((uintptr_t)block & SPAN_MASK);
-	if (EXPECTED(span != 0)) {
-		if (EXPECTED(span->page_type <= PAGE_LARGE)) {
-			page_t* page = span_get_page_from_block(span, block);
-			page_deallocate_block(page, block);
-		} else {
-			global_memory_interface->memory_unmap(span, span->offset, span->mapped_size);
-		}
+	if (EXPECTED(span->page_type <= PAGE_LARGE)) {
+		page_t* page = span_get_page_from_block(span, block);
+		page_deallocate_block(page, block);
+	} else {
+		global_memory_interface->memory_unmap(span, span->offset, span->mapped_size);
 	}
 }
 
@@ -1125,7 +1126,7 @@ heap_initialize(void* block) {
 	return heap;
 }
 
-static inline heap_t*
+static heap_t*
 heap_allocate_new(void) {
 	size_t heap_size = get_page_aligned_size(sizeof(heap_t));
 	size_t offset = 0;
@@ -1137,30 +1138,20 @@ heap_allocate_new(void) {
 	return heap;
 }
 
-static inline heap_t*
+static heap_t*
 heap_allocate(int first_class) {
 	heap_t* heap = 0;
-	uintptr_t heap_default = 0;
 	if (!first_class) {
-		heap_default = atomic_load_explicit(&global_heap_default, memory_order_relaxed);
-		if (heap_default) {
-			if (atomic_compare_exchange_strong(&global_heap_default, &heap_default, 0))
-				heap = (void*)heap_default;
-		}
-		if (!heap) {
-			heap_lock_acquire();
-			heap = global_heap_queue;
-			global_heap_queue = heap ? heap->next : 0;
-			heap_lock_release();
-		}
+		heap_lock_acquire();
+		heap = global_heap_queue;
+		global_heap_queue = heap ? heap->next : 0;
+		heap_lock_release();
 	}
 	if (!heap)
 		heap = heap_allocate_new();
 	if (heap) {
 		heap->next = 0;
 		heap->owner_thread = get_thread_id();
-		if ((uintptr_t)heap == heap_default)
-			rpmalloc_initialize(0);
 	}
 	return heap;
 }
@@ -1185,6 +1176,7 @@ heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page) {
 	page->is_full = 0;
 	page->is_free = 0;
 	page->has_aligned_block = 0;
+	page->owner_thread = heap->owner_thread;
 	page_t* head = heap->page_available[size_class];
 	page->next = head;
 	page->prev = 0;
@@ -1210,13 +1202,20 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 	if (EXPECTED(heap->span_partial[page_type] != 0))
 		return heap->span_partial[page_type];
 
+	if (heap == global_heap_default) {
+		// Thread has not yet initialized
+		rpmalloc_initialize(0);
+		heap = get_thread_heap_allocate();
+	}
+
 	// Fallback path, map more memory
 	size_t offset = 0;
 	size_t mapped_size = 0;
 	span_t* span = global_memory_interface->memory_map(SPAN_SIZE, SPAN_SIZE, &offset, &mapped_size);
 	if (EXPECTED(span != 0)) {
 		span->page_type = page_type;
-		span->heap = heap;
+		span->page.heap = heap;
+		span->page.owner_thread = heap->owner_thread;
 		if (page_type == PAGE_SMALL) {
 			span->page_count = SPAN_SIZE / SMALL_PAGE_SIZE;
 			span->page_size = SMALL_PAGE_SIZE;
@@ -1276,10 +1275,13 @@ heap_get_page(heap_t* heap, uint32_t size_class) {
 	}
 
 	// Fallback path, find or allocate span for given size class
+	// If thread was not initialized, the heap for the new span
+	// will be different from the local heap variable in this scope
+	// (which is the default heap) - so use span page heap instead
 	span_t* span = heap_get_span(heap, page_type);
 	if (EXPECTED(span != 0)) {
 		page = span_allocate_page(span);
-		heap_make_free_page_available(heap, size_class, page);
+		heap_make_free_page_available(page->heap, size_class, page);
 	}
 
 	return page;
@@ -1319,6 +1321,7 @@ heap_allocate_block_huge(heap_t* heap, size_t size) {
 		span->page_size_shift = 0;
 		span->offset = (uint32_t)offset;
 		span->mapped_size = mapped_size;
+		span->page.is_full = 1;
 		return pointer_offset(block, SPAN_HEADER_SIZE);
 	}
 	return 0;
@@ -1339,12 +1342,8 @@ heap_allocate_block_tiny(heap_t* heap, size_t size, unsigned int zero) {
 	return heap_allocate_block_small_to_large(heap, size_class, zero);
 }
 
-//! Find or allocate a block of the given size
-static inline RPMALLOC_ALLOCATOR void*
-heap_allocate_block(heap_t* heap, size_t size, unsigned int zero) {
-	if (size <= (SMALL_GRANULARITY * 16))
-		return heap_allocate_block_tiny(heap, size, zero);
-
+static RPMALLOC_ALLOCATOR void*
+heap_allocate_block_generic(heap_t* heap, size_t size, unsigned int zero) {
 	uint32_t size_class = get_size_class(size);
 	if (EXPECTED(size_class < SIZE_CLASS_COUNT)) {
 		block_t* block = heap_pop_local_free(heap, size_class);
@@ -1359,6 +1358,14 @@ heap_allocate_block(heap_t* heap, size_t size, unsigned int zero) {
 	}
 
 	return heap_allocate_block_huge(heap, size);
+}
+
+//! Find or allocate a block of the given size
+static inline RPMALLOC_ALLOCATOR void*
+heap_allocate_block(heap_t* heap, size_t size, unsigned int zero) {
+	if (size <= (SMALL_GRANULARITY * 16))
+		return heap_allocate_block_tiny(heap, size, zero);
+	return heap_allocate_block_generic(heap, size, zero);
 }
 
 static RPMALLOC_ALLOCATOR void*
@@ -1469,8 +1476,9 @@ heap_reallocate_block_aligned(heap_t* heap, void* block, size_t alignment, size_
 				old_size = usable_size;
 			memcpy(block, old_block, old_size < size ? old_size : size);
 		}
-		block_deallocate(old_block);
 	}
+	if (EXPECTED(old_block != 0))
+		block_deallocate(old_block);
 	return block;
 }
 
@@ -1482,7 +1490,7 @@ heap_reallocate_block_aligned(heap_t* heap, void* block, size_t alignment, size_
 
 int
 rpmalloc_is_thread_initialized(void) {
-	return (get_thread_heap_raw() != 0) ? 1 : 0;
+	return (get_thread_heap() != global_heap_default) ? 1 : 0;
 }
 
 extern inline RPMALLOC_ALLOCATOR void*
@@ -1499,6 +1507,8 @@ rpmalloc(size_t size) {
 
 extern inline void
 rpfree(void* ptr) {
+	if (UNEXPECTED(ptr == 0))
+		return;
 	block_deallocate(ptr);
 }
 
@@ -1712,15 +1722,14 @@ rpmalloc_finalize(void) {
 
 extern void
 rpmalloc_thread_initialize(void) {
-	get_thread_heap();
 }
 
 extern void
 rpmalloc_thread_finalize(int release_caches) {
 	(void)sizeof(release_caches);
-	heap_t* heap = get_thread_heap_raw();
-	if (heap) {
-		set_thread_heap(0);
+	heap_t* heap = get_thread_heap();
+	if (heap != global_heap_default) {
+		set_thread_heap(global_heap_default);
 		heap_release(heap);
 	}
 }
