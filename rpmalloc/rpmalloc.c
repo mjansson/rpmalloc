@@ -330,8 +330,6 @@ struct page_t {
 	uint32_t local_free_count;
 	//! Local free list
 	block_t* local_free;
-	//! Owning thread
-	uintptr_t owner_thread;
 	//! Owning heap
 	heap_t* heap;
 	//! Next page in list
@@ -506,8 +504,10 @@ get_thread_id(void) {
 static void
 set_thread_heap(heap_t* heap) {
 	global_thread_heap = heap;
-	if (heap)
+	if (heap && (heap->id != 0)) {
+		rpmalloc_assert(heap->id != 0, "Default heap being used");
 		heap->owner_thread = get_thread_id();
+	}
 #if defined(_WIN32)
 	FlsSetValue(fls_key, heap);
 #endif
@@ -819,6 +819,7 @@ page_commit_memory_pages(page_t* page) {
 static void
 page_available_to_free(page_t* page) {
 	rpmalloc_assert(page->is_full == 0, "Page full flag internal failure");
+	rpmalloc_assert(page->is_decommitted == 0, "Page decommitted flag internal failure");
 	heap_t* heap = page->heap;
 	if (heap->page_available[page->size_class] == page) {
 		heap->page_available[page->size_class] = page->next;
@@ -837,6 +838,8 @@ page_available_to_free(page_t* page) {
 
 static void
 page_full_to_available(page_t* page) {
+	rpmalloc_assert(page->is_full == 1, "Page full flag internal failure");
+	rpmalloc_assert(page->is_decommitted == 0, "Page decommitted flag internal failure");
 	heap_t* heap = page->heap;
 	page->next = heap->page_available[page->size_class];
 	if (page->next)
@@ -861,6 +864,8 @@ page_put_local_free_block(page_t* page, block_t* block) {
 
 static inline void
 page_adopt_thread_free_block_list(page_t* page) {
+	if (page->local_free)
+		return;
 	uint64_t thread_free = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
 	if (EXPECTED(thread_free != 0)) {
 		// Other threads can only replace with another valid list head, this will never change to 0 in other threads
@@ -919,9 +924,8 @@ page_put_thread_free_block(page_t* page, block_t* block) {
 
 static inline void
 page_push_local_free_to_heap(page_t* page) {
-	if (page->local_free) {
+	if (page->local_free && !page->heap->local_free[page->size_class]) {
 		// Push the page free list as the fast track list of free blocks for heap
-		rpmalloc_assert(!page->heap->local_free[page->size_class], "Local free list internal failure");
 		page->heap->local_free[page->size_class] = page->local_free;
 		page->block_used += page->local_free_count;
 		page->local_free = 0;
@@ -1005,7 +1009,7 @@ page_allocate_block(page_t* page, unsigned int zero) {
 static inline void
 page_deallocate_block(page_t* page, block_t* block) {
 	uintptr_t calling_thread = get_thread_id();
-	int is_local = (!page->owner_thread || (page->owner_thread == calling_thread));
+	int is_local = (!page->heap || (page->heap->owner_thread == calling_thread));
 
 	if (UNEXPECTED(page->has_aligned_block != 0)) {
 		// Realign pointer to block start
@@ -1044,7 +1048,6 @@ span_allocate_page(span_t* span) {
 
 	page->page_type = span->page_type;
 	page->is_zero = 1;
-	page->owner_thread = heap->owner_thread;
 	page->heap = heap;
 
 	if (span->page_initialized == span->page_count) {
@@ -1176,7 +1179,7 @@ heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page) {
 	page->is_full = 0;
 	page->is_free = 0;
 	page->has_aligned_block = 0;
-	page->owner_thread = heap->owner_thread;
+	page->heap = heap;
 	page_t* head = heap->page_available[size_class];
 	page->next = head;
 	page->prev = 0;
@@ -1202,7 +1205,7 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 	if (EXPECTED(heap->span_partial[page_type] != 0))
 		return heap->span_partial[page_type];
 
-	if (heap == global_heap_default) {
+	if (heap->id == 0) {
 		// Thread has not yet initialized
 		rpmalloc_initialize(0);
 		heap = get_thread_heap_allocate();
@@ -1215,7 +1218,6 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 	if (EXPECTED(span != 0)) {
 		span->page_type = page_type;
 		span->page.heap = heap;
-		span->page.owner_thread = heap->owner_thread;
 		if (page_type == PAGE_SMALL) {
 			span->page_count = SPAN_SIZE / SMALL_PAGE_SIZE;
 			span->page_size = SMALL_PAGE_SIZE;
@@ -1236,8 +1238,10 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 	}
 
 	// Make sure default heap has owning thread
-	if (!heap->owner_thread)
+	if (!heap->owner_thread) {
+		rpmalloc_assert(heap->id != 0, "Default heap used");
 		heap->owner_thread = get_thread_id();
+	}
 
 	return span;
 }
