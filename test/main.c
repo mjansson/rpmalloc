@@ -66,7 +66,7 @@ test_alloc(void) {
 	// Query the small granularity
 	void* zero_alloc = rpmalloc(0);
 	size_t small_granularity = rpmalloc_usable_size(zero_alloc);
-	if (small_granularity != 32)
+	if (small_granularity != 16)
 		return test_fail("Unexpected block granularity");
 	rpfree(zero_alloc);
 

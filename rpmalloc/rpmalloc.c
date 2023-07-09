@@ -135,13 +135,13 @@ madvise(caddr_t, size_t, int);
 #define PAGE_HEADER_SIZE 128
 #define SPAN_HEADER_SIZE PAGE_HEADER_SIZE
 
-#define SMALL_GRANULARITY 32
+#define SMALL_GRANULARITY 16
 
 #define SMALL_BLOCK_SIZE_LIMIT (4 * 1024)
 #define MEDIUM_BLOCK_SIZE_LIMIT (256 * 1024)
 #define LARGE_BLOCK_SIZE_LIMIT (8 * 1024 * 1024)
 
-#define SMALL_SIZE_CLASS_COUNT 29
+#define SMALL_SIZE_CLASS_COUNT 73
 #define MEDIUM_SIZE_CLASS_COUNT 24
 #define LARGE_SIZE_CLASS_COUNT 20
 #define SIZE_CLASS_COUNT (SMALL_SIZE_CLASS_COUNT + MEDIUM_SIZE_CLASS_COUNT + LARGE_SIZE_CLASS_COUNT)
@@ -424,17 +424,23 @@ static rpmalloc_interface_t global_memory_interface_default;
 #define LCLASS(n) \
 	{ (n * SMALL_GRANULARITY), (LARGE_PAGE_SIZE - PAGE_HEADER_SIZE) / (n * SMALL_GRANULARITY) }
 static const size_class_t global_size_class[SIZE_CLASS_COUNT] = {
-    SCLASS(1),      SCLASS(1),      SCLASS(2),     SCLASS(3),     SCLASS(4),      SCLASS(5),      SCLASS(6),
-    SCLASS(7),      SCLASS(8),      SCLASS(9),     SCLASS(10),    SCLASS(11),     SCLASS(12),     SCLASS(13),
-    SCLASS(14),     SCLASS(15),     SCLASS(16),    SCLASS(20),    SCLASS(24),     SCLASS(28),     SCLASS(32),
-    SCLASS(40),     SCLASS(48),     SCLASS(56),    SCLASS(64),    SCLASS(80),     SCLASS(96),     SCLASS(112),
-    SCLASS(128),    MCLASS(160),    MCLASS(192),   MCLASS(224),   MCLASS(256),    MCLASS(320),    MCLASS(384),
-    MCLASS(448),    MCLASS(512),    MCLASS(640),   MCLASS(768),   MCLASS(896),    MCLASS(1024),   MCLASS(1280),
-    MCLASS(1536),   MCLASS(1792),   MCLASS(2048),  MCLASS(2560),  MCLASS(3072),   MCLASS(3584),   MCLASS(4096),
-    MCLASS(5120),   MCLASS(6144),   MCLASS(7168),  MCLASS(8192),  LCLASS(10240),  LCLASS(12288),  LCLASS(14336),
-    LCLASS(16384),  LCLASS(20480),  LCLASS(24576), LCLASS(28672), LCLASS(32768),  LCLASS(40960),  LCLASS(49152),
-    LCLASS(57344),  LCLASS(65536),  LCLASS(81920), LCLASS(98304), LCLASS(114688), LCLASS(131072), LCLASS(163840),
-    LCLASS(196608), LCLASS(229376), LCLASS(262144)};
+    SCLASS(1),      SCLASS(1),      SCLASS(2),      SCLASS(3),      SCLASS(4),      SCLASS(5),      SCLASS(6),
+    SCLASS(7),      SCLASS(8),      SCLASS(9),      SCLASS(10),     SCLASS(11),     SCLASS(12),     SCLASS(13),
+    SCLASS(14),     SCLASS(15),     SCLASS(16),     SCLASS(17),     SCLASS(18),     SCLASS(19),     SCLASS(20),
+    SCLASS(21),     SCLASS(22),     SCLASS(23),     SCLASS(24),     SCLASS(25),     SCLASS(26),     SCLASS(27),
+    SCLASS(28),     SCLASS(29),     SCLASS(30),     SCLASS(31),     SCLASS(32),     SCLASS(33),     SCLASS(34),
+    SCLASS(35),     SCLASS(36),     SCLASS(37),     SCLASS(38),     SCLASS(39),     SCLASS(40),     SCLASS(41),
+    SCLASS(42),     SCLASS(43),     SCLASS(44),     SCLASS(45),     SCLASS(46),     SCLASS(47),     SCLASS(48),
+    SCLASS(49),     SCLASS(50),     SCLASS(51),     SCLASS(52),     SCLASS(53),     SCLASS(54),     SCLASS(55),
+    SCLASS(56),     SCLASS(57),     SCLASS(58),     SCLASS(59),     SCLASS(60),     SCLASS(61),     SCLASS(62),
+    SCLASS(63),     SCLASS(64),     SCLASS(80),     SCLASS(96),     SCLASS(112),    SCLASS(128),    SCLASS(160),
+    SCLASS(192),    SCLASS(224),    SCLASS(256),    MCLASS(320),    MCLASS(384),    MCLASS(448),    MCLASS(512),
+    MCLASS(640),    MCLASS(768),    MCLASS(896),    MCLASS(1024),   MCLASS(1280),   MCLASS(1536),   MCLASS(1792),
+    MCLASS(2048),   MCLASS(2560),   MCLASS(3072),   MCLASS(3584),   MCLASS(4096),   MCLASS(5120),   MCLASS(6144),
+    MCLASS(7168),   MCLASS(8192),   MCLASS(10240),  MCLASS(12288),  MCLASS(14336),  MCLASS(16384),  LCLASS(20480),
+    LCLASS(24576),  LCLASS(28672),  LCLASS(32768),  LCLASS(40960),  LCLASS(49152),  LCLASS(57344),  LCLASS(65536),
+    LCLASS(81920),  LCLASS(98304),  LCLASS(114688), LCLASS(131072), LCLASS(163840), LCLASS(196608), LCLASS(229376),
+    LCLASS(262144), LCLASS(327680), LCLASS(393216), LCLASS(458752), LCLASS(524288)};
 
 //! Flag indicating huge pages are used
 static int global_use_huge_pages;
@@ -536,14 +542,15 @@ get_size_class_tiny(size_t size) {
 static inline uint32_t
 get_size_class(size_t size) {
 	uintptr_t minblock_count = (size + (SMALL_GRANULARITY - 1)) / SMALL_GRANULARITY;
-	// For sizes up to 16 times the minimum granularity the size class is equal to number of such blocks
-	if (size <= (SMALL_GRANULARITY * 16)) {
+	// For sizes up to 64 times the minimum granularity (i.e 1024 bytes) the size class is equal to number of such
+	// blocks
+	if (size <= (SMALL_GRANULARITY * 64)) {
 		rpmalloc_assert(global_size_class[minblock_count].block_size >= size, "Size class misconfiguration");
 		return (uint32_t)(minblock_count ? minblock_count : 1);
 	}
 	--minblock_count;
-	// Calculate position of most significant bit, since minblock_count now guaranteed to be > 16 this position is
-	// guaranteed to be >= 3
+	// Calculate position of most significant bit, since minblock_count now guaranteed to be > 64 this position is
+	// guaranteed to be >= 6
 #if ARCH_64BIT
 	const uint32_t most_significant_bit = (uint32_t)(63 - (int)rpmalloc_clz(minblock_count));
 #else
@@ -552,8 +559,10 @@ get_size_class(size_t size) {
 	// Class sizes are of the bit format [..]000xxx000[..] where we already have the position of the most significant
 	// bit, now calculate the subclass from the remaining two bits
 	const uint32_t subclass_bits = (minblock_count >> (most_significant_bit - 2)) & 0x03;
-	const uint32_t class_idx = (uint32_t)((most_significant_bit << 2) + subclass_bits) + 1;
+	const uint32_t class_idx = (uint32_t)((most_significant_bit << 2) + subclass_bits) + 41;
 	rpmalloc_assert((class_idx >= SIZE_CLASS_COUNT) || (global_size_class[class_idx].block_size >= size),
+	                "Size class misconfiguration");
+	rpmalloc_assert((class_idx >= SIZE_CLASS_COUNT) || (global_size_class[class_idx - 1].block_size < size),
 	                "Size class misconfiguration");
 	return class_idx;
 }
@@ -1367,7 +1376,7 @@ heap_allocate_block_generic(heap_t* heap, size_t size, unsigned int zero) {
 //! Find or allocate a block of the given size
 static inline RPMALLOC_ALLOCATOR void*
 heap_allocate_block(heap_t* heap, size_t size, unsigned int zero) {
-	if (size <= (SMALL_GRANULARITY * 16))
+	if (size <= (SMALL_GRANULARITY * 64))
 		return heap_allocate_block_tiny(heap, size, zero);
 	return heap_allocate_block_generic(heap, size, zero);
 }
