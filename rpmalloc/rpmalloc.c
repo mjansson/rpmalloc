@@ -760,6 +760,12 @@ page_get_size(page_t* page) {
 		return page_get_span(page)->page_size;
 }
 
+static inline int
+page_is_thread_heap(page_t* page) {
+	uintptr_t calling_thread = get_thread_id();
+	return (!page->heap || (page->heap->owner_thread == calling_thread));
+}
+
 static inline block_t*
 page_block_start(page_t* page) {
 	return pointer_offset(page, PAGE_HEADER_SIZE);
@@ -840,7 +846,7 @@ page_available_to_free(page_t* page) {
 	page->is_free = 1;
 	page->next = heap->page_free[page->page_type];
 	heap->page_free[page->page_type] = page;
-	// Keep one page committed
+	// Keep one page committed for each page type
 	if (page->next)
 		page_decommit_memory_pages(page->next);
 }
@@ -1017,15 +1023,7 @@ page_allocate_block(page_t* page, unsigned int zero) {
 
 static inline void
 page_deallocate_block(page_t* page, block_t* block) {
-	uintptr_t calling_thread = get_thread_id();
-	int is_local = (!page->heap || (page->heap->owner_thread == calling_thread));
-
-	if (UNEXPECTED(page->has_aligned_block != 0)) {
-		// Realign pointer to block start
-		block = page_block_realign(page, block);
-	}
-
-	if (EXPECTED(is_local != 0)) {
+	if (EXPECTED(page_is_thread_heap(page) != 0)) {
 		page_put_local_free_block(page, block);
 	} else {
 		// Multithreaded deallocation, push to deferred deallocation list. This will
@@ -1073,6 +1071,18 @@ span_allocate_page(span_t* span) {
 	return page;
 }
 
+static void
+span_deallocate_block(span_t* span, page_t* page, void* block) {
+	if (span->page_type == PAGE_HUGE) {
+		global_memory_interface->memory_unmap(span, span->offset, span->mapped_size);
+		return;
+	}
+
+	// Realign pointer to block start
+	block = page_block_realign(page, block);
+	page_deallocate_block(page, block);
+}
+
 ////////////
 ///
 /// Block interface
@@ -1087,11 +1097,12 @@ block_get_span(block_t* block) {
 static inline void
 block_deallocate(block_t* block) {
 	span_t* span = (span_t*)((uintptr_t)block & SPAN_MASK);
-	if (EXPECTED(span->page_type <= PAGE_LARGE)) {
-		page_t* page = span_get_page_from_block(span, block);
+	page_t* page = span_get_page_from_block(span, block);
+
+	if (EXPECTED(!page->has_aligned_block)) {
 		page_deallocate_block(page, block);
 	} else {
-		global_memory_interface->memory_unmap(span, span->offset, span->mapped_size);
+		span_deallocate_block(span, page, block);
 	}
 }
 
@@ -1335,6 +1346,7 @@ heap_allocate_block_huge(heap_t* heap, size_t size) {
 		span->offset = (uint32_t)offset;
 		span->mapped_size = mapped_size;
 		span->page.is_full = 1;
+		span->page.has_aligned_block = 1;
 		return pointer_offset(block, SPAN_HEADER_SIZE);
 	}
 	return 0;
