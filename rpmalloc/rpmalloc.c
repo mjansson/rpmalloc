@@ -43,6 +43,12 @@
 #define PLATFORM_POSIX 1
 #endif
 
+#if defined(_MSC_VER)
+#define NOINLINE __declspec(noinline)
+#else
+#define NOINLINE __attribute__((noinline))
+#endif
+
 #if PLATFORM_WINDOWS
 #include <windows.h>
 #if !defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK
@@ -894,11 +900,11 @@ page_put_local_free_block(page_t* page, block_t* block) {
 	}
 }
 
-static __declspec(noinline) void
+static NOINLINE void
 page_adopt_thread_free_block_list(page_t* page) {
 	if (page->local_free)
 		return;
-	uint64_t thread_free = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
+	unsigned long long thread_free = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
 	if (thread_free != 0) {
 		// Other threads can only replace with another valid list head, this will never change to 0 in other threads
 		while (!atomic_compare_exchange_weak_explicit(&page->thread_free, &thread_free, 0, memory_order_relaxed,
@@ -910,9 +916,9 @@ page_adopt_thread_free_block_list(page_t* page) {
 	}
 }
 
-static __declspec(noinline) void
+static NOINLINE void
 page_put_thread_free_block(page_t* page, block_t* block) {
-	uint64_t prev_thread_free = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
+	unsigned long long prev_thread_free = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
 	uint32_t block_index = page_block_index(page, block);
 	rpmalloc_assert(page_block(page, block_index) == block, "Block pointer is not aligned to start of block");
 	uint32_t list_size = page_block_from_thread_free_list(page, prev_thread_free, &block->next) + 1;
@@ -951,7 +957,7 @@ page_push_local_free_to_heap(page_t* page) {
 	page->local_free_count = 0;
 }
 
-static __declspec(noinline) void*
+static NOINLINE void*
 page_initialize_blocks(page_t* page) {
 	rpmalloc_assert(page->block_initialized < page->block_count, "Block initialization internal failure");
 	block_t* block = page_block(page, page->block_initialized);
@@ -1059,7 +1065,7 @@ span_allocate_page(span_t* span) {
 	return page;
 }
 
-static __declspec(noinline) void
+static NOINLINE void
 span_deallocate_block(span_t* span, page_t* page, void* block) {
 	const int is_thread_local = (span->owner_thread == get_thread_id());
 
@@ -1384,7 +1390,7 @@ heap_allocate_block_tiny(heap_t* heap, size_t size, unsigned int zero) {
 	return heap_allocate_block_small_to_large(heap, size_class, zero);
 }
 
-static RPMALLOC_ALLOCATOR __declspec(noinline) void*
+static RPMALLOC_ALLOCATOR NOINLINE void*
 heap_allocate_block_generic(heap_t* heap, size_t size, unsigned int zero) {
 	uint32_t size_class = get_size_class(size);
 	if (EXPECTED(size_class < SIZE_CLASS_COUNT)) {
