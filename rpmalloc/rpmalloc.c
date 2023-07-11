@@ -131,6 +131,18 @@ madvise(caddr_t, size_t, int);
 //! Enable unmapping memory pages
 #define ENABLE_UNMAP 1
 #endif
+#ifndef ENABLE_DYNAMIC_LINK
+//! Enable building as dynamic library
+#define ENABLE_DYNAMIC_LINK 0
+#endif
+#ifndef ENABLE_OVERRIDE
+//! Enable standard library malloc/free/new/delete overrides
+#define ENABLE_OVERRIDE 0
+#endif
+#ifndef ENABLE_PRELOAD
+//! Enable preloading dynamic library
+#define ENABLE_PRELOAD 0
+#endif
 
 ////////////
 ///
@@ -161,8 +173,6 @@ madvise(caddr_t, size_t, int);
 
 #define SPAN_SIZE (256 * 1024 * 1024)
 #define SPAN_MASK (~((uintptr_t)(SPAN_SIZE - 1)))
-
-#define MAX_ALIGNMENT (256 * 1024)
 
 ////////////
 ///
@@ -425,6 +435,8 @@ static atomic_uint global_heap_id = 1;
 static rpmalloc_interface_t* global_memory_interface;
 //! Default memory interface
 static rpmalloc_interface_t global_memory_interface_default;
+//! Current configuration
+static rpmalloc_config_t global_config = {0};
 
 //! Size classes
 #define SCLASS(n) \
@@ -1318,8 +1330,7 @@ heap_get_page(heap_t* heap, uint32_t size_class) {
 	if (heap->id == 0) {
 		// Thread has not yet initialized, assign heap and try again
 		rpmalloc_initialize(0);
-		heap = get_thread_heap_allocate();
-		return heap_get_page(heap, size_class);
+		return heap_get_page(get_thread_heap(), size_class);
 	}
 
 	// Fallback path, find or allocate span for given size class
@@ -1431,7 +1442,7 @@ heap_allocate_block_aligned(heap_t* heap, size_t alignment, size_t size, unsigne
 		return 0;
 	}
 #endif
-	if (alignment >= MAX_ALIGNMENT) {
+	if (alignment >= RPMALLOC_MAX_ALIGNMENT) {
 		errno = EINVAL;
 		return 0;
 	}
@@ -1668,8 +1679,10 @@ rpmalloc_usable_size(void* ptr) {
 
 extern int
 rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
-	if (global_memory_interface)
+	if (global_memory_interface) {
+		rpmalloc_thread_initialize();
 		return 0;
+	}
 
 	global_memory_interface = memory_interface ? memory_interface : &global_memory_interface_default;
 	if (!global_memory_interface->memory_map || !global_memory_interface->memory_unmap) {
@@ -1753,6 +1766,8 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 #endif
 	}
 
+	global_config.page_size = os_page_size;
+
 	rpmalloc_thread_initialize();
 
 	return 0;
@@ -1760,8 +1775,7 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 
 extern const rpmalloc_config_t*
 rpmalloc_config(void) {
-	static const rpmalloc_config_t config = {0};
-	return &config;
+	return &global_config;
 }
 
 extern void
@@ -1771,6 +1785,8 @@ rpmalloc_finalize(void) {
 
 extern void
 rpmalloc_thread_initialize(void) {
+	if (get_thread_heap() == global_heap_default)
+		get_thread_heap_allocate();
 }
 
 extern void
@@ -1786,3 +1802,5 @@ rpmalloc_thread_finalize(int release_caches) {
 extern void
 rpmalloc_thread_collect(void) {
 }
+
+#include "malloc.c"

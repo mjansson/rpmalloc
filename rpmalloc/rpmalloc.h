@@ -52,6 +52,8 @@ extern "C" {
 #define RPMALLOC_CDECL
 #endif
 
+#define RPMALLOC_MAX_ALIGNMENT (256 * 1024)
+
 //! Define RPMALLOC_FIRST_CLASS_HEAPS to enable heap based API (rpmalloc_heap_* functions).
 //  Will introduce a very small overhead to track fully allocated spans in heaps
 #ifndef RPMALLOC_FIRST_CLASS_HEAPS
@@ -168,16 +170,6 @@ typedef struct rpmalloc_config_t {
 	//  requests to memory_map will be made with size set to a multiple of the page size.
 	//  Used if RPMALLOC_CONFIGURABLE is defined to 1, otherwise system page size is used.
 	size_t page_size;
-	//! Size of a span of memory blocks. MUST be a power of two, and in [4096,262144]
-	//  range (unless 0 - set to 0 to use the default span size). Used if RPMALLOC_CONFIGURABLE
-	//  is defined to 1.
-	size_t span_size;
-	//! Number of spans to map at each request to map new virtual memory blocks. This can
-	//  be used to minimize the system call overhead at the cost of virtual memory address
-	//  space. The extra mapped pages will not be written until actually used, so physical
-	//  committed memory should not be affected in the default implementation. Will be
-	//  aligned to a multiple of spans that match memory page size in case of huge pages.
-	size_t span_map_count;
 	//! Enable use of large/huge pages. If this flag is set to non-zero and page size is
 	//  zero, the allocator will try to enable huge pages and auto detect the configuration.
 	//  If this is set to non-zero and page_size is also non-zero, the allocator will

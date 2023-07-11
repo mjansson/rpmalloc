@@ -403,7 +403,7 @@ test_superalign(void) {
 	for (size_t ipass = 0; ipass < 8; ++ipass) {
 		for (size_t iloop = 0; iloop < 4096; ++iloop) {
 			for (size_t ialign = 0, asize = sizeof(alignment) / sizeof(alignment[0]); ialign < asize; ++ialign) {
-				if (alignment[ialign] >= rpmalloc_config()->span_size)
+				if (alignment[ialign] > RPMALLOC_MAX_ALIGNMENT)
 					continue;
 				for (size_t isize = 0, ssize = sizeof(sizes) / sizeof(sizes[0]); isize < ssize; ++isize) {
 					size_t alloc_size = sizes[isize] + iloop + ipass;
