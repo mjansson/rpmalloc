@@ -62,7 +62,14 @@ __attribute__ ((section("__DATA, __interpose"))) = MAC_INTERPOSE_PAIR(newf, oldf
 
 typedef struct rp_nothrow_t { int __dummy; } rp_nothrow_t;
 
-#if USE_IMPLEMENT
+#if USE_INTERPOSE || USE_ALIAS
+
+static void* rpmalloc_nothrow(size_t size, rp_nothrow_t t) { (void)sizeof(t); return rpmalloc(size); }
+static void* rpaligned_alloc_reverse(size_t size, size_t align) { return rpaligned_alloc(align, size); }
+static void* rpaligned_alloc_reverse_nothrow(size_t size, size_t align, rp_nothrow_t t) { (void)sizeof(t); return rpaligned_alloc(align, size); }
+static void rpfree_size(void* p, size_t size) { (void)sizeof(size); rpfree(p); }
+static void rpfree_aligned(void* p, size_t align) { (void)sizeof(align); rpfree(p); }
+static void rpfree_size_aligned(void* p, size_t size, size_t align) { (void)sizeof(size); (void)sizeof(align); rpfree(p); }
 
 extern inline void* RPMALLOC_CDECL rpvalloc(size_t size) {
 	return rpaligned_alloc(os_page_size, size);
@@ -103,6 +110,10 @@ rpreallocarray(void* ptr, size_t count, size_t size) {
 #endif
 	return realloc(ptr, total);
 }
+
+#endif
+
+#if USE_IMPLEMENT
 
 extern inline void* RPMALLOC_CDECL malloc(size_t size) { return rpmalloc(size); }
 extern inline void* RPMALLOC_CDECL calloc(size_t count, size_t size) { return rpcalloc(count, size); }
@@ -167,17 +178,6 @@ extern void _ZdlPvjSt11align_val_t(void* p, uint32_t size, uint32_t align); void
 extern void _ZdaPvjSt11align_val_t(void* p, uint32_t size, uint32_t align); void RPDEFVIS _ZdaPvjSt11align_val_t(void* p, uint64_t size, uint64_t align) { rpfree(p); (void)sizeof(size); (void)sizeof(a); }
 #endif
 #endif
-#endif
-
-#if USE_INTERPOSE || USE_ALIAS
-
-static void* rpmalloc_nothrow(size_t size, rp_nothrow_t t) { (void)sizeof(t); return rpmalloc(size); }
-static void* rpaligned_alloc_reverse(size_t size, size_t align) { return rpaligned_alloc(align, size); }
-static void* rpaligned_alloc_reverse_nothrow(size_t size, size_t align, rp_nothrow_t t) { (void)sizeof(t); return rpaligned_alloc(align, size); }
-static void rpfree_size(void* p, size_t size) { (void)sizeof(size); rpfree(p); }
-static void rpfree_aligned(void* p, size_t align) { (void)sizeof(align); rpfree(p); }
-static void rpfree_size_aligned(void* p, size_t size, size_t align) { (void)sizeof(size); (void)sizeof(align); rpfree(p); }
-
 #endif
 
 #if USE_INTERPOSE
@@ -282,7 +282,7 @@ void* memalign(size_t alignment, size_t size) RPALIAS(rpmemalign)
 int posix_memalign(void** memptr, size_t alignment, size_t size) RPALIAS(rpposix_memalign)
 void free(void* ptr) RPALIAS(rpfree)
 void cfree(void* ptr) RPALIAS(rpfree)
-void* reallocarray(size_t size) RPALIAS(rpreallocarray)
+void* reallocarray(void* ptr, size_t count, size_t size) RPALIAS(rpreallocarray)
 void* valloc(size_t size) RPALIAS(rpvalloc)
 void* pvalloc(size_t size) RPALIAS(rppvalloc)
 #if defined(__ANDROID__) || defined(__FreeBSD__)
@@ -393,7 +393,7 @@ pthread_create(pthread_t* thread,
 	rpmalloc_thread_starter_arg* starter_arg = rpmalloc(sizeof(rpmalloc_thread_starter_arg));
 	starter_arg->real_start = start_routine;
 	starter_arg->real_arg = arg;
-	return (*(int (*)(pthread_t*, const pthread_attr_t*, void* (*)(void*), void*))real_pthread_create)(thread, attr, thread_starter, starter_arg);
+	return (*(int (*)(pthread_t*, const pthread_attr_t*, void* (*)(void*), void*))real_pthread_create)(thread, attr, rpmalloc_thread_starter, starter_arg);
 }
 
 #endif
