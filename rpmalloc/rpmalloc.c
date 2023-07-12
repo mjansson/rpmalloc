@@ -1032,8 +1032,12 @@ page_allocate_block(page_t* page, unsigned int zero) {
 		page_available_to_full(page);
 	}
 
-	if (zero && !is_zero)
-		memset(block, 0, page->block_size);
+	if (zero) {
+		if (!is_zero)
+			memset(block, 0, page->block_size);
+		else
+			*(uintptr_t*)block = 0;
+	}
 
 	return block;
 }
@@ -1251,10 +1255,9 @@ heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page) {
 		page_commit_memory_pages(page);
 
 		// When page is recommitted, the blocks in the second memory page and forward
-		// will be zeroed out by OS - take advantage in calloc calls
-		void* first_page = pointer_offset(page, PAGE_HEADER_SIZE);
-		memset(first_page, 0, os_page_size - PAGE_HEADER_SIZE);
-		page->is_zero = 1;
+		// will be zeroed out by OS - take advantage in calloc calls. Need additional
+		// tracking to avoid having to zero out first page
+		/* page->is_zero = 1; */
 	}
 }
 

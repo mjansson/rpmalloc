@@ -84,6 +84,23 @@ test_alloc(int print_log) {
 	}
 	rpfree(p);
 
+	for (int iloop = 0; iloop < 16; ++iloop) {
+		char* ptr[1024];
+		for (int i = 0; i < 1024; ++i) {
+			ptr[i] = reinterpret_cast<char*>(calloc(3, 75));
+			if (!ptr[i])
+				return test_fail("calloc failed");
+			if (rpmalloc_usable_size(ptr[i]) < (3 * 75))
+				return test_fail("calloc usable size invalid");
+			for (unsigned int j = 0; j < 3 * 75; ++j) {
+				if (ptr[i][j])
+					return test_fail("calloc memory not zero");
+			}
+		}
+		for (int i = 0; i < 1024; ++i)
+			free(ptr[i]);
+	}
+
 	if (print_log)
 		printf("Allocation tests passed\n");
 	return 0;
