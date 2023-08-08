@@ -3276,8 +3276,21 @@ rpmalloc_global_statistics(rpmalloc_global_statistics_t* stats) {
 	stats->huge_alloc_peak = (size_t)_huge_pages_peak * _memory_page_size;
 #endif
 #if ENABLE_GLOBAL_CACHE
-	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass)
-		stats->cached += _memory_span_cache[iclass].count * (iclass + 1) * _memory_span_size;
+	for (size_t iclass = 0; iclass < LARGE_CLASS_COUNT; ++iclass) {
+		global_cache_t* cache = &_memory_span_cache[iclass];
+		while (!atomic_cas32_acquire(&cache->lock, 1, 0))
+			_rpmalloc_spin();
+		uint32_t count = cache->count;
+#if ENABLE_UNLIMITED_CACHE
+		span_t* current_span = cache->overflow;
+		while (current_span) {
+			++count;
+			current_span = current_span->next;
+		}
+#endif
+		atomic_store32_release(&cache->lock, 0);
+		stats->cached += count * (iclass + 1) * _memory_span_size;
+	}
 #endif
 }
 
