@@ -125,11 +125,15 @@ madvise(caddr_t, size_t, int);
 #endif
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS 0
+#define ENABLE_ASSERTS 1
 #endif
 #ifndef ENABLE_UNMAP
 //! Enable unmapping memory pages
 #define ENABLE_UNMAP 1
+#endif
+#ifndef ENABLE_DECOMMIT
+//! Enable decommitting memory pages
+#define ENABLE_DECOMMIT 0
 #endif
 #ifndef ENABLE_DYNAMIC_LINK
 //! Enable building as dynamic library
@@ -431,6 +435,8 @@ static heap_t* global_heap_queue;
 static atomic_uintptr_t global_heap_lock;
 //! Heap ID counter
 static atomic_uint global_heap_id = 1;
+//! Initialized flag
+static int global_rpmalloc_initialized;
 //! Memory interface
 static rpmalloc_interface_t* global_memory_interface;
 //! Default memory interface
@@ -699,7 +705,7 @@ os_mmap(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
 
 static void
 os_mcommit(void* address, size_t size) {
-#if ENABLE_UNMAP
+#if ENABLE_DECOMMIT
 #if PLATFORM_WINDOWS
 	if (!VirtualAlloc(address, size, MEM_COMMIT, PAGE_READWRITE)) {
 		rpmalloc_assert(0, "Failed to commit virtual memory block");
@@ -709,12 +715,15 @@ os_mcommit(void* address, size_t size) {
 		rpmalloc_assert(0, "Failed to commit virtual memory block");
 	}
 #endif
+#else
+	(void)sizeof(address);
+	(void)sizeof(size);
 #endif
 }
 
 static void
 os_mdecommit(void* address, size_t size) {
-#if ENABLE_UNMAP
+#if ENABLE_DECOMMIT
 #if PLATFORM_WINDOWS
 	if (!VirtualFree(address, size, MEM_DECOMMIT)) {
 		rpmalloc_assert(0, "Failed to decommit virtual memory block");
@@ -740,6 +749,9 @@ os_mdecommit(void* address, size_t size) {
 		rpmalloc_assert(0, "Failed to decommit virtual memory block");
 	}
 #endif
+#else
+	(void)sizeof(address);
+	(void)sizeof(size);
 #endif
 }
 
@@ -862,6 +874,7 @@ page_available_to_free(page_t* page) {
 			page->next->prev = page->prev;
 	}
 	page->is_free = 1;
+	page->is_zero = 0;
 	page->next = heap->page_free[page->page_type];
 	heap->page_free[page->page_type] = page;
 	// Keep one page committed for each page type
@@ -1255,9 +1268,13 @@ heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page) {
 		page_commit_memory_pages(page);
 
 		// When page is recommitted, the blocks in the second memory page and forward
-		// will be zeroed out by OS - take advantage in calloc calls. Need additional
-		// tracking to avoid having to zero out first page
-		/* page->is_zero = 1; */
+		// will be zeroed out by OS - take advantage in calloc calls and make sure
+		// blocks in first page is zeroed out
+#if ENABLE_DECOMMIT
+		void* first_page = pointer_offset(page, PAGE_HEADER_SIZE);
+		memset(first_page, 0, os_page_size - PAGE_HEADER_SIZE);
+		page->is_zero = 1;
+#endif
 	}
 }
 
@@ -1682,10 +1699,12 @@ rpmalloc_usable_size(void* ptr) {
 
 extern int
 rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
-	if (global_memory_interface) {
+	if (global_rpmalloc_initialized) {
 		rpmalloc_thread_initialize();
 		return 0;
 	}
+
+	global_rpmalloc_initialized = 1;
 
 	global_memory_interface = memory_interface ? memory_interface : &global_memory_interface_default;
 	if (!global_memory_interface->memory_map || !global_memory_interface->memory_unmap) {
@@ -1783,7 +1802,7 @@ rpmalloc_config(void) {
 
 extern void
 rpmalloc_finalize(void) {
-	global_memory_interface = 0;
+	global_rpmalloc_initialized = 0;
 }
 
 extern void
@@ -1797,8 +1816,8 @@ rpmalloc_thread_finalize(int release_caches) {
 	(void)sizeof(release_caches);
 	heap_t* heap = get_thread_heap();
 	if (heap != global_heap_default) {
-		set_thread_heap(global_heap_default);
 		heap_release(heap);
+		set_thread_heap(global_heap_default);
 	}
 }
 
