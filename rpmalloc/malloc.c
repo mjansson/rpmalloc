@@ -401,15 +401,13 @@ pthread_create(pthread_t* thread,
 // end !_WIN32
 #endif
 
-#if defined(__GLIBC__) && defined(__linux__)
+#if defined(__GLIBC__) && defined(__linux__) && 0
 
 void* __libc_malloc(size_t size) RPALIAS(rpmalloc)
 void* __libc_calloc(size_t count, size_t size) RPALIAS(rpcalloc)
 void* __libc_realloc(void* p, size_t size) RPALIAS(rprealloc)
 void __libc_free(void* p) RPALIAS(rpfree)
 void __libc_cfree(void* p) RPALIAS(rpfree)
-void* __libc_memalign(size_t align, size_t size) RPALIAS(rpmemalign)
-int __posix_memalign(void** p, size_t align, size_t size) RPALIAS(rpposix_memalign)
 
 extern void* __libc_valloc(size_t size);
 extern void* __libc_pvalloc(size_t size);
@@ -423,6 +421,9 @@ void*
 __libc_pvalloc(size_t size) {
 	return pvalloc(size);
 }
+void* __libc_memalign(size_t align, size_t size) RPALIAS(rpmemalign)
+
+int __posix_memalign(void** p, size_t align, size_t size) RPALIAS(rpposix_memalign)
 
 #endif
 
