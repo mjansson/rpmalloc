@@ -147,6 +147,10 @@ madvise(caddr_t, size_t, int);
 //! Enable preloading dynamic library
 #define ENABLE_PRELOAD 0
 #endif
+#ifndef ENABLE_STATISTICS
+//! Enable statistics
+#define ENABLE_STATISTICS 0
+#endif
 
 ////////////
 ///
@@ -202,6 +206,37 @@ madvise(caddr_t, size_t, int);
 #define rpmalloc_assert(truth, message) \
 	do {                                \
 	} while (0)
+#endif
+
+////////////
+///
+/// Statistics
+///
+//////
+
+#if ENABLE_STATISTICS
+
+typedef struct rpmalloc_statistics_t {
+	atomic_size_t page_mapped;
+	atomic_size_t page_mapped_peak;
+	atomic_size_t page_commit;
+	atomic_size_t page_decommit;
+	atomic_size_t page_active;
+	atomic_size_t page_active_peak;
+	atomic_size_t small_alloc;
+	atomic_size_t small_free;
+	atomic_size_t medium_alloc;
+	atomic_size_t medium_free;
+	atomic_size_t large_alloc;
+	atomic_size_t large_free;
+	atomic_size_t huge_alloc;
+	atomic_size_t huge_free;
+} rpmalloc_statistics_t;
+
+static rpmalloc_statistics_t global_statistics;
+
+#else
+
 #endif
 
 ////////////
@@ -700,6 +735,25 @@ os_mmap(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
 		*offset = padding;
 	}
 	*mapped_size = map_size;
+#if ENABLE_STATISTICS
+	size_t page_count = map_size / os_page_size;
+	size_t page_mapped_current =
+	    atomic_fetch_add_explicit(&global_statistics.page_mapped, page_count, memory_order_relaxed) + page_count;
+	size_t page_mapped_peak = atomic_load_explicit(&global_statistics.page_mapped_peak, memory_order_relaxed);
+	while (page_mapped_current > page_mapped_peak) {
+		if (atomic_compare_exchange_weak_explicit(&global_statistics.page_mapped_peak, &page_mapped_peak,
+		                                          page_mapped_current, memory_order_relaxed, memory_order_relaxed))
+			break;
+	}
+	size_t page_active_current =
+	    atomic_fetch_add_explicit(&global_statistics.page_active, page_count, memory_order_relaxed) + page_count;
+	size_t page_active_peak = atomic_load_explicit(&global_statistics.page_active_peak, memory_order_relaxed);
+	while (page_active_current > page_active_peak) {
+		if (atomic_compare_exchange_weak_explicit(&global_statistics.page_active_peak, &page_active_peak,
+		                                          page_active_current, memory_order_relaxed, memory_order_relaxed))
+			break;
+	}
+#endif
 	return ptr;
 }
 
@@ -713,6 +767,18 @@ os_mcommit(void* address, size_t size) {
 #else
 	if (mprotect(address, size, PROT_READ | PROT_WRITE)) {
 		rpmalloc_assert(0, "Failed to commit virtual memory block");
+	}
+#endif
+#if ENABLE_STATISTICS
+	size_t page_count = size / os_page_size;
+	atomic_fetch_add_explicit(&global_statistics.page_commit, page_count, memory_order_relaxed);
+	size_t page_active_current =
+	    atomic_fetch_add_explicit(&global_statistics.page_active, page_count, memory_order_relaxed) + page_count;
+	size_t page_active_peak = atomic_load_explicit(&global_statistics.page_active_peak, memory_order_relaxed);
+	while (page_active_current > page_active_peak) {
+		if (atomic_compare_exchange_weak_explicit(&global_statistics.page_active_peak, &page_active_peak,
+		                                          page_active_current, memory_order_relaxed, memory_order_relaxed))
+			break;
 	}
 #endif
 #else
@@ -749,6 +815,13 @@ os_mdecommit(void* address, size_t size) {
 		rpmalloc_assert(0, "Failed to decommit virtual memory block");
 	}
 #endif
+#if ENABLE_STATISTICS
+	size_t page_count = size / os_page_size;
+	atomic_fetch_add_explicit(&global_statistics.page_decommit, page_count, memory_order_relaxed);
+	size_t page_active_current =
+	    atomic_fetch_sub_explicit(&global_statistics.page_active, page_count, memory_order_relaxed);
+	rpmalloc_assert(page_active_current >= page_count, "Decommit counter out of sync");
+#endif
 #else
 	(void)sizeof(address);
 	(void)sizeof(size);
@@ -767,6 +840,11 @@ os_munmap(void* address, size_t offset, size_t mapped_size) {
 #else
 	if (munmap(address, mapped_size))
 		rpmalloc_assert(0, "Failed to unmap virtual memory block");
+#endif
+#if ENABLE_STATISTICS
+	size_t page_count = mapped_size / os_page_size;
+	atomic_fetch_sub_explicit(&global_statistics.page_mapped, page_count, memory_order_relaxed);
+	atomic_fetch_sub_explicit(&global_statistics.page_active, page_count, memory_order_relaxed);
 #endif
 #endif
 }
@@ -847,6 +925,8 @@ page_get_local_free_block(page_t* page) {
 
 static inline void
 page_decommit_memory_pages(page_t* page) {
+	if (page->is_decommitted)
+		return;
 	void* extra_page = pointer_offset(page, os_page_size);
 	size_t extra_page_size = page_get_size(page) - os_page_size;
 	global_memory_interface->memory_decommit(extra_page, extra_page_size);
@@ -855,10 +935,20 @@ page_decommit_memory_pages(page_t* page) {
 
 static inline void
 page_commit_memory_pages(page_t* page) {
+	if (!page->is_decommitted)
+		return;
 	void* extra_page = pointer_offset(page, os_page_size);
 	size_t extra_page_size = page_get_size(page) - os_page_size;
 	global_memory_interface->memory_commit(extra_page, extra_page_size);
 	page->is_decommitted = 0;
+#if ENABLE_DECOMMIT
+	// When page is recommitted, the blocks in the second memory page and forward
+	// will be zeroed out by OS - take advantage in calloc calls and make sure
+	// blocks in first page is zeroed out
+	void* first_page = pointer_offset(page, PAGE_HEADER_SIZE);
+	memset(first_page, 0, os_page_size - PAGE_HEADER_SIZE);
+	page->is_zero = 1;
+#endif
 }
 
 static void
@@ -1264,18 +1354,8 @@ heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page) {
 	if (head)
 		head->prev = page;
 	heap->page_available[size_class] = page;
-	if (page->is_decommitted) {
+	if (page->is_decommitted)
 		page_commit_memory_pages(page);
-
-		// When page is recommitted, the blocks in the second memory page and forward
-		// will be zeroed out by OS - take advantage in calloc calls and make sure
-		// blocks in first page is zeroed out
-#if ENABLE_DECOMMIT
-		void* first_page = pointer_offset(page, PAGE_HEADER_SIZE);
-		memset(first_page, 0, os_page_size - PAGE_HEADER_SIZE);
-		page->is_zero = 1;
-#endif
-	}
 }
 
 //! Find or allocate a span for the given page type with the given size class
@@ -1790,6 +1870,10 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 
 	global_config.page_size = os_page_size;
 
+#if ENABLE_STATISTICS
+	memset(&global_statistics, 0, sizeof(global_statistics));
+#endif
+
 	rpmalloc_thread_initialize();
 
 	return 0;
@@ -1823,6 +1907,26 @@ rpmalloc_thread_finalize(int release_caches) {
 
 extern void
 rpmalloc_thread_collect(void) {
+}
+
+void
+rpmalloc_dump_statistics(void* file) {
+#if ENABLE_STATISTICS
+	fprintf(file, "Mapped pages:        %llu\n",
+	        (unsigned long long)atomic_load_explicit(&global_statistics.page_mapped, memory_order_relaxed));
+	fprintf(file, "Mapped pages (peak): %llu\n",
+	        (unsigned long long)atomic_load_explicit(&global_statistics.page_mapped_peak, memory_order_relaxed));
+	fprintf(file, "Active pages:        %llu\n",
+	        (unsigned long long)atomic_load_explicit(&global_statistics.page_active, memory_order_relaxed));
+	fprintf(file, "Active pages (peak): %llu\n",
+	        (unsigned long long)atomic_load_explicit(&global_statistics.page_active_peak, memory_order_relaxed));
+	fprintf(file, "Pages committed:     %llu\n",
+	        (unsigned long long)atomic_load_explicit(&global_statistics.page_commit, memory_order_relaxed));
+	fprintf(file, "Pages decommitted:   %llu\n",
+	        (unsigned long long)atomic_load_explicit(&global_statistics.page_decommit, memory_order_relaxed));
+#else
+	(void)sizeof(file);
+#endif
 }
 
 #include "malloc.c"
