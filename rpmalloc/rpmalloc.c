@@ -125,7 +125,7 @@ madvise(caddr_t, size_t, int);
 #endif
 #ifndef ENABLE_ASSERTS
 //! Enable asserts
-#define ENABLE_ASSERTS 1
+#define ENABLE_ASSERTS 0
 #endif
 #ifndef ENABLE_UNMAP
 //! Enable unmapping memory pages
@@ -133,7 +133,7 @@ madvise(caddr_t, size_t, int);
 #endif
 #ifndef ENABLE_DECOMMIT
 //! Enable decommitting memory pages
-#define ENABLE_DECOMMIT 0
+#define ENABLE_DECOMMIT 1
 #endif
 #ifndef ENABLE_DYNAMIC_LINK
 //! Enable building as dynamic library
