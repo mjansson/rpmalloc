@@ -178,10 +178,14 @@ typedef struct rpmalloc_config_t {
 	//  For Windows, see https://docs.microsoft.com/en-us/windows/desktop/memory/large-page-support
 	//  For Linux, see https://www.kernel.org/doc/Documentation/vm/hugetlbpage.txt
 	int enable_huge_pages;
-	//! Respectively allocated pages and huge allocated pages names for systems
-	//  supporting it to be able to distinguish among anonymous regions.
+	//! Allocated pages names for systems supporting it to be able to distinguish among anonymous regions.
 	const char* page_name;
+	//! Allocated huge pages names for systems supporting it to be able to distinguish among anonymous regions.
 	const char* huge_page_name;
+	//! Unmap all memory on finalize if set to 1. Normally you can let the OS unmap all pages
+	//  when process exits, but if using rpmalloc in a dynamic library you might want to unmap
+	//  all pages when the dynamic library unloads to avoid process memory leaks and bloat.
+	int unmap_on_finalize;
 } rpmalloc_config_t;
 
 //! Initialize allocator
@@ -202,7 +206,7 @@ rpmalloc_thread_initialize(void);
 
 //! Finalize allocator for calling thread
 RPMALLOC_EXPORT void
-rpmalloc_thread_finalize(int release_caches);
+rpmalloc_thread_finalize(void);
 
 //! Perform deferred deallocations pending for the calling thread heap
 RPMALLOC_EXPORT void
