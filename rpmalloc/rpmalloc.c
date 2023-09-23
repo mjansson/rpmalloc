@@ -424,7 +424,7 @@ struct heap_t {
 	//! Free pages for each page type
 	page_t* page_free[3];
 	//! Multithreaded free pages for each page type
-	atomic_uintptr_t page_free_thread[3];
+	// atomic_uintptr_t page_free_thread[3];
 	//! Available partially initialized spans for each page type
 	span_t* span_partial[3];
 	//! Spans in full use for each page type
@@ -1057,7 +1057,7 @@ page_put_thread_free_block(page_t* page, block_t* block) {
 		// Page is completely freed by multithreaded deallocations, clean up
 		// Safe since the page is marked as full and will never be touched by owning heap
 		rpmalloc_assert(page->is_full, "Mismatch between page full flag and thread free list");
-#if 0
+#if 1
 		heap_t* heap = get_thread_heap();
 		page_full_to_free_on_new_heap(page, heap);
 #else
@@ -1196,6 +1196,11 @@ span_allocate_page(span_t* span) {
 
 static NOINLINE void
 span_deallocate_block(span_t* span, page_t* page, void* block) {
+	if (UNEXPECTED(page->page_type == PAGE_HUGE)) {
+		global_memory_interface->memory_unmap(span, span->offset, span->mapped_size);
+		return;
+	}
+
 	const int is_thread_local = page_is_thread_heap(page);
 
 	if (page->has_aligned_block) {
@@ -1203,17 +1208,12 @@ span_deallocate_block(span_t* span, page_t* page, void* block) {
 		block = page_block_realign(page, block);
 	}
 
-	if (is_thread_local) {
+	if (EXPECTED(is_thread_local != 0)) {
 		page_put_local_free_block(page, block);
 	} else {
-		if (UNEXPECTED(span->page_type == PAGE_HUGE)) {
-			global_memory_interface->memory_unmap(span, span->offset, span->mapped_size);
-			return;
-		} else {
-			// Multithreaded deallocation, push to deferred deallocation list. This will
-			// never be called for a huge page, it is detected by caller.
-			page_put_thread_free_block(page, block);
-		}
+		// Multithreaded deallocation, push to deferred deallocation list. This will
+		// never be called for a huge page, it is detected by caller.
+		page_put_thread_free_block(page, block);
 	}
 }
 
@@ -1408,22 +1408,22 @@ heap_get_page(heap_t* heap, uint32_t size_class) {
 		heap_make_free_page_available(heap, size_class, page);
 		return page;
 	}
-
-	// Check if there is a free page from multithreaded deallocations
-	uintptr_t page_mt = atomic_load_explicit(&heap->page_free_thread[page_type], memory_order_relaxed);
-	if (UNEXPECTED(page_mt != 0)) {
-		while (!atomic_compare_exchange_weak_explicit(&heap->page_free_thread[page_type], &page_mt, 0,
-		                                              memory_order_relaxed, memory_order_relaxed)) {
-			wait_spin();
-		}
-		page = (void*)page_mt;
-		if (EXPECTED(page != 0)) {
-			heap->page_free[page_type] = page->next;
-			heap_make_free_page_available(heap, size_class, page);
-			return page;
-		}
-	}
-
+	/*
+	    // Check if there is a free page from multithreaded deallocations
+	    uintptr_t page_mt = atomic_load_explicit(&heap->page_free_thread[page_type], memory_order_relaxed);
+	    if (UNEXPECTED(page_mt != 0)) {
+	        while (!atomic_compare_exchange_weak_explicit(&heap->page_free_thread[page_type], &page_mt, 0,
+	                                                      memory_order_relaxed, memory_order_relaxed)) {
+	            wait_spin();
+	        }
+	        page = (void*)page_mt;
+	        if (EXPECTED(page != 0)) {
+	            heap->page_free[page_type] = page->next;
+	            heap_make_free_page_available(heap, size_class, page);
+	            return page;
+	        }
+	    }
+	*/
 	if (heap->id == 0) {
 		// Thread has not yet initialized, assign heap and try again
 		rpmalloc_initialize(0);
@@ -1474,10 +1474,12 @@ heap_allocate_block_huge(heap_t* heap, size_t size) {
 		span_t* span = block;
 		span->page_type = PAGE_HUGE;
 		span->page_size = (uint32_t)size;
+		span->page_size_shift = LARGE_PAGE_SIZE_SHIFT;
 		span->offset = (uint32_t)offset;
 		span->mapped_size = mapped_size;
 		span->page.is_full = 1;
 		span->page.generic_free = 1;
+		span->page.page_type = PAGE_HUGE;
 		return pointer_offset(block, SPAN_HEADER_SIZE);
 	}
 	return 0;
