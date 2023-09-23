@@ -423,8 +423,6 @@ struct heap_t {
 	page_t* page_available[SIZE_CLASS_COUNT];
 	//! Free pages for each page type
 	page_t* page_free[3];
-	//! Multithreaded free pages for each page type
-	// atomic_uintptr_t page_free_thread[3];
 	//! Available partially initialized spans for each page type
 	span_t* span_partial[3];
 	//! Spans in full use for each page type
@@ -1057,20 +1055,8 @@ page_put_thread_free_block(page_t* page, block_t* block) {
 		// Page is completely freed by multithreaded deallocations, clean up
 		// Safe since the page is marked as full and will never be touched by owning heap
 		rpmalloc_assert(page->is_full, "Mismatch between page full flag and thread free list");
-#if 1
 		heap_t* heap = get_thread_heap();
 		page_full_to_free_on_new_heap(page, heap);
-#else
-		page_decommit_memory_pages(page);
-		heap_t* heap = page->heap;
-		uintptr_t prev_head = atomic_load_explicit(&heap->page_free_thread[page->page_type], memory_order_relaxed);
-		page->next = (void*)prev_head;
-		while (!atomic_compare_exchange_weak_explicit(&heap->page_free_thread[page->page_type], &prev_head,
-		                                              (uintptr_t)page, memory_order_relaxed, memory_order_relaxed)) {
-			page->next = (void*)prev_head;
-			wait_spin();
-		}
-#endif
 	}
 }
 
@@ -1408,22 +1394,7 @@ heap_get_page(heap_t* heap, uint32_t size_class) {
 		heap_make_free_page_available(heap, size_class, page);
 		return page;
 	}
-	/*
-	    // Check if there is a free page from multithreaded deallocations
-	    uintptr_t page_mt = atomic_load_explicit(&heap->page_free_thread[page_type], memory_order_relaxed);
-	    if (UNEXPECTED(page_mt != 0)) {
-	        while (!atomic_compare_exchange_weak_explicit(&heap->page_free_thread[page_type], &page_mt, 0,
-	                                                      memory_order_relaxed, memory_order_relaxed)) {
-	            wait_spin();
-	        }
-	        page = (void*)page_mt;
-	        if (EXPECTED(page != 0)) {
-	            heap->page_free[page_type] = page->next;
-	            heap_make_free_page_available(heap, size_class, page);
-	            return page;
-	        }
-	    }
-	*/
+
 	if (heap->id == 0) {
 		// Thread has not yet initialized, assign heap and try again
 		rpmalloc_initialize(0);
