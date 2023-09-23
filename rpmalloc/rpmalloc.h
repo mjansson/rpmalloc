@@ -55,9 +55,8 @@ extern "C" {
 #define RPMALLOC_MAX_ALIGNMENT (256 * 1024)
 
 //! Define RPMALLOC_FIRST_CLASS_HEAPS to enable heap based API (rpmalloc_heap_* functions).
-//  Will introduce a very small overhead to track fully allocated spans in heaps
 #ifndef RPMALLOC_FIRST_CLASS_HEAPS
-#define RPMALLOC_FIRST_CLASS_HEAPS 0
+#define RPMALLOC_FIRST_CLASS_HEAPS 1
 #endif
 
 //! Flag to rpaligned_realloc to not preserve content in reallocation
@@ -168,7 +167,7 @@ typedef struct rpmalloc_interface_t {
 typedef struct rpmalloc_config_t {
 	//! Size of memory pages. The page size MUST be a power of two. All memory mapping
 	//  requests to memory_map will be made with size set to a multiple of the page size.
-	//  Used if RPMALLOC_CONFIGURABLE is defined to 1, otherwise system page size is used.
+	//  Set to 0 to use the OS default page size.
 	size_t page_size;
 	//! Enable use of large/huge pages. If this flag is set to non-zero and page size is
 	//  zero, the allocator will try to enable huge pages and auto detect the configuration.
@@ -178,6 +177,9 @@ typedef struct rpmalloc_config_t {
 	//  For Windows, see https://docs.microsoft.com/en-us/windows/desktop/memory/large-page-support
 	//  For Linux, see https://www.kernel.org/doc/Documentation/vm/hugetlbpage.txt
 	int enable_huge_pages;
+	//! Enable decommitting unused pages when allocator determines the memory pressure
+	//  is low and there is enough active pages cached
+	int enable_decommit;
 	//! Allocated pages names for systems supporting it to be able to distinguish among anonymous regions.
 	const char* page_name;
 	//! Allocated huge pages names for systems supporting it to be able to distinguish among anonymous regions.
@@ -191,6 +193,10 @@ typedef struct rpmalloc_config_t {
 //! Initialize allocator
 RPMALLOC_EXPORT int
 rpmalloc_initialize(rpmalloc_interface_t* memory_interface);
+
+//! Initialize allocator
+RPMALLOC_EXPORT int
+rpmalloc_initialize_config(rpmalloc_interface_t* memory_interface, rpmalloc_config_t* config);
 
 //! Get allocator configuration
 RPMALLOC_EXPORT const rpmalloc_config_t*
@@ -360,6 +366,10 @@ rpmalloc_heap_free_all(rpmalloc_heap_t* heap);
 //  current heap for the calling thread is released to be reused by other threads.
 RPMALLOC_EXPORT void
 rpmalloc_heap_thread_set_current(rpmalloc_heap_t* heap);
+
+//! Returns which heap the given pointer is allocated on
+RPMALLOC_EXPORT rpmalloc_heap_t*
+rpmalloc_get_heap_for_ptr(void* ptr);
 
 #endif
 

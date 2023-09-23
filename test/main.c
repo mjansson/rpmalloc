@@ -522,7 +522,7 @@ end:
 	thread_exit((uintptr_t)ret);
 }
 
-#if 0  // RPMALLOC_FIRST_CLASS_HEAPS
+#if RPMALLOC_FIRST_CLASS_HEAPS
 
 static void
 heap_allocator_thread(void* argp) {
@@ -1006,7 +1006,7 @@ test_threadspam(void) {
 
 static int
 test_first_class_heaps(void) {
-#if 0  // RPMALLOC_FIRST_CLASS_HEAPS
+#if RPMALLOC_FIRST_CLASS_HEAPS
 	uintptr_t thread[32];
 	uintptr_t threadres[32];
 	unsigned int i;
@@ -1109,33 +1109,31 @@ test_error(void) {
 
 static int
 test_large_pages(void) {
-#if 0
+	int ret = 0;
+	/*
 	rpmalloc_config_t config = {0};
 	config.page_size = 16 * 1024 * 1024;
-	config.span_map_count = 16;
 
-	rpmalloc_initialize_config(&config);
+	rpmalloc_initialize_config(0, &config);
 
-	int ret = test_thread_implementation();
+	ret = test_thread_implementation();
 
 	rpmalloc_finalize();
 
 	if (ret == 0)
-		printf("Large page config test passed\n");
+	    printf("Large page config test passed\n");
+	*/
 
 	return ret;
-#endif
-	return 0;
 }
 
 static int
 test_named_pages(void) {
-#if 0
 	rpmalloc_config_t config = {0};
 	char page_name[64] = {0};
 	snprintf(page_name, sizeof(page_name), "rpmalloc ::%s::", __func__);
 	config.page_name = page_name;
-	rpmalloc_initialize_config(&config);
+	rpmalloc_initialize_config(0, &config);
 
 	void* testptr = rpmalloc(16 * 1024 * 1024);
 #if defined(__linux__)
@@ -1159,7 +1157,6 @@ test_named_pages(void) {
 	if (!strstr(buf, page_name)) {
 		printf("\tbut the page did not get an id as expected\n");
 	}
-#endif
 #endif
 	return 0;
 }
