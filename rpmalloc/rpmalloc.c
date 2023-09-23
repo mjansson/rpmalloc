@@ -423,6 +423,8 @@ struct heap_t {
 	page_t* page_available[SIZE_CLASS_COUNT];
 	//! Free pages for each page type
 	page_t* page_free[3];
+	//! Free but still committed page count for each page tyoe
+	uint32_t page_free_commit_count[3];
 	//! Available partially initialized spans for each page type
 	span_t* span_partial[3];
 	//! Spans in full use for each page type
@@ -521,6 +523,9 @@ static _Thread_local heap_t* global_thread_heap TLS_MODEL = &global_heap_fallbac
 
 static heap_t*
 heap_allocate(int first_class);
+
+static void
+heap_page_free_decommit(heap_t* heap, uint32_t page_type, uint32_t page_retain_count);
 
 //! Fast thread ID
 static inline uintptr_t
@@ -956,9 +961,8 @@ page_available_to_free(page_t* page) {
 	page->is_zero = 0;
 	page->next = heap->page_free[page->page_type];
 	heap->page_free[page->page_type] = page;
-	// Keep one page committed for each page type
-	if (page->next)
-		page_decommit_memory_pages(page->next);
+	if (++heap->page_free_commit_count[page->page_type] > 16)
+		heap_page_free_decommit(heap, page->page_type, 8);
 }
 
 static void
@@ -985,9 +989,8 @@ page_full_to_free_on_new_heap(page_t* page, heap_t* heap) {
 	atomic_store_explicit(&page->thread_free, 0, memory_order_relaxed);
 	page->next = heap->page_free[page->page_type];
 	heap->page_free[page->page_type] = page;
-	// Keep one page committed for each page type
-	if (page->next)
-		page_decommit_memory_pages(page->next);
+	if (++heap->page_free_commit_count[page->page_type] > 16)
+		heap_page_free_decommit(heap, page->page_type, 8);
 }
 
 static void
@@ -1317,6 +1320,19 @@ heap_release(heap_t* heap) {
 	heap_lock_release();
 }
 
+static void
+heap_page_free_decommit(heap_t* heap, uint32_t page_type, uint32_t page_retain_count) {
+	page_t* page = heap->page_free[page_type];
+	while (page && page_retain_count) {
+		page = page->next;
+		--page_retain_count;
+	}
+	while (page && (page->is_decommitted == 0)) {
+		page_decommit_memory_pages(page);
+		page = page->next;
+	}
+}
+
 static inline void
 heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page) {
 	page->size_class = size_class;
@@ -1391,6 +1407,10 @@ heap_get_page(heap_t* heap, uint32_t size_class) {
 	page = heap->page_free[page_type];
 	if (EXPECTED(page != 0)) {
 		heap->page_free[page_type] = page->next;
+		if (page->is_decommitted == 0) {
+			rpmalloc_assert(heap->page_free_commit_count[page_type] > 0, "Free committed page count out of sync");
+			--heap->page_free_commit_count[page_type];
+		}
 		heap_make_free_page_available(heap, size_class, page);
 		return page;
 	}
