@@ -223,6 +223,7 @@ typedef struct rpmalloc_statistics_t {
 	atomic_size_t page_decommit;
 	atomic_size_t page_active;
 	atomic_size_t page_active_peak;
+	atomic_size_t heap_count;
 } rpmalloc_statistics_t;
 
 static rpmalloc_statistics_t global_statistics;
@@ -425,6 +426,8 @@ struct heap_t {
 	page_t* page_free[3];
 	//! Free but still committed page count for each page tyoe
 	uint32_t page_free_commit_count[3];
+	//! Multithreaded free pages for each page type
+	atomic_uintptr_t page_free_thread[3];
 	//! Available partially initialized spans for each page type
 	span_t* span_partial[3];
 	//! Spans in full use for each page type
@@ -815,6 +818,7 @@ os_mdecommit(void* address, size_t size) {
 	size_t page_active_current =
 	    atomic_fetch_sub_explicit(&global_statistics.page_active, page_count, memory_order_relaxed);
 	rpmalloc_assert(page_active_current >= page_count, "Decommit counter out of sync");
+	(void)sizeof(page_active_current);
 #endif
 #else
 	(void)sizeof(address);
@@ -1059,7 +1063,19 @@ page_put_thread_free_block(page_t* page, block_t* block) {
 		// Safe since the page is marked as full and will never be touched by owning heap
 		rpmalloc_assert(page->is_full, "Mismatch between page full flag and thread free list");
 		heap_t* heap = get_thread_heap();
-		page_full_to_free_on_new_heap(page, heap);
+		if (heap->page_free_commit_count[page->page_type] < page->heap->page_free_commit_count[page->page_type]) {
+			page_full_to_free_on_new_heap(page, heap);
+		} else {
+			heap = page->heap;
+			uintptr_t prev_head = atomic_load_explicit(&heap->page_free_thread[page->page_type], memory_order_relaxed);
+			page->next = (void*)prev_head;
+			while (!atomic_compare_exchange_weak_explicit(&heap->page_free_thread[page->page_type], &prev_head,
+			                                              (uintptr_t)page, memory_order_relaxed,
+			                                              memory_order_relaxed)) {
+				page->next = (void*)prev_head;
+				wait_spin();
+			}
+		}
 	}
 }
 
@@ -1290,6 +1306,9 @@ heap_allocate_new(void) {
 	heap_t* heap = heap_initialize((void*)block);
 	heap->offset = (uint32_t)offset;
 	heap->mapped_size = mapped_size;
+#if ENABLE_STATISTICS
+	atomic_fetch_add_explicit(&global_statistics.heap_count, 1, memory_order_relaxed);
+#endif
 	return heap;
 }
 
@@ -1329,6 +1348,7 @@ heap_page_free_decommit(heap_t* heap, uint32_t page_type, uint32_t page_retain_c
 	}
 	while (page && (page->is_decommitted == 0)) {
 		page_decommit_memory_pages(page);
+		--heap->page_free_commit_count[page_type];
 		page = page->next;
 	}
 }
@@ -1414,11 +1434,35 @@ heap_get_page(heap_t* heap, uint32_t size_class) {
 		heap_make_free_page_available(heap, size_class, page);
 		return page;
 	}
+	rpmalloc_assert(heap->page_free_commit_count[page_type] == 0, "Free committed page count out of sync");
 
 	if (heap->id == 0) {
 		// Thread has not yet initialized, assign heap and try again
 		rpmalloc_initialize(0);
 		return heap_get_page(get_thread_heap(), size_class);
+	}
+
+	// Check if there is a free page from multithreaded deallocations
+	uintptr_t page_mt = atomic_load_explicit(&heap->page_free_thread[page_type], memory_order_relaxed);
+	if (UNEXPECTED(page_mt != 0)) {
+		while (!atomic_compare_exchange_weak_explicit(&heap->page_free_thread[page_type], &page_mt, 0,
+		                                              memory_order_relaxed, memory_order_relaxed)) {
+			wait_spin();
+		}
+		page = (void*)page_mt;
+		if (EXPECTED(page != 0)) {
+			heap->page_free[page_type] = page->next;
+			heap_make_free_page_available(heap, size_class, page);
+			rpmalloc_assert(heap->page_free_commit_count[page_type] == 0, "Free committed page count out of sync");
+			page_t* free_page = heap->page_free[page_type];
+			while (free_page) {
+				++heap->page_free_commit_count[page_type];
+				free_page = free_page->next;
+			}
+			if (heap->page_free_commit_count[page->page_type] > 16)
+				heap_page_free_decommit(heap, page->page_type, 8);
+			return page;
+		}
 	}
 
 	// Fallback path, find or allocate span for given size class
@@ -1916,6 +1960,8 @@ rpmalloc_dump_statistics(void* file) {
 	        (unsigned long long)atomic_load_explicit(&global_statistics.page_commit, memory_order_relaxed));
 	fprintf(file, "Pages decommitted:   %llu\n",
 	        (unsigned long long)atomic_load_explicit(&global_statistics.page_decommit, memory_order_relaxed));
+	fprintf(file, "Heaps created:       %llu\n",
+	        (unsigned long long)atomic_load_explicit(&global_statistics.heap_count, memory_order_relaxed));
 #else
 	(void)sizeof(file);
 #endif
