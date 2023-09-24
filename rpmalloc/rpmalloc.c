@@ -1503,7 +1503,7 @@ heap_pop_local_free(heap_t* heap, uint32_t size_class) {
 }
 
 //! Generic allocation path from heap pages, spans or new mapping
-static RPMALLOC_ALLOCATOR void*
+static NOINLINE RPMALLOC_ALLOCATOR void*
 heap_allocate_block_small_to_large(heap_t* heap, uint32_t size_class, unsigned int zero) {
 	page_t* page = heap_get_page(heap, size_class);
 	if (EXPECTED(page != 0))
@@ -1512,7 +1512,7 @@ heap_allocate_block_small_to_large(heap_t* heap, uint32_t size_class, unsigned i
 }
 
 //! Generic allocation path from heap pages, spans or new mapping
-static RPMALLOC_ALLOCATOR void*
+static NOINLINE RPMALLOC_ALLOCATOR void*
 heap_allocate_block_huge(heap_t* heap, size_t size) {
 	(void)sizeof(heap);
 	size_t alloc_size = get_page_aligned_size(size + SPAN_HEADER_SIZE);
@@ -1533,21 +1533,6 @@ heap_allocate_block_huge(heap_t* heap, size_t size) {
 		return pointer_offset(block, SPAN_HEADER_SIZE);
 	}
 	return 0;
-}
-
-//! Find or allocate a block of the given tiny size
-static inline RPMALLOC_ALLOCATOR void*
-heap_allocate_block_tiny(heap_t* heap, size_t size, unsigned int zero) {
-	uint32_t size_class = get_size_class_tiny(size);
-	block_t* block = heap_pop_local_free(heap, size_class);
-	if (EXPECTED(block != 0)) {
-		// Fast track with small block available in heap level local free list
-		if (zero)
-			memset(block, 0, global_size_class[size_class].block_size);
-		return block;
-	}
-
-	return heap_allocate_block_small_to_large(heap, size_class, zero);
 }
 
 static RPMALLOC_ALLOCATOR NOINLINE void*
@@ -1571,8 +1556,16 @@ heap_allocate_block_generic(heap_t* heap, size_t size, unsigned int zero) {
 //! Find or allocate a block of the given size
 static inline RPMALLOC_ALLOCATOR void*
 heap_allocate_block(heap_t* heap, size_t size, unsigned int zero) {
-	if (size <= (SMALL_GRANULARITY * 64))
-		return heap_allocate_block_tiny(heap, size, zero);
+	if (size <= (SMALL_GRANULARITY * 64)) {
+		uint32_t size_class = get_size_class_tiny(size);
+		block_t* block = heap_pop_local_free(heap, size_class);
+		if (EXPECTED(block != 0)) {
+			// Fast track with small block available in heap level local free list
+			if (zero)
+				memset(block, 0, global_size_class[size_class].block_size);
+			return block;
+		}
+	}
 	return heap_allocate_block_generic(heap, size, zero);
 }
 
