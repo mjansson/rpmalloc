@@ -174,10 +174,13 @@ madvise(caddr_t, size_t, int);
 
 #define SMALL_PAGE_SIZE_SHIFT 16
 #define SMALL_PAGE_SIZE (1 << SMALL_PAGE_SIZE_SHIFT)
+#define SMALL_PAGE_MASK (~((uintptr_t)SMALL_PAGE_SIZE - 1))
 #define MEDIUM_PAGE_SIZE_SHIFT 22
 #define MEDIUM_PAGE_SIZE (1 << MEDIUM_PAGE_SIZE_SHIFT)
+#define MEDIUM_PAGE_MASK (~((uintptr_t)MEDIUM_PAGE_SIZE - 1))
 #define LARGE_PAGE_SIZE_SHIFT 26
 #define LARGE_PAGE_SIZE (1 << LARGE_PAGE_SIZE_SHIFT)
+#define LARGE_PAGE_MASK (~((uintptr_t)LARGE_PAGE_SIZE - 1))
 
 #define SPAN_SIZE (256 * 1024 * 1024)
 #define SPAN_MASK (~((uintptr_t)(SPAN_SIZE - 1)))
@@ -420,14 +423,14 @@ struct span_t {
 	page_t page;
 	//! Owning heap
 	heap_t* heap;
+	//! Page address mask
+	uintptr_t page_address_mask;
 	//! Number of pages initialized
 	uint32_t page_initialized;
 	//! Number of pages in use
 	uint32_t page_count;
 	//! Number of bytes per page
 	uint32_t page_size;
-	//! Page size bit shift
-	uint32_t page_size_shift;
 	//! Page type
 	page_type_t page_type;
 	//! Offset to start of mapped memory region
@@ -896,7 +899,11 @@ page_get_size(page_t* page) {
 
 static inline int
 page_is_thread_heap(page_t* page) {
+#if RPMALLOC_FIRST_CLASS_HEAPS
 	return (!page->heap->owner_thread || (page->heap->owner_thread == get_thread_id()));
+#else
+	return (page->heap->owner_thread == get_thread_id());
+#endif
 }
 
 static inline block_t*
@@ -1191,8 +1198,7 @@ page_allocate_block(page_t* page, unsigned int zero) {
 
 static inline page_t*
 span_get_page_from_block(span_t* span, void* block) {
-	size_t page_count = (size_t)pointer_diff(block, span) >> span->page_size_shift;
-	return pointer_offset(span, page_count << span->page_size_shift);
+	return (page_t*)((uintptr_t)block & span->page_address_mask);
 }
 
 //! Find or allocate a page from the given span
@@ -1222,7 +1228,7 @@ span_allocate_page(span_t* span) {
 }
 
 static NOINLINE void
-span_deallocate_block(span_t* span, page_t* page, void* block, int is_thread_local) {
+span_deallocate_block(span_t* span, page_t* page, void* block) {
 	if (UNEXPECTED(page->page_type == PAGE_HUGE)) {
 		global_memory_interface->memory_unmap(span, span->offset, span->mapped_size);
 		return;
@@ -1233,6 +1239,7 @@ span_deallocate_block(span_t* span, page_t* page, void* block, int is_thread_loc
 		block = page_block_realign(page, block);
 	}
 
+	int is_thread_local = page_is_thread_heap(page);
 	if (EXPECTED(is_thread_local != 0)) {
 		page_put_local_free_block(page, block);
 	} else {
@@ -1256,19 +1263,21 @@ static inline void
 block_deallocate(block_t* block) {
 	span_t* span = (span_t*)((uintptr_t)block & SPAN_MASK);
 	page_t* page = span_get_page_from_block(span, block);
-	const int is_thread_local = page_is_thread_heap(page);
-
-	if (EXPECTED((is_thread_local != 0) && (page->generic_free == 0))) {
-		// Page is not huge, not full and has no aligned block - fast path
-		block->next = page->local_free;
-		page->local_free = block;
-		++page->local_free_count;
-		if (UNEXPECTED(--page->block_used == 0))
-			page_available_to_free(page);
-	} else {
-		// Generic path for all other cases
-		span_deallocate_block(span, page, block, is_thread_local);
+	if (EXPECTED(page->generic_free == 0)) {
+		const int is_thread_local = page_is_thread_heap(page);
+		if (EXPECTED(is_thread_local != 0)) {
+			// Page is not huge, not full and has no aligned block - fast path
+			block->next = page->local_free;
+			page->local_free = block;
+			++page->local_free_count;
+			if (UNEXPECTED(--page->block_used == 0))
+				page_available_to_free(page);
+			return;
+		}
 	}
+
+	// Generic path for all other cases
+	span_deallocate_block(span, page, block);
 }
 
 static inline size_t
@@ -1412,15 +1421,15 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 		if (page_type == PAGE_SMALL) {
 			span->page_count = SPAN_SIZE / SMALL_PAGE_SIZE;
 			span->page_size = SMALL_PAGE_SIZE;
-			span->page_size_shift = SMALL_PAGE_SIZE_SHIFT;
+			span->page_address_mask = SMALL_PAGE_MASK;
 		} else if (page_type == PAGE_MEDIUM) {
 			span->page_count = SPAN_SIZE / MEDIUM_PAGE_SIZE;
 			span->page_size = MEDIUM_PAGE_SIZE;
-			span->page_size_shift = MEDIUM_PAGE_SIZE_SHIFT;
+			span->page_address_mask = MEDIUM_PAGE_MASK;
 		} else {
 			span->page_count = SPAN_SIZE / LARGE_PAGE_SIZE;
 			span->page_size = LARGE_PAGE_SIZE;
-			span->page_size_shift = LARGE_PAGE_SIZE_SHIFT;
+			span->page_address_mask = LARGE_PAGE_MASK;
 		}
 		span->offset = (uint32_t)offset;
 		span->mapped_size = mapped_size;
@@ -1526,7 +1535,7 @@ heap_allocate_block_huge(heap_t* heap, size_t size) {
 		span_t* span = block;
 		span->page_type = PAGE_HUGE;
 		span->page_size = (uint32_t)size;
-		span->page_size_shift = LARGE_PAGE_SIZE_SHIFT;
+		span->page_address_mask = LARGE_PAGE_MASK;
 		span->offset = (uint32_t)offset;
 		span->mapped_size = mapped_size;
 		span->page.heap = heap;
