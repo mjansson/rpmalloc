@@ -1041,9 +1041,7 @@ page_put_local_free_block(page_t* page, block_t* block) {
 	block->next = page->local_free;
 	page->local_free = block;
 	++page->local_free_count;
-	--page->block_used;
-
-	if (UNEXPECTED(page->block_used == 0)) {
+	if (UNEXPECTED(--page->block_used == 0)) {
 		page_available_to_free(page);
 	} else if (UNEXPECTED(page->is_full != 0)) {
 		page_full_to_available(page);
@@ -1224,13 +1222,11 @@ span_allocate_page(span_t* span) {
 }
 
 static NOINLINE void
-span_deallocate_block(span_t* span, page_t* page, void* block) {
+span_deallocate_block(span_t* span, page_t* page, void* block, int is_thread_local) {
 	if (UNEXPECTED(page->page_type == PAGE_HUGE)) {
 		global_memory_interface->memory_unmap(span, span->offset, span->mapped_size);
 		return;
 	}
-
-	const int is_thread_local = page_is_thread_heap(page);
 
 	if (page->has_aligned_block) {
 		// Realign pointer to block start
@@ -1240,8 +1236,7 @@ span_deallocate_block(span_t* span, page_t* page, void* block) {
 	if (EXPECTED(is_thread_local != 0)) {
 		page_put_local_free_block(page, block);
 	} else {
-		// Multithreaded deallocation, push to deferred deallocation list. This will
-		// never be called for a huge page, it is detected by caller.
+		// Multithreaded deallocation, push to deferred deallocation list.
 		page_put_thread_free_block(page, block);
 	}
 }
@@ -1268,13 +1263,11 @@ block_deallocate(block_t* block) {
 		block->next = page->local_free;
 		page->local_free = block;
 		++page->local_free_count;
-		--page->block_used;
-
-		if (UNEXPECTED(page->block_used == 0))
+		if (UNEXPECTED(--page->block_used == 0))
 			page_available_to_free(page);
 	} else {
 		// Generic path for all other cases
-		span_deallocate_block(span, page, block);
+		span_deallocate_block(span, page, block, is_thread_local);
 	}
 }
 
