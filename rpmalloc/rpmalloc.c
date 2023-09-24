@@ -182,6 +182,16 @@ madvise(caddr_t, size_t, int);
 #define SPAN_SIZE (256 * 1024 * 1024)
 #define SPAN_MASK (~((uintptr_t)(SPAN_SIZE - 1)))
 
+//! Threshold number of pages for when free pages are decommitted
+#ifndef PAGE_FREE_OVERFLOW
+#define PAGE_FREE_OVERFLOW 32
+#endif
+
+//! Number of pages to decommit when free page threshold overflows
+#ifndef PAGE_FREE_DECOMMIT
+#define PAGE_FREE_DECOMMIT 16
+#endif
+
 ////////////
 ///
 /// Utility macros
@@ -979,8 +989,8 @@ page_available_to_free(page_t* page) {
 	page->is_zero = 0;
 	page->next = heap->page_free[page->page_type];
 	heap->page_free[page->page_type] = page;
-	if (++heap->page_free_commit_count[page->page_type] > 16)
-		heap_page_free_decommit(heap, page->page_type, 8);
+	if (++heap->page_free_commit_count[page->page_type] > PAGE_FREE_OVERFLOW)
+		heap_page_free_decommit(heap, page->page_type, PAGE_FREE_DECOMMIT);
 }
 
 static void
@@ -1007,8 +1017,8 @@ page_full_to_free_on_new_heap(page_t* page, heap_t* heap) {
 	atomic_store_explicit(&page->thread_free, 0, memory_order_relaxed);
 	page->next = heap->page_free[page->page_type];
 	heap->page_free[page->page_type] = page;
-	if (++heap->page_free_commit_count[page->page_type] > 16)
-		heap_page_free_decommit(heap, page->page_type, 8);
+	if (++heap->page_free_commit_count[page->page_type] > PAGE_FREE_OVERFLOW)
+		heap_page_free_decommit(heap, page->page_type, PAGE_FREE_DECOMMIT);
 }
 
 static void
@@ -1473,8 +1483,8 @@ heap_get_page(heap_t* heap, uint32_t size_class) {
 				++heap->page_free_commit_count[page_type];
 				free_page = free_page->next;
 			}
-			if (heap->page_free_commit_count[page->page_type] > 16)
-				heap_page_free_decommit(heap, page->page_type, 8);
+			if (heap->page_free_commit_count[page->page_type] > PAGE_FREE_OVERFLOW)
+				heap_page_free_decommit(heap, page->page_type, PAGE_FREE_DECOMMIT);
 			return page;
 		}
 	}
