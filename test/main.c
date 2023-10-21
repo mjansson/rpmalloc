@@ -589,9 +589,13 @@ heap_allocator_thread(void* argp) {
 			}
 		}
 
+		rpmalloc_heap_calloc(heap, 2, 89273432);
+
 		rpmalloc_heap_free_all(heap);
 		rpmalloc_heap_release(heap);
 	}
+
+	rpmalloc_heap_calloc(outer_heap, 2, 69273432);
 
 	rpmalloc_heap_free_all(outer_heap);
 	rpmalloc_heap_release(outer_heap);
@@ -852,7 +856,9 @@ test_thread_implementation(void) {
 
 static int
 test_threaded(void) {
-	rpmalloc_initialize(0);
+	rpmalloc_config_t config = {0};
+	config.unmap_on_finalize = 1;
+	rpmalloc_initialize_config(0, &config);
 
 	int ret = test_thread_implementation();
 
@@ -870,7 +876,9 @@ test_crossthread(void) {
 	allocator_thread_arg_t arg[32];
 	thread_arg targ[32];
 
-	rpmalloc_initialize(0);
+	rpmalloc_config_t config = {0};
+	config.unmap_on_finalize = 1;
+	rpmalloc_initialize_config(0, &config);
 
 	size_t num_alloc_threads = hardware_threads;
 	if (num_alloc_threads < 2)
@@ -945,7 +953,9 @@ test_threadspam(void) {
 	size_t num_passes, num_alloc_threads;
 	allocator_thread_arg_t arg;
 
-	rpmalloc_initialize(0);
+	rpmalloc_config_t config = {0};
+	config.unmap_on_finalize = 1;
+	rpmalloc_initialize_config(0, &config);
 
 	num_passes = 100;
 	num_alloc_threads = hardware_threads;
@@ -1013,7 +1023,9 @@ test_first_class_heaps(void) {
 	size_t num_alloc_threads;
 	allocator_thread_arg_t arg[32];
 
-	rpmalloc_initialize(0);
+	rpmalloc_config_t config = {0};
+	config.unmap_on_finalize = 1;
+	rpmalloc_initialize_config(0, &config);
 
 	num_alloc_threads = hardware_threads * 2;
 	if (num_alloc_threads < 2)
@@ -1027,7 +1039,7 @@ test_first_class_heaps(void) {
 		arg[i].datasize[2] = 797;
 		arg[i].datasize[3] = 3058;
 		arg[i].datasize[4] = 47892;
-		arg[i].datasize[5] = 173902;
+		arg[i].datasize[5] = 173932;
 		arg[i].datasize[6] = 389;
 		arg[i].datasize[7] = 19;
 		arg[i].datasize[8] = 2493;
@@ -1074,56 +1086,22 @@ test_first_class_heaps(void) {
 	return 0;
 }
 
-#if 0
-static int got_error;
-
-static void
-test_error_callback(const char* message) {
-	// printf("%s\n", message);
-	(void)sizeof(message);
-	got_error = 1;
-}
-#endif
-
-static int
-test_error(void) {
-	// printf("Detecting memory leak\n");
-#if 0
-	rpmalloc_interface_t iface = {0};
-	iface.error_callback = test_error_callback;
-	rpmalloc_initialize(&iface);
-
-	rpmalloc(10);
-
-	rpmalloc_finalize();
-
-	if (!got_error) {
-		printf("Leak not detected and reported as expected\n");
-		return -1;
-	}
-
-	printf("Error detection test passed\n");
-#endif
-	return 0;
-}
-
 static int
 test_large_pages(void) {
 	int ret = 0;
 	/*
-	rpmalloc_config_t config = {0};
-	config.page_size = 16 * 1024 * 1024;
+	    rpmalloc_config_t config = {0};
+	    config.page_size = 16 * 1024 * 1024;
 
-	rpmalloc_initialize_config(0, &config);
+	    rpmalloc_initialize_config(0, &config);
 
-	ret = test_thread_implementation();
+	    ret = test_thread_implementation();
 
-	rpmalloc_finalize();
+	    rpmalloc_finalize();
 
-	if (ret == 0)
-	    printf("Large page config test passed\n");
+	    if (ret == 0)
+	        printf("Large page config test passed\n");
 	*/
-
 	return ret;
 }
 
@@ -1133,6 +1111,7 @@ test_named_pages(void) {
 	char page_name[64] = {0};
 	snprintf(page_name, sizeof(page_name), "rpmalloc ::%s::", __func__);
 	config.page_name = page_name;
+	config.unmap_on_finalize = 1;
 	rpmalloc_initialize_config(0, &config);
 
 	void* testptr = rpmalloc(16 * 1024 * 1024);
@@ -1177,13 +1156,11 @@ test_run(int argc, char** argv) {
 		return -1;
 	if (test_threadspam())
 		return -1;
-	if (test_first_class_heaps())
-		return -1;
 	if (test_large_pages())
 		return -1;
-	if (test_named_pages())
+	if (test_first_class_heaps())
 		return -1;
-	if (test_error())
+	if (test_named_pages())
 		return -1;
 	printf("All tests passed\n");
 	return 0;

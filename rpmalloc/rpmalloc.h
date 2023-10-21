@@ -23,8 +23,7 @@ extern "C" {
 #define RPMALLOC_RESTRICT __restrict
 #define RPMALLOC_ALLOCATOR
 #define RPMALLOC_CACHE_ALIGNED __attribute__((aligned(RPMALLOC_CACHE_LINE_SIZE)))
-#if (defined(__clang_major__) && (__clang_major__ < 4)) || \
-    (defined(__GNUC__) && defined(ENABLE_PRELOAD) && ENABLE_PRELOAD)
+#if (defined(__clang_major__) && (__clang_major__ < 4)) || (!defined(__clang_major__) && defined(__GNUC__))
 #define RPMALLOC_ATTRIB_MALLOC
 #define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
 #define RPMALLOC_ATTRIB_ALLOC_SIZE2(count, size)
@@ -177,9 +176,9 @@ typedef struct rpmalloc_config_t {
 	//  For Windows, see https://docs.microsoft.com/en-us/windows/desktop/memory/large-page-support
 	//  For Linux, see https://www.kernel.org/doc/Documentation/vm/hugetlbpage.txt
 	int enable_huge_pages;
-	//! Enable decommitting unused pages when allocator determines the memory pressure
-	//  is low and there is enough active pages cached
-	int enable_decommit;
+	//! Disable decommitting unused pages when allocator determines the memory pressure
+	//  is low and there is enough active pages cached. If set to 1, keep all pages committed.
+	int disable_decommit;
 	//! Allocated pages names for systems supporting it to be able to distinguish among anonymous regions.
 	const char* page_name;
 	//! Allocated huge pages names for systems supporting it to be able to distinguish among anonymous regions.

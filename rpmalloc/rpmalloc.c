@@ -60,6 +60,8 @@ static DWORD fls_key;
 #include <sys/mman.h>
 #include <sched.h>
 #include <unistd.h>
+#include <pthread.h>
+static pthread_key_t pthread_key;
 #ifdef __FreeBSD__
 #include <sys/sysctl.h>
 #define MAP_HUGETLB MAP_ALIGNED_SUPER
@@ -142,10 +144,6 @@ madvise(caddr_t, size_t, int);
 #ifndef ENABLE_OVERRIDE
 //! Enable standard library malloc/free/new/delete overrides
 #define ENABLE_OVERRIDE 0
-#endif
-#ifndef ENABLE_PRELOAD
-//! Enable preloading dynamic library
-#define ENABLE_PRELOAD 0
 #endif
 #ifndef ENABLE_STATISTICS
 //! Enable statistics
@@ -458,9 +456,11 @@ struct heap_t {
 	//! Available partially initialized spans for each page type
 	span_t* span_partial[3];
 	//! Spans in full use for each page type
-	span_t* span_used[3];
+	span_t* span_used[4];
 	//! Next heap in queue
 	heap_t* next;
+	//! Previous heap in queue
+	heap_t* prev;
 	//! Heap ID
 	uint32_t id;
 	//! Finalization state flag
@@ -473,6 +473,7 @@ struct heap_t {
 
 _Static_assert(sizeof(page_t) <= PAGE_HEADER_SIZE, "Invalid page header size");
 _Static_assert(sizeof(span_t) <= SPAN_HEADER_SIZE, "Invalid span header size");
+_Static_assert(sizeof(heap_t) <= 4096, "Invalid heap size");
 
 ////////////
 ///
@@ -486,6 +487,8 @@ static RPMALLOC_CACHE_ALIGNED heap_t global_heap_fallback;
 static heap_t* global_heap_default = &global_heap_fallback;
 //! Available heaps
 static heap_t* global_heap_queue;
+//! In use heaps
+static heap_t* global_heap_used;
 //! Lock for heap queue
 static atomic_uintptr_t global_heap_lock;
 //! Heap ID counter
@@ -498,6 +501,8 @@ static rpmalloc_interface_t* global_memory_interface;
 static rpmalloc_interface_t global_memory_interface_default;
 //! Current configuration
 static rpmalloc_config_t global_config = {0};
+//! Main thread ID
+static uintptr_t global_main_thread_id;
 
 //! Size classes
 #define SCLASS(n) \
@@ -594,8 +599,10 @@ set_thread_heap(heap_t* heap) {
 		rpmalloc_assert(heap->id != 0, "Default heap being used");
 		heap->owner_thread = get_thread_id();
 	}
-#if defined(_WIN32)
+#if PLATFORM_WINDOWS
 	FlsSetValue(fls_key, heap);
+#else
+	pthread_setspecific(pthread_key, heap);
 #endif
 }
 
@@ -776,7 +783,7 @@ os_mmap(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
 static void
 os_mcommit(void* address, size_t size) {
 #if ENABLE_DECOMMIT
-	if (global_config.enable_decommit)
+	if (global_config.disable_decommit)
 		return;
 #if PLATFORM_WINDOWS
 	if (!VirtualAlloc(address, size, MEM_COMMIT, PAGE_READWRITE)) {
@@ -808,7 +815,7 @@ os_mcommit(void* address, size_t size) {
 static void
 os_mdecommit(void* address, size_t size) {
 #if ENABLE_DECOMMIT
-	if (global_config.enable_decommit)
+	if (global_config.disable_decommit)
 		return;
 #if PLATFORM_WINDOWS
 	if (!VirtualFree(address, size, MEM_DECOMMIT)) {
@@ -1334,6 +1341,11 @@ heap_allocate_new(void) {
 	return heap;
 }
 
+static void
+heap_unmap(heap_t* heap) {
+	global_memory_interface->memory_unmap(heap, heap->offset, heap->mapped_size);
+}
+
 static heap_t*
 heap_allocate(int first_class) {
 	heap_t* heap = 0;
@@ -1347,7 +1359,13 @@ heap_allocate(int first_class) {
 		heap = heap_allocate_new();
 	if (heap) {
 		uintptr_t current_thread_id = get_thread_id();
-		heap->next = 0;
+		heap_lock_acquire();
+		heap->next = global_heap_used;
+		heap->prev = 0;
+		if (global_heap_used)
+			global_heap_used->prev = heap;
+		global_heap_used = heap;
+		heap_lock_release();
 		heap->owner_thread = current_thread_id;
 	}
 	return heap;
@@ -1356,6 +1374,12 @@ heap_allocate(int first_class) {
 static inline void
 heap_release(heap_t* heap) {
 	heap_lock_acquire();
+	if (heap->prev)
+		heap->prev->next = heap->next;
+	if (heap->next)
+		heap->next->prev = heap->prev;
+	if (global_heap_used == heap)
+		global_heap_used = heap->next;
 	heap->next = global_heap_queue;
 	global_heap_queue = heap;
 	heap_lock_release();
@@ -1538,6 +1562,11 @@ heap_allocate_block_huge(heap_t* heap, size_t size) {
 		span->page.is_full = 1;
 		span->page.generic_free = 1;
 		span->page.page_type = PAGE_HUGE;
+		// Keep track of span if first class heap
+		if (!heap->owner_thread) {
+			span->next = heap->span_used[PAGE_HUGE];
+			heap->span_used[PAGE_HUGE] = span;
+		}
 		return pointer_offset(block, SPAN_HEADER_SIZE);
 	}
 	return 0;
@@ -1827,6 +1856,16 @@ rpmalloc_usable_size(void* ptr) {
 ///
 //////
 
+static void
+rpmalloc_thread_destructor(void* value) {
+	// If this is called on main thread assume it means rpmalloc_finalize
+	// has not been called and shutdown is forced (through _exit) or unclean
+	if (get_thread_id() == global_main_thread_id)
+		return;
+	if (value)
+		rpmalloc_thread_finalize();
+}
+
 extern int
 rpmalloc_initialize_config(rpmalloc_interface_t* memory_interface, rpmalloc_config_t* config) {
 	if (global_rpmalloc_initialized) {
@@ -1946,7 +1985,15 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 		global_config.page_size = os_page_size;
 
 	if (global_config.enable_huge_pages || global_config.page_size > (256 * 1024))
-		global_config.enable_decommit = 0;
+		global_config.disable_decommit = 1;
+
+#ifdef _WIN32
+	fls_key = FlsAlloc(&rpmalloc_thread_destructor);
+#else
+	pthread_key_create(&pthread_key, rpmalloc_thread_destructor);
+#endif
+
+	global_main_thread_id = get_thread_id();
 
 	rpmalloc_thread_initialize();
 
@@ -1960,10 +2007,39 @@ rpmalloc_config(void) {
 
 extern void
 rpmalloc_finalize(void) {
+	rpmalloc_thread_finalize();
+
 	if (global_config.unmap_on_finalize) {
-		// TODO: Unmap all mapped pages
-		// TODO: Reset all statistics
+		heap_t* heap = global_heap_queue;
+		global_heap_queue = 0;
+		while (heap) {
+			heap_t* heap_next = heap->next;
+			rpmalloc_heap_free_all(heap);
+			heap_unmap(heap);
+			heap = heap_next;
+		}
+		heap = global_heap_used;
+		global_heap_used = 0;
+		while (heap) {
+			heap_t* heap_next = heap->next;
+			rpmalloc_heap_free_all(heap);
+			heap_unmap(heap);
+			heap = heap_next;
+		}
+#if ENABLE_STATISTICS
+		memset(&global_statistics, 0, sizeof(global_statistics));
+#endif
 	}
+
+#ifdef _WIN32
+	FlsFree(fls_key);
+	fls_key = 0;
+#else
+	pthread_key_delete(pthread_key);
+	pthread_key = 0;
+#endif
+
+	global_main_thread_id = 0;
 	global_rpmalloc_initialized = 0;
 }
 
@@ -2133,15 +2209,22 @@ rpmalloc_heap_free_all(rpmalloc_heap_t* heap) {
 			global_memory_interface->memory_unmap(span, span->offset, span->mapped_size);
 			span = span_next;
 		}
-		span = heap->span_used[itype];
+		heap->span_partial[itype] = 0;
+		heap->page_free[itype] = 0;
+		heap->page_free_commit_count[itype] = 0;
+		atomic_store_explicit(&heap->page_free_thread[itype], 0, memory_order_relaxed);
+	}
+	for (int itype = 0; itype < 4; ++itype) {
+		span_t* span = heap->span_used[itype];
 		while (span) {
 			span_t* span_next = span->next;
 			global_memory_interface->memory_unmap(span, span->offset, span->mapped_size);
 			span = span_next;
 		}
-		heap->span_partial[itype] = 0;
 		heap->span_used[itype] = 0;
 	}
+	memset(heap->local_free, 0, sizeof(heap->local_free));
+	memset(heap->page_available, 0, sizeof(heap->page_available));
 
 #if ENABLE_STATISTICS
 	// TODO: Fix
