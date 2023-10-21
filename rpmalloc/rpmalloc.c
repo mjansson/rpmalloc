@@ -51,10 +51,8 @@
 
 #if PLATFORM_WINDOWS
 #include <windows.h>
-#if !defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK
 #include <fibersapi.h>
 static DWORD fls_key;
-#endif
 #endif
 #if PLATFORM_POSIX
 #include <sys/mman.h>
@@ -691,8 +689,6 @@ os_set_page_name(void* address, size_t size) {
 #else
 	(void)sizeof(size);
 	(void)sizeof(address);
-	(void)sizeof(global_huge_page_name);
-	(void)sizeof(global_page_name);
 #endif
 }
 

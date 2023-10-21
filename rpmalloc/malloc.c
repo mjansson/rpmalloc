@@ -71,6 +71,8 @@ static void rpfree_size(void* p, size_t size) { (void)sizeof(size); rpfree(p); }
 static void rpfree_aligned(void* p, size_t align) { (void)sizeof(align); rpfree(p); }
 static void rpfree_size_aligned(void* p, size_t size, size_t align) { (void)sizeof(size); (void)sizeof(align); rpfree(p); }
 
+#endif
+
 extern inline void* RPMALLOC_CDECL rpvalloc(size_t size) {
 	return rpaligned_alloc(os_page_size, size);
 }
@@ -110,8 +112,6 @@ rpreallocarray(void* ptr, size_t count, size_t size) {
 #endif
 	return realloc(ptr, total);
 }
-
-#endif
 
 #if USE_IMPLEMENT
 
