@@ -1152,11 +1152,10 @@ test_named_pages(void) {
 
 	printf("Named pages test passed\n");
 #if defined(__linux__)
-	// Since it s kernel version and config dependent
+	// Since it is kernel version and config dependent
 	// we do not make an issue out of it.
-	if (!strstr(buf, page_name)) {
+	if (!strstr(buf, page_name))
 		printf("\tbut the page did not get an id as expected\n");
-	}
 #endif
 	return 0;
 }

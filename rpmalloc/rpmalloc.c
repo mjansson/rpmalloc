@@ -525,10 +525,6 @@ static const size_class_t global_size_class[SIZE_CLASS_COUNT] = {
     LCLASS(81920),  LCLASS(98304),  LCLASS(114688), LCLASS(131072), LCLASS(163840), LCLASS(196608), LCLASS(229376),
     LCLASS(262144), LCLASS(327680), LCLASS(393216), LCLASS(458752), LCLASS(524288)};
 
-//! Name to tag mapped huge pages
-static const char* global_huge_page_name = "rpmalloc-huge";
-//! Name to tag mapped huge pages
-static const char* global_page_name = "rpmalloc";
 //! OS huge page support
 static int os_huge_pages;
 //! OS memory map granularity
@@ -679,7 +675,7 @@ get_page_aligned_size(size_t size) {
 static void
 os_set_page_name(void* address, size_t size) {
 #if defined(__linux__) || defined(__ANDROID__)
-	const char* name = os_huge_pages ? global_huge_page_name : global_page_name;
+	const char* name = os_huge_pages ? global_config.huge_page_name : global_config.page_name;
 	if ((address == MAP_FAILED) || !name)
 		return;
 	// If the kernel does not support CONFIG_ANON_VMA_NAME or if the call fails
