@@ -141,7 +141,7 @@ madvise(caddr_t, size_t, int);
 #endif
 #ifndef ENABLE_OVERRIDE
 //! Enable standard library malloc/free/new/delete overrides
-#define ENABLE_OVERRIDE 0
+#define ENABLE_OVERRIDE 1
 #endif
 #ifndef ENABLE_STATISTICS
 //! Enable statistics

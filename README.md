@@ -87,11 +87,9 @@ Integer safety checks on all calls are enabled if __ENABLE_VALIDATE_ARGS__ is de
 
 Asserts are enabled if __ENABLE_ASSERTS__ is defined to 1 (default is 0, or disabled), either on compile command line or by setting the value in `rpmalloc.c`.
 
-To include __malloc.c__ in compilation and provide overrides of standard library malloc entry points define __ENABLE_OVERRIDE__ to 1.
+To include __malloc.c__ in compilation and provide overrides of standard library malloc entry points define __ENABLE_OVERRIDE__ to 1 (this is the default).
 
-To enable the runtime configurable memory page and span sizes, define __RPMALLOC_CONFIGURABLE__ to 1. By default, memory page size is determined by system APIs and memory span size is set to 64KiB.
-
-To enable support for first class heaps, define __RPMALLOC_FIRST_CLASS_HEAPS__ to 1. By default, the first class heap API is disabled.
+To enable support for first class heaps, define __RPMALLOC_FIRST_CLASS_HEAPS__ to 1 (this is the default).
 
 # Huge pages
 The allocator has support for huge/large pages on Windows, Linux and MacOS. To enable it, pass a non-zero value in the config value `enable_huge_pages` when initializing the allocator with `rpmalloc_initialize_config`. If the system does not support huge pages it will be automatically disabled. You can query the status by looking at `enable_huge_pages` in the config returned from a call to `rpmalloc_config` after initialization is done.

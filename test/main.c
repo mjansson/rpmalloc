@@ -36,15 +36,13 @@ static int test_failed;
 static void
 test_initialize(void);
 
-static int
+int
 test_fail_cb(const char* reason, const char* file, int line) {
 	fprintf(stderr, "FAIL: %s @ %s:%d\n", reason, file, line);
 	fflush(stderr);
 	test_failed = 1;
 	return -1;
 }
-
-#define test_fail(msg) test_fail_cb(msg, __FILE__, __LINE__)
 
 static void
 defer_free_thread(void* arg) {
@@ -1089,19 +1087,19 @@ test_first_class_heaps(void) {
 static int
 test_large_pages(void) {
 	int ret = 0;
-	/*
-	    rpmalloc_config_t config = {0};
-	    config.page_size = 16 * 1024 * 1024;
 
-	    rpmalloc_initialize_config(0, &config);
+	rpmalloc_config_t config = {0};
+	config.page_size = 16 * 1024 * 1024;
 
-	    ret = test_thread_implementation();
+	rpmalloc_initialize_config(0, &config);
 
-	    rpmalloc_finalize();
+	ret = test_thread_implementation();
 
-	    if (ret == 0)
-	        printf("Large page config test passed\n");
-	*/
+	rpmalloc_finalize();
+
+	if (ret == 0)
+		printf("Large page config test passed\n");
+
 	return ret;
 }
 
@@ -1139,6 +1137,15 @@ test_named_pages(void) {
 	return 0;
 }
 
+extern int
+test_malloc(int print_log);
+
+extern int
+test_free(int print_log);
+
+extern int
+test_malloc_thread(void);
+
 int
 test_run(int argc, char** argv) {
 	(void)sizeof(argc);
@@ -1148,11 +1155,17 @@ test_run(int argc, char** argv) {
 		return -1;
 	if (test_realloc())
 		return -1;
+	if (test_malloc(1))
+		return -1;
+	if (test_free(1))
+		return -1;
 	if (test_superalign())
 		return -1;
 	if (test_crossthread())
 		return -1;
 	if (test_threaded())
+		return -1;
+	if (test_malloc_thread())
 		return -1;
 	if (test_threadspam())
 		return -1;
