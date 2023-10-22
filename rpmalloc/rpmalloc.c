@@ -1195,6 +1195,15 @@ page_allocate_block(page_t* page, unsigned int zero) {
 ///
 //////
 
+static inline int
+span_is_thread_heap(span_t* span) {
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	return (!span->heap->owner_thread || (span->heap->owner_thread == get_thread_id()));
+#else
+	return (span->heap->owner_thread == get_thread_id());
+#endif
+}
+
 static inline page_t*
 span_get_page_from_block(span_t* span, void* block) {
 	return (page_t*)((uintptr_t)block & span->page_address_mask);
@@ -1262,21 +1271,24 @@ static inline void
 block_deallocate(block_t* block) {
 	span_t* span = (span_t*)((uintptr_t)block & SPAN_MASK);
 	page_t* page = span_get_page_from_block(span, block);
-	if (EXPECTED(page->generic_free == 0)) {
-		const int is_thread_local = page_is_thread_heap(page);
-		if (EXPECTED(is_thread_local != 0)) {
+	const int is_thread_local = page_is_thread_heap(page);
+
+	// Optimized path for thread local free with non-huge block in page
+	// that has no aligned blocks
+	if (EXPECTED(is_thread_local != 0)) {
+		if (EXPECTED(page->generic_free == 0)) {
 			// Page is not huge, not full and has no aligned block - fast path
 			block->next = page->local_free;
 			page->local_free = block;
 			++page->local_free_count;
 			if (UNEXPECTED(--page->block_used == 0))
 				page_available_to_free(page);
-			return;
+		} else {
+			span_deallocate_block(span, page, block);
 		}
+	} else {
+		span_deallocate_block(span, page, block);
 	}
-
-	// Generic path for all other cases
-	span_deallocate_block(span, page, block);
 }
 
 static inline size_t
@@ -1549,6 +1561,7 @@ heap_allocate_block_huge(heap_t* heap, size_t size) {
 	void* block = global_memory_interface->memory_map(alloc_size, SPAN_SIZE, &offset, &mapped_size);
 	if (block) {
 		span_t* span = block;
+		span->heap = heap;
 		span->page_type = PAGE_HUGE;
 		span->page_size = (uint32_t)size;
 		span->page_address_mask = LARGE_PAGE_MASK;
@@ -1715,6 +1728,37 @@ heap_reallocate_block_aligned(heap_t* heap, void* block, size_t alignment, size_
 			block_deallocate(old_block);
 	}
 	return block;
+}
+
+void
+heap_free_all(heap_t* heap) {
+	for (int itype = 0; itype < 3; ++itype) {
+		span_t* span = heap->span_partial[itype];
+		while (span) {
+			span_t* span_next = span->next;
+			global_memory_interface->memory_unmap(span, span->offset, span->mapped_size);
+			span = span_next;
+		}
+		heap->span_partial[itype] = 0;
+		heap->page_free[itype] = 0;
+		heap->page_free_commit_count[itype] = 0;
+		atomic_store_explicit(&heap->page_free_thread[itype], 0, memory_order_relaxed);
+	}
+	for (int itype = 0; itype < 4; ++itype) {
+		span_t* span = heap->span_used[itype];
+		while (span) {
+			span_t* span_next = span->next;
+			global_memory_interface->memory_unmap(span, span->offset, span->mapped_size);
+			span = span_next;
+		}
+		heap->span_used[itype] = 0;
+	}
+	memset(heap->local_free, 0, sizeof(heap->local_free));
+	memset(heap->page_available, 0, sizeof(heap->page_available));
+
+#if ENABLE_STATISTICS
+	// TODO: Fix
+#endif
 }
 
 ////////////
@@ -2010,7 +2054,7 @@ rpmalloc_finalize(void) {
 		global_heap_queue = 0;
 		while (heap) {
 			heap_t* heap_next = heap->next;
-			rpmalloc_heap_free_all(heap);
+			heap_free_all(heap);
 			heap_unmap(heap);
 			heap = heap_next;
 		}
@@ -2018,7 +2062,7 @@ rpmalloc_finalize(void) {
 		global_heap_used = 0;
 		while (heap) {
 			heap_t* heap_next = heap->next;
-			rpmalloc_heap_free_all(heap);
+			heap_free_all(heap);
 			heap_unmap(heap);
 			heap = heap_next;
 		}
@@ -2196,35 +2240,10 @@ rpmalloc_heap_free(rpmalloc_heap_t* heap, void* ptr) {
 	block_deallocate(ptr);
 }
 
+//! Free all memory allocated by the heap
 void
 rpmalloc_heap_free_all(rpmalloc_heap_t* heap) {
-	for (int itype = 0; itype < 3; ++itype) {
-		span_t* span = heap->span_partial[itype];
-		while (span) {
-			span_t* span_next = span->next;
-			global_memory_interface->memory_unmap(span, span->offset, span->mapped_size);
-			span = span_next;
-		}
-		heap->span_partial[itype] = 0;
-		heap->page_free[itype] = 0;
-		heap->page_free_commit_count[itype] = 0;
-		atomic_store_explicit(&heap->page_free_thread[itype], 0, memory_order_relaxed);
-	}
-	for (int itype = 0; itype < 4; ++itype) {
-		span_t* span = heap->span_used[itype];
-		while (span) {
-			span_t* span_next = span->next;
-			global_memory_interface->memory_unmap(span, span->offset, span->mapped_size);
-			span = span_next;
-		}
-		heap->span_used[itype] = 0;
-	}
-	memset(heap->local_free, 0, sizeof(heap->local_free));
-	memset(heap->page_available, 0, sizeof(heap->page_available));
-
-#if ENABLE_STATISTICS
-	// TODO: Fix
-#endif
+	heap_free_all(heap);
 }
 
 extern inline void

@@ -55,7 +55,7 @@ Then simply use the __rpmalloc__/__rpfree__ and the other malloc style replaceme
 
 If you wish to override the standard library malloc family of functions and have automatic initialization/finalization of process and threads, define __ENABLE_OVERRIDE__ to non-zero (default is 1) which will include the `malloc.c` file in compilation of __rpmalloc.c__, and then rebuild the library or your project where you added the rpmalloc source. If you compile rpmalloc as a separate library you must make the linker use the override symbols from the library by referencing at least one symbol. The easiest way is to simply include `rpmalloc.h` in at least one source file and call `rpmalloc_linker_reference` somewhere - it's a dummy empty function. For C++ overrides you have to `#include <rpnew.h>` in at least one source file. The list of libc entry points replaced may not be complete, use libc/stdc++ replacement only as a convenience for testing the library on an existing code base, not a final solution.
 
-For explicit first class heaps, see the __rpmalloc_heap_*__ API under [first class heaps](#first-class-heaps) section, requiring __RPMALLOC_FIRST_CLASS_HEAPS__ to be defined to 1 (which is the default).
+For explicit first class heaps, see the __rpmalloc_heap_*__ API under [first class heaps](#first-class-heaps) section, requiring __RPMALLOC_FIRST_CLASS_HEAPS__ to be defined to 1 - default is 0, as it imposes a very slight performance hit in deallocation path from an extra conditinal instruction.
 
 # Building
 To compile as a static library run the configure python script which generates a Ninja build script, then build using ninja. The ninja build produces both a static and a dynamic library named `rpmalloc`.
