@@ -19,7 +19,17 @@ extern "C" {
 #include <memory.h>
 #include <inttypes.h>
 
-#ifdef __APPLE__
+#if defined(_WIN32)
+extern "C" void*
+rpvalloc(size_t size);
+
+static void*
+valloc(size_t size) {
+	return rpvalloc(size);
+}
+#endif
+
+#if defined(_WIN32) || defined(__APPLE__)
 extern "C" void*
 rppvalloc(size_t size);
 
