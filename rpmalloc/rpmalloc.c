@@ -1730,7 +1730,7 @@ heap_reallocate_block_aligned(heap_t* heap, void* block, size_t alignment, size_
 	return block;
 }
 
-void
+static void
 heap_free_all(heap_t* heap) {
 	for (int itype = 0; itype < 3; ++itype) {
 		span_t* span = heap->span_partial[itype];
