@@ -786,9 +786,11 @@ os_mcommit(void* address, size_t size) {
 		rpmalloc_assert(0, "Failed to commit virtual memory block");
 	}
 #else
+	/*
 	if (mprotect(address, size, PROT_READ | PROT_WRITE)) {
 		rpmalloc_assert(0, "Failed to commit virtual memory block");
 	}
+	*/
 #endif
 #if ENABLE_STATISTICS
 	size_t page_count = size / global_config.page_size;
@@ -818,9 +820,11 @@ os_mdecommit(void* address, size_t size) {
 		rpmalloc_assert(0, "Failed to decommit virtual memory block");
 	}
 #else
+	/*
 	if (mprotect(address, size, PROT_NONE)) {
 		rpmalloc_assert(0, "Failed to decommit virtual memory block");
 	}
+	*/
 #if defined(MADV_DONTNEED)
 	if (madvise(address, size, MADV_DONTNEED)) {
 #elif defined(MADV_FREE_REUSABLE)
