@@ -110,7 +110,7 @@ rpreallocarray(void* ptr, size_t count, size_t size) {
 #else
 	total = count * size;
 #endif
-	return realloc(ptr, total);
+	return rprealloc(ptr, total);
 }
 
 #if USE_IMPLEMENT

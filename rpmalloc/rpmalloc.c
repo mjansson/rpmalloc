@@ -818,7 +818,10 @@ os_mdecommit(void* address, size_t size) {
 		rpmalloc_assert(0, "Failed to decommit virtual memory block");
 	}
 #else
-#if defined(MADV_DONTNEED) // && !defined(__APPLE__)
+	if (mprotect(address, size, PROT_NONE)) {
+		rpmalloc_assert(0, "Failed to decommit virtual memory block");
+	}
+#if defined(MADV_DONTNEED)
 	if (madvise(address, size, MADV_DONTNEED)) {
 #elif defined(MADV_FREE_REUSABLE)
 	int ret;
@@ -832,9 +835,6 @@ os_mdecommit(void* address, size_t size) {
 #else
 	if (posix_madvise(address, size, POSIX_MADV_DONTNEED)) {
 #endif
-		rpmalloc_assert(0, "Failed to decommit virtual memory block");
-	}
-	if (mprotect(address, size, PROT_NONE)) {
 		rpmalloc_assert(0, "Failed to decommit virtual memory block");
 	}
 #endif

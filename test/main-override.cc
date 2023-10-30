@@ -37,6 +37,8 @@ static void*
 pvalloc(size_t size) {
 	return rppvalloc(size);
 }
+#else
+#include <malloc.h>
 #endif
 
 extern "C" int
@@ -124,8 +126,8 @@ test_malloc(int print_log) {
 int
 test_free(int print_log) {
 	free(rpmalloc(371));
-	free(new int);
-	free(new int[16]);
+	delete (new int);
+	delete[] (new int[16]);
 	free(pvalloc(1275));
 	if (print_log)
 		printf("Memory override free tests passed\n");

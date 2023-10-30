@@ -56,7 +56,7 @@ test_alloc(void) {
 	unsigned int icheck = 0;
 	unsigned int id = 0;
 	void* addr[18142];
-	char data[20000];
+	char data[40000];
 	unsigned int datasize[7] = {473, 39, 195, 24, 73, 376, 245};
 
 	rpmalloc_initialize(0);
@@ -68,7 +68,7 @@ test_alloc(void) {
 		return test_fail("Unexpected block granularity");
 	rpfree(zero_alloc);
 
-	for (id = 0; id < 20000; ++id)
+	for (id = 0; id < 30000; ++id)
 		data[id] = (char)(id % 139 + id % 17);
 
 	// Verify that blocks are aligned to small granularity
@@ -253,7 +253,7 @@ test_alloc(void) {
 					return test_fail("Zero allocation not zero");
 			}
 
-			memcpy(addr[ipass], data + ipass, cursize);
+			memcpy(addr[ipass], &data[ipass], cursize);
 
 			for (icheck = 0; icheck < ipass; ++icheck) {
 				if (addr[icheck] == addr[ipass])
@@ -270,7 +270,7 @@ test_alloc(void) {
 
 		for (ipass = 0; ipass < 18142; ++ipass) {
 			unsigned int cursize = datasize[ipass % 7] + ipass;
-			if (memcmp(addr[ipass], data + ipass, cursize))
+			if (memcmp(addr[ipass], &data[ipass], cursize))
 				return test_fail("Data corruption");
 		}
 
@@ -881,7 +881,7 @@ test_thread_implementation(void) {
 static int
 test_threaded(void) {
 	rpmalloc_config_t config = {0};
-	config.unmap_on_finalize = 1;
+	//config.unmap_on_finalize = 1;
 	rpmalloc_initialize_config(0, &config);
 
 	int ret = test_thread_implementation();
@@ -901,7 +901,7 @@ test_crossthread(void) {
 	thread_arg targ[32];
 
 	rpmalloc_config_t config = {0};
-	config.unmap_on_finalize = 1;
+	//config.unmap_on_finalize = 1;
 	rpmalloc_initialize_config(0, &config);
 
 	size_t num_alloc_threads = hardware_threads;
@@ -978,7 +978,7 @@ test_threadspam(void) {
 	allocator_thread_arg_t arg;
 
 	rpmalloc_config_t config = {0};
-	config.unmap_on_finalize = 1;
+	//config.unmap_on_finalize = 1;
 	rpmalloc_initialize_config(0, &config);
 
 	num_passes = 100;
@@ -1048,7 +1048,7 @@ test_first_class_heaps(void) {
 	allocator_thread_arg_t arg[32];
 
 	rpmalloc_config_t config = {0};
-	config.unmap_on_finalize = 1;
+	//config.unmap_on_finalize = 1;
 	rpmalloc_initialize_config(0, &config);
 
 	num_alloc_threads = hardware_threads * 2;
@@ -1135,7 +1135,7 @@ test_named_pages(void) {
 	char page_name[64] = {0};
 	snprintf(page_name, sizeof(page_name), "rpmalloc ::%s::", __func__);
 	config.page_name = page_name;
-	config.unmap_on_finalize = 1;
+	//config.unmap_on_finalize = 1;
 	rpmalloc_initialize_config(0, &config);
 
 	void* testptr = rpmalloc(16 * 1024 * 1024);
@@ -1145,7 +1145,8 @@ test_named_pages(void) {
 	snprintf(name, sizeof(name), "/proc/%d/maps", pid);
 	int fd = open(name, O_RDONLY);
 	if (fd != -1) {
-		read(fd, buf, sizeof(buf));
+		ssize_t was_read = read(fd, buf, sizeof(buf));
+		(void)sizeof(was_read);
 		close(fd);
 	}
 #endif
@@ -1181,15 +1182,15 @@ test_run(int argc, char** argv) {
 		return -1;
 	if (test_realloc())
 		return -1;
-	if (test_malloc(1))
-		return -1;
-	if (test_free(1))
-		return -1;
 	if (test_superalign())
 		return -1;
 	if (test_crossthread())
 		return -1;
 	if (test_threaded())
+		return -1;
+	if (test_malloc(1))
+		return -1;
+	if (test_free(1))
 		return -1;
 	if (test_malloc_thread())
 		return -1;
