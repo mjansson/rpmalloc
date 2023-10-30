@@ -804,10 +804,9 @@ os_mcommit(void* address, size_t size) {
 			break;
 	}
 #endif
-#else
+#endif
 	(void)sizeof(address);
 	(void)sizeof(size);
-#endif
 }
 
 static void
