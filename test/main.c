@@ -55,7 +55,7 @@ test_alloc(void) {
 	unsigned int ipass = 0;
 	unsigned int icheck = 0;
 	unsigned int id = 0;
-	void* addr[8142];
+	void* addr[18142];
 	char data[20000];
 	unsigned int datasize[7] = {473, 39, 195, 24, 73, 376, 245};
 
@@ -188,12 +188,13 @@ test_alloc(void) {
 	if (rpmalloc_usable_size(pointer_offset(testptr, 16)) != (usable_size - 16))
 		return test_fail("Bad offset usable size");
 	rpfree(testptr);
-	if (sizeof(size_t) > 4) {
+	int is_64bit = (sizeof(size_t) > 4);
+	if (is_64bit) {
 		testptr = rpmalloc(7525631000);
 		memset(testptr, 0x13, 1024);
 		testptr = rprealloc(testptr, 3151000);
 		for (size_t ibyte = 0; ibyte < 1024; ++ibyte) {
-			if (((char*)testptr)[ibyte] != 0x13) 
+			if (((char*)testptr)[ibyte] != 0x13)
 				return test_fail("Bad realloc did not preserve memory content");
 		}
 		usable_size = rpmalloc_usable_size(testptr);
@@ -205,7 +206,7 @@ test_alloc(void) {
 	}
 
 	for (iloop = 0; iloop < 64; ++iloop) {
-		for (ipass = 0; ipass < 8142; ++ipass) {
+		for (ipass = 0; ipass < 18142; ++ipass) {
 			addr[ipass] = rpzalloc(500);
 			if (addr[ipass] == 0)
 				return test_fail("Allocation failed");
@@ -230,17 +231,17 @@ test_alloc(void) {
 			}
 		}
 
-		for (ipass = 0; ipass < 8142; ++ipass) {
+		for (ipass = 0; ipass < 18142; ++ipass) {
 			if (memcmp(addr[ipass], data + ipass, 500))
 				return test_fail("Data corruption");
 		}
 
-		for (ipass = 0; ipass < 8142; ++ipass)
+		for (ipass = 0; ipass < 18142; ++ipass)
 			rpfree(addr[ipass]);
 	}
 
 	for (iloop = 0; iloop < 64; ++iloop) {
-		for (ipass = 0; ipass < 1024; ++ipass) {
+		for (ipass = 0; ipass < 18142; ++ipass) {
 			unsigned int cursize = datasize[ipass % 7] + ipass;
 
 			addr[ipass] = rpzalloc(cursize);
@@ -267,13 +268,13 @@ test_alloc(void) {
 			}
 		}
 
-		for (ipass = 0; ipass < 1024; ++ipass) {
+		for (ipass = 0; ipass < 18142; ++ipass) {
 			unsigned int cursize = datasize[ipass % 7] + ipass;
 			if (memcmp(addr[ipass], data + ipass, cursize))
 				return test_fail("Data corruption");
 		}
 
-		for (ipass = 0; ipass < 1024; ++ipass)
+		for (ipass = 0; ipass < 18142; ++ipass)
 			rpfree(addr[ipass]);
 	}
 
