@@ -237,9 +237,9 @@ rpmalloc_dump_statistics(void* file);
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
 rpmalloc(size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(1);
 
-//! Free the given memory block
-RPMALLOC_EXPORT void
-rpfree(void* ptr);
+//! Allocate a zero initialized memory block of at least the given size
+RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
+rpzalloc(size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(1);
 
 //! Allocate a memory block of at least the given size and zero initialize it
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
@@ -265,6 +265,13 @@ rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize, unsi
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
 rpaligned_alloc(size_t alignment, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(2);
 
+//! Allocate a memory block of at least the given size and alignment.
+//  Alignment must be a power of two and a multiple of sizeof(void*),
+//  and should ideally be less than memory page size. A caveat of rpmalloc
+//  internals is that this must also be strictly less than the span size (default 64KiB)
+RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
+rpaligned_zalloc(size_t alignment, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(2);
+
 //! Allocate a memory block of at least the given size and alignment, and zero initialize it.
 //  Alignment must be a power of two and a multiple of sizeof(void*),
 //  and should ideally be less than memory page size. A caveat of rpmalloc
@@ -285,6 +292,10 @@ rpmemalign(size_t alignment, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB
 //  internals is that this must also be strictly less than the span size (default 64KiB)
 RPMALLOC_EXPORT int
 rpposix_memalign(void** memptr, size_t alignment, size_t size);
+
+//! Free the given memory block
+RPMALLOC_EXPORT void
+rpfree(void* ptr);
 
 //! Query the usable size of the given memory block (from given pointer to the end of block)
 RPMALLOC_EXPORT size_t

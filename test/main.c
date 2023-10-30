@@ -102,16 +102,6 @@ test_alloc(void) {
 		rpfree(testptr);
 	}
 
-	// Large reallocation test
-	testptr = rpmalloc(253000);
-	testptr = rprealloc(testptr, 151);
-	size_t usable_size = rpmalloc_usable_size(testptr);
-	if (usable_size < 160)
-		return test_fail("Bad usable size");
-	if (rpmalloc_usable_size(pointer_offset(testptr, 16)) != (usable_size - 16))
-		return test_fail("Bad offset usable size");
-	rpfree(testptr);
-
 	// Reallocation tests
 	for (iloop = 1; iloop < 24; ++iloop) {
 		size_t size = 37 * iloop;
@@ -189,11 +179,41 @@ test_alloc(void) {
 		}
 	}
 
+	// Large reallocation test
+	testptr = rpmalloc(256310000);
+	testptr = rprealloc(testptr, 151);
+	size_t usable_size = rpmalloc_usable_size(testptr);
+	if (usable_size < 160)
+		return test_fail("Bad usable size");
+	if (rpmalloc_usable_size(pointer_offset(testptr, 16)) != (usable_size - 16))
+		return test_fail("Bad offset usable size");
+	rpfree(testptr);
+	if (sizeof(size_t) > 4) {
+		testptr = rpmalloc(7525631000);
+		memset(testptr, 0x13, 1024);
+		testptr = rprealloc(testptr, 3151000);
+		for (size_t ibyte = 0; ibyte < 1024; ++ibyte) {
+			if (((char*)testptr)[ibyte] != 0x13) 
+				return test_fail("Bad realloc did not preserve memory content");
+		}
+		usable_size = rpmalloc_usable_size(testptr);
+		if (usable_size > 4 * 1024 * 1024)
+			return test_fail("Bad usable size");
+		if (rpmalloc_usable_size(pointer_offset(testptr, 16)) != (usable_size - 16))
+			return test_fail("Bad offset usable size");
+		rpfree(testptr);
+	}
+
 	for (iloop = 0; iloop < 64; ++iloop) {
 		for (ipass = 0; ipass < 8142; ++ipass) {
-			addr[ipass] = rpmalloc(500);
+			addr[ipass] = rpzalloc(500);
 			if (addr[ipass] == 0)
 				return test_fail("Allocation failed");
+
+			for (size_t ibyte = 0; ibyte < 500; ++ibyte) {
+				if (((char*)addr[ipass])[ibyte])
+					return test_fail("Zero allocation not zero");
+			}
 
 			memcpy(addr[ipass], data + ipass, 500);
 
@@ -223,9 +243,14 @@ test_alloc(void) {
 		for (ipass = 0; ipass < 1024; ++ipass) {
 			unsigned int cursize = datasize[ipass % 7] + ipass;
 
-			addr[ipass] = rpmalloc(cursize);
+			addr[ipass] = rpzalloc(cursize);
 			if (addr[ipass] == 0)
 				return test_fail("Allocation failed");
+
+			for (size_t ibyte = 0; ibyte < cursize; ++ibyte) {
+				if (((char*)addr[ipass])[ibyte])
+					return test_fail("Zero allocation not zero");
+			}
 
 			memcpy(addr[ipass], data + ipass, cursize);
 

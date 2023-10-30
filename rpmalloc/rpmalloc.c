@@ -818,10 +818,7 @@ os_mdecommit(void* address, size_t size) {
 		rpmalloc_assert(0, "Failed to decommit virtual memory block");
 	}
 #else
-	if (mprotect(address, size, PROT_NONE)) {
-		rpmalloc_assert(0, "Failed to decommit virtual memory block");
-	}
-#if defined(MADV_DONTNEED)  //&& !defined(__APPLE__)
+#if defined(MADV_DONTNEED) // && !defined(__APPLE__)
 	if (madvise(address, size, MADV_DONTNEED)) {
 #elif defined(MADV_FREE_REUSABLE)
 	int ret;
@@ -835,6 +832,9 @@ os_mdecommit(void* address, size_t size) {
 #else
 	if (posix_madvise(address, size, POSIX_MADV_DONTNEED)) {
 #endif
+		rpmalloc_assert(0, "Failed to decommit virtual memory block");
+	}
+	if (mprotect(address, size, PROT_NONE)) {
 		rpmalloc_assert(0, "Failed to decommit virtual memory block");
 	}
 #endif
@@ -970,12 +970,14 @@ page_commit_memory_pages(page_t* page) {
 	global_memory_interface->memory_commit(extra_page, extra_page_size);
 	page->is_decommitted = 0;
 #if ENABLE_DECOMMIT
+#if !defined(__APPLE__)
 	// When page is recommitted, the blocks in the second memory page and forward
-	// will be zeroed out by OS - take advantage in calloc calls and make sure
+	// will be zeroed out by OS - take advantage in zalloc/calloc calls and make sure
 	// blocks in first page is zeroed out
 	void* first_page = pointer_offset(page, PAGE_HEADER_SIZE);
 	memset(first_page, 0, global_config.page_size - PAGE_HEADER_SIZE);
 	page->is_zero = 1;
+#endif
 #endif
 }
 
@@ -1299,7 +1301,7 @@ block_usable_size(block_t* block) {
 		void* blocks_start = pointer_offset(page, PAGE_HEADER_SIZE);
 		return page->block_size - ((size_t)pointer_diff(block, blocks_start) % page->block_size);
 	} else {
-		return span->mapped_size - (size_t)pointer_diff(block, span);
+		return ((size_t)span->page_size * (size_t)span->page_count) - (size_t)pointer_diff(block, span);
 	}
 }
 
@@ -1553,7 +1555,7 @@ heap_allocate_block_small_to_large(heap_t* heap, uint32_t size_class, unsigned i
 
 //! Generic allocation path from heap pages, spans or new mapping
 static NOINLINE RPMALLOC_ALLOCATOR void*
-heap_allocate_block_huge(heap_t* heap, size_t size) {
+heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
 	(void)sizeof(heap);
 	size_t alloc_size = get_page_aligned_size(size + SPAN_HEADER_SIZE);
 	size_t offset = 0;
@@ -1563,7 +1565,8 @@ heap_allocate_block_huge(heap_t* heap, size_t size) {
 		span_t* span = block;
 		span->heap = heap;
 		span->page_type = PAGE_HUGE;
-		span->page_size = (uint32_t)size;
+		span->page_size = (uint32_t)global_config.page_size;
+		span->page_count = (uint32_t)(alloc_size / global_config.page_size);
 		span->page_address_mask = LARGE_PAGE_MASK;
 		span->offset = (uint32_t)offset;
 		span->mapped_size = mapped_size;
@@ -1576,7 +1579,10 @@ heap_allocate_block_huge(heap_t* heap, size_t size) {
 			span->next = heap->span_used[PAGE_HUGE];
 			heap->span_used[PAGE_HUGE] = span;
 		}
-		return pointer_offset(block, SPAN_HEADER_SIZE);
+		void* ptr = pointer_offset(block, SPAN_HEADER_SIZE);
+		if (zero)
+			memset(ptr, 0, alloc_size);
+		return ptr;
 	}
 	return 0;
 }
@@ -1596,7 +1602,7 @@ heap_allocate_block_generic(heap_t* heap, size_t size, unsigned int zero) {
 		return heap_allocate_block_small_to_large(heap, size_class, zero);
 	}
 
-	return heap_allocate_block_huge(heap, size);
+	return heap_allocate_block_huge(heap, size, zero);
 }
 
 //! Find or allocate a block of the given size
@@ -1669,15 +1675,15 @@ heap_reallocate_block(heap_t* heap, void* block, size_t size, size_t old_size, u
 				return block_origin;
 			}
 		} else {
-			// Oversized block
+			// Huge block
 			void* block_start = pointer_offset(span, SPAN_HEADER_SIZE);
 			if (!old_size)
-				old_size = span->page_size;
-			if (size < span->mapped_size) {
-				// Still fits in block, never mind trying to save memory, but preserve data if alignment changed
+				old_size = ((size_t)span->page_size * (size_t)span->page_count) - SPAN_HEADER_SIZE;
+			if ((size < old_size) && (size > LARGE_BLOCK_SIZE_LIMIT)) {
+				// Still fits in block and still huge, never mind trying to save memory,
+				// but preserve data if alignment changed
 				if ((block_start != block) && !(flags & RPMALLOC_NO_PRESERVE))
 					memmove(block_start, block, old_size);
-				span->page_size = (uint32_t)size;
 				return block_start;
 			}
 		}
@@ -1688,8 +1694,8 @@ heap_reallocate_block(heap_t* heap, void* block, size_t size, size_t old_size, u
 	if (!!(flags & RPMALLOC_GROW_OR_FAIL))
 		return 0;
 
-	// Size is greater than block size, need to allocate a new block and deallocate the old
-	// Avoid hysteresis by overallocating if increase is small (below 37%)
+	// Size is greater than block size or saves enough memory to resize, need to allocate a new block
+	// and deallocate the old. Avoid hysteresis by overallocating if increase is small (below 37%)
 	size_t lower_bound = old_size + (old_size >> 2) + (old_size >> 3);
 	size_t new_size = (size > lower_bound) ? size : ((size > old_size) ? lower_bound : size);
 	void* old_block = block;
@@ -1784,6 +1790,18 @@ rpmalloc(size_t size) {
 	return heap_allocate_block(heap, size, 0);
 }
 
+extern inline RPMALLOC_ALLOCATOR void*
+rpzalloc(size_t size) {
+#if ENABLE_VALIDATE_ARGS
+	if (size >= MAX_ALLOC_SIZE) {
+		errno = EINVAL;
+		return 0;
+	}
+#endif
+	heap_t* heap = get_thread_heap();
+	return heap_allocate_block(heap, size, 1);
+}
+
 extern inline void
 rpfree(void* ptr) {
 	if (UNEXPECTED(ptr == 0))
@@ -1843,6 +1861,12 @@ extern RPMALLOC_ALLOCATOR void*
 rpaligned_alloc(size_t alignment, size_t size) {
 	heap_t* heap = get_thread_heap();
 	return heap_allocate_block_aligned(heap, alignment, size, 0);
+}
+
+extern RPMALLOC_ALLOCATOR void*
+rpaligned_zalloc(size_t alignment, size_t size) {
+	heap_t* heap = get_thread_heap();
+	return heap_allocate_block_aligned(heap, alignment, size, 1);
 }
 
 extern inline RPMALLOC_ALLOCATOR void*
@@ -2008,7 +2032,7 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 		if (sysctlbyname("vm.pmap.pg_ps_enabled", &rc, &sz, NULL, 0) == 0 && rc == 1) {
 			os_huge_pages = 1;
 			os_page_size = 2 * 1024 * 1024;
-			os_map_granularity = _memory_page_size;
+			os_map_granularity = os_page_size;
 		}
 #elif defined(__APPLE__) || defined(__NetBSD__)
 		os_huge_pages = 1;
