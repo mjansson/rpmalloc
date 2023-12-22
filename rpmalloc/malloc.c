@@ -351,8 +351,14 @@ initializer(void) {
 
 #elif defined(_MSC_VER)
 
+static int
+_global_rpmalloc_xib(void) {
+	_global_rpmalloc_init();
+	return 0;
+}
+
 #pragma section(".CRT$XIB",read)
-__declspec(allocate(".CRT$XIB")) void (*_rpmalloc_module_init)(void) = _global_rpmalloc_init;
+__declspec(allocate(".CRT$XIB")) void (*_rpmalloc_module_init)(void) = _global_rpmalloc_xib;
 #pragma comment(linker, "/include:_rpmalloc_module_init")
 
 #endif
