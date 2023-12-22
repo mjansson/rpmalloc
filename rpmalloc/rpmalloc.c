@@ -786,11 +786,11 @@ os_mcommit(void* address, size_t size) {
 		rpmalloc_assert(0, "Failed to commit virtual memory block");
 	}
 #else
-	/*
-	if (mprotect(address, size, PROT_READ | PROT_WRITE)) {
-		rpmalloc_assert(0, "Failed to commit virtual memory block");
-	}
-	*/
+		/*
+		if (mprotect(address, size, PROT_READ | PROT_WRITE)) {
+		    rpmalloc_assert(0, "Failed to commit virtual memory block");
+		}
+		*/
 #endif
 #if ENABLE_STATISTICS
 	size_t page_count = size / global_config.page_size;
@@ -819,11 +819,11 @@ os_mdecommit(void* address, size_t size) {
 		rpmalloc_assert(0, "Failed to decommit virtual memory block");
 	}
 #else
-	/*
-	if (mprotect(address, size, PROT_NONE)) {
-		rpmalloc_assert(0, "Failed to decommit virtual memory block");
-	}
-	*/
+		/*
+		if (mprotect(address, size, PROT_NONE)) {
+		    rpmalloc_assert(0, "Failed to decommit virtual memory block");
+		}
+		*/
 #if defined(MADV_DONTNEED)
 	if (madvise(address, size, MADV_DONTNEED)) {
 #elif defined(MADV_FREE_REUSABLE)
@@ -1473,17 +1473,11 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 	return span;
 }
 
-//! Find or allocate a page for the given size class
-static inline page_t*
-heap_get_page(heap_t* heap, uint32_t size_class) {
-	// Fast path, available page for given size class
-	page_t* page = heap->page_available[size_class];
-	if (EXPECTED(page != 0))
-		return page;
-
+static page_t*
+heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 	// Check if there is a free page
 	page_type_t page_type = get_page_type(size_class);
-	page = heap->page_free[page_type];
+	page_t* page = heap->page_free[page_type];
 	if (EXPECTED(page != 0)) {
 		heap->page_free[page_type] = page->next;
 		if (page->is_decommitted == 0) {
@@ -1498,7 +1492,7 @@ heap_get_page(heap_t* heap, uint32_t size_class) {
 	if (heap->id == 0) {
 		// Thread has not yet initialized, assign heap and try again
 		rpmalloc_initialize(0);
-		return heap_get_page(get_thread_heap(), size_class);
+		return heap_get_page_generic(get_thread_heap(), size_class);
 	}
 
 	// Check if there is a free page from multithreaded deallocations
@@ -1535,6 +1529,16 @@ heap_get_page(heap_t* heap, uint32_t size_class) {
 	}
 
 	return page;
+}
+
+//! Find or allocate a page for the given size class
+static page_t*
+heap_get_page(heap_t* heap, uint32_t size_class) {
+	// Fast path, available page for given size class
+	page_t* page = heap->page_available[size_class];
+	if (EXPECTED(page != 0))
+		return page;
+	return heap_get_page_generic(heap, size_class);
 }
 
 //! Pop a block from the heap local free list
