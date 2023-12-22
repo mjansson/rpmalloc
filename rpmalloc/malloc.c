@@ -131,6 +131,15 @@ extern inline void* RPMALLOC_CDECL pvalloc(size_t size) { return rppvalloc(size)
 extern inline void* RPMALLOC_CDECL reallocarray(void* ptr, size_t count, size_t size) { return rpreallocarray(ptr, count, size); }
 
 #ifdef _WIN32
+extern inline RPMALLOC_RESTRICT void* RPMALLOC_CDECL _malloc_base(size_t size) { return rpmalloc(size); }
+extern inline void RPMALLOC_CDECL _free_base(void* ptr) { rpfree(ptr); }
+extern inline RPMALLOC_RESTRICT void* RPMALLOC_CDECL _calloc_base(size_t count, size_t size) { return rpcalloc(count, size); }
+extern inline size_t RPMALLOC_CDECL _msize(void* ptr) { return rpmalloc_usable_size(ptr); }
+extern inline size_t RPMALLOC_CDECL _msize_base(void* ptr) { return rpmalloc_usable_size(ptr); }
+extern inline RPMALLOC_RESTRICT void* RPMALLOC_CDECL _realloc_base(void* ptr, size_t size) { return rprealloc(ptr, size); }
+#endif
+
+#ifdef _WIN32
 // For Windows, #include <rpnew.h> in one source file to get the C++ operator overrides implemented in your module
 #else
 // Overload the C++ operators using the mangled names (https://itanium-cxx-abi.github.io/cxx-abi/abi.html#mangling)
