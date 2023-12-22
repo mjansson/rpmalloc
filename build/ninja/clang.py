@@ -52,7 +52,8 @@ class ClangToolchain(toolchain.Toolchain):
                    '-fno-trapping-math', '-ffast-math']
     self.cwarnflags = ['-W', '-Werror', '-pedantic', '-Wall', '-Weverything',
                        '-Wno-c++98-compat', '-Wno-padded', '-Wno-documentation-unknown-command', '-Wno-declaration-after-statement',
-                       '-Wno-implicit-fallthrough', '-Wno-static-in-inline', '-Wno-reserved-id-macro', '-Wno-disabled-macro-expansion']
+                       '-Wno-implicit-fallthrough', '-Wno-static-in-inline', '-Wno-reserved-id-macro', '-Wno-disabled-macro-expansion',
+                       '-Wno-unsafe-buffer-usage']
     self.cmoreflags = []
     self.mflags = []
     self.arflags = []
