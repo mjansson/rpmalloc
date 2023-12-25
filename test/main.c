@@ -1020,6 +1020,34 @@ test_threadspam(void) {
 	return 0;
 }
 
+#if RPMALLOC_FIRST_CLASS_HEAPS
+
+static void
+heap_allocator_mixed_thread(void* arg) {
+    (void)sizeof(arg);
+
+	rpmalloc_heap_t* outer_heap = rpmalloc_heap_acquire();
+
+	void* array[4];
+	for (int i = 0; i < 4; ++i)
+		array[i] = rpmalloc_heap_alloc(outer_heap, 32256);
+
+	thread_sleep(1);
+
+	for (int i = 0; i < 4; ++i)
+		rpmalloc_heap_free(outer_heap, array[i]);
+
+	thread_sleep(1);
+
+	void* ptr = rpmalloc_heap_alloc(outer_heap, 32256);
+	rpmalloc_heap_free(outer_heap, ptr);
+
+	rpmalloc_heap_free_all(outer_heap);
+	rpmalloc_heap_release(outer_heap);
+}
+
+#endif
+
 static int
 test_first_class_heaps(void) {
 #if RPMALLOC_FIRST_CLASS_HEAPS
@@ -1029,7 +1057,9 @@ test_first_class_heaps(void) {
 	size_t num_alloc_threads;
 	allocator_thread_arg_t arg[32];
 
-	rpmalloc_initialize();
+	rpmalloc_config_t config = {0};
+	// config.unmap_on_finalize = 1;
+	rpmalloc_initialize_config(&config);
 
 	num_alloc_threads = hardware_threads * 2;
 	if (num_alloc_threads < 2)
@@ -1043,7 +1073,7 @@ test_first_class_heaps(void) {
 		arg[i].datasize[2] = 797;
 		arg[i].datasize[3] = 3058;
 		arg[i].datasize[4] = 47892;
-		arg[i].datasize[5] = 173902;
+		arg[i].datasize[5] = 173932;
 		arg[i].datasize[6] = 389;
 		arg[i].datasize[7] = 19;
 		arg[i].datasize[8] = 2493;
@@ -1084,6 +1114,19 @@ test_first_class_heaps(void) {
 		if (threadres[i])
 			return -1;
 	}
+
+	rpmalloc_initialize();
+
+	thread_arg targ;
+	targ.fn = heap_allocator_mixed_thread;
+
+	thread[0] = thread_run(&targ);
+
+	thread_sleep(10);
+
+	thread_join(thread[0]);
+
+	rpmalloc_finalize();
 
 	printf("First class heap tests passed\n");
 #endif
