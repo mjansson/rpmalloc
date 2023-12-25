@@ -3545,6 +3545,11 @@ rpmalloc_heap_free_all(rpmalloc_heap_t* heap) {
 			_rpmalloc_heap_cache_insert(heap, span);
 			span = next_span;
 		}
+
+		span = heap->size_class[iclass].cache;
+		if (span)
+			_rpmalloc_heap_cache_insert(heap, span);
+		heap->size_class[iclass].cache = 0;
 	}
 	memset(heap->size_class, 0, sizeof(heap->size_class));
 	memset(heap->full_span, 0, sizeof(heap->full_span));
