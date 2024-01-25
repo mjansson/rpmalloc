@@ -1020,6 +1020,7 @@ page_full_to_available(page_t* page) {
 
 static void
 page_full_to_free_on_new_heap(page_t* page, heap_t* heap) {
+	rpmalloc_assert(heap->id, "Page full to free on default heap");
 	rpmalloc_assert(page->is_full == 1, "Page full flag internal failure");
 	rpmalloc_assert(page->is_decommitted == 0, "Page decommitted flag internal failure");
 	page->is_full = 0;
@@ -1096,7 +1097,7 @@ page_put_thread_free_block(page_t* page, block_t* block) {
 		// Safe since the page is marked as full and will never be touched by owning heap
 		rpmalloc_assert(page->is_full, "Mismatch between page full flag and thread free list");
 		heap_t* heap = get_thread_heap();
-		if (heap->page_free_commit_count[page->page_type] < page->heap->page_free_commit_count[page->page_type]) {
+		if (heap->id && heap->page_free_commit_count[page->page_type] < page->heap->page_free_commit_count[page->page_type]) {
 			page_full_to_free_on_new_heap(page, heap);
 		} else {
 			heap = page->heap;
