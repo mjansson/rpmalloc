@@ -841,7 +841,11 @@ rpmalloc_set_main_thread(void) {
 static void
 _rpmalloc_spin(void) {
 #if defined(_MSC_VER)
+#if defined(__x86_64__) || defined(__i386__)
 	_mm_pause();
+#else 
+	__yield();
+#endif
 #elif defined(__x86_64__) || defined(__i386__)
 	__asm__ volatile("pause" ::: "memory");
 #elif defined(__aarch64__) || (defined(__arm__) && __ARM_ARCH >= 7)
