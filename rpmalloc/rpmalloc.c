@@ -1858,15 +1858,15 @@ _rpmalloc_heap_extract_new_span(heap_t* heap, heap_size_class_t* heap_size_class
 			_rpmalloc_inc_span_statistics(heap, span_count, class_idx);
 			return span;
 		}
-		span = _rpmalloc_heap_reserved_extract(heap, span_count);
-		if (EXPECTED(span != 0)) {
-			_rpmalloc_stat_inc(&heap->size_class_use[class_idx].spans_from_reserved);
-			_rpmalloc_inc_span_statistics(heap, span_count, class_idx);
-			return span;
-		}
 		span = _rpmalloc_heap_global_cache_extract(heap, span_count);
 		if (EXPECTED(span != 0)) {
 			_rpmalloc_stat_inc(&heap->size_class_use[class_idx].spans_from_cache);
+			_rpmalloc_inc_span_statistics(heap, span_count, class_idx);
+			return span;
+		}
+		span = _rpmalloc_heap_reserved_extract(heap, span_count);
+		if (EXPECTED(span != 0)) {
+			_rpmalloc_stat_inc(&heap->size_class_use[class_idx].spans_from_reserved);
 			_rpmalloc_inc_span_statistics(heap, span_count, class_idx);
 			return span;
 		}
