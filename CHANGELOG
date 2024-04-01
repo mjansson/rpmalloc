@@ -1,3 +1,16 @@
+1.4.5
+
+Fix for issue where span cache was not properly freed on heap free all
+
+Add rpmalloc_get_heap_for_ptr function to get heap for a given allocation
+
+Fixed medium size block limit and alignment handling when span size is reconfigured
+
+Fixed SIGILL on macOS rosetta mode (x86_64)
+
+Update compatibility with newer clang versions and use intrinsics for memcpy
+
+
 1.4.4
 
 Fixed an issue where an external thread concurrently freeing a block to the deferred list of
