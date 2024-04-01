@@ -47,12 +47,13 @@ class ClangToolchain(toolchain.Toolchain):
 
     #Base flags
     self.cflags = ['-D' + project.upper() + '_COMPILE=1',
-                   '-funit-at-a-time', '-fstrict-aliasing', '-fvisibility=hidden', '-fno-stack-protector',
+                   '-fstrict-aliasing', '-fvisibility=default', '-fno-stack-protector',
                    '-fno-math-errno','-ffinite-math-only', '-funsafe-math-optimizations',
                    '-fno-trapping-math', '-ffast-math']
     self.cwarnflags = ['-W', '-Werror', '-pedantic', '-Wall', '-Weverything',
                        '-Wno-c++98-compat', '-Wno-padded', '-Wno-documentation-unknown-command', '-Wno-declaration-after-statement',
-                       '-Wno-implicit-fallthrough', '-Wno-static-in-inline', '-Wno-reserved-id-macro', '-Wno-disabled-macro-expansion']
+                       '-Wno-implicit-fallthrough', '-Wno-static-in-inline', '-Wno-reserved-id-macro', '-Wno-disabled-macro-expansion',
+                       '-Wno-unsafe-buffer-usage']
     self.cmoreflags = []
     self.mflags = []
     self.arflags = []
@@ -529,10 +530,7 @@ class ClangToolchain(toolchain.Toolchain):
 
   #Apple universal targets
   def builder_apple_multilib(self, writer, config, arch, targettype, infiles, outfile, variables):
-    localvariables = [('arflags', '-static -no_warning_for_no_symbols')]
-    if variables != None:
-      localvariables = variables + localvariables
-    return writer.build(os.path.join(outfile, self.buildtarget), 'ar', infiles, variables = localvariables);
+    return writer.build(os.path.join(outfile, self.buildtarget), 'lipo', infiles, variables = variables);
 
   def builder_apple_multisharedlib(self, writer, config, arch, targettype, infiles, outfile, variables):
     return writer.build(os.path.join(outfile, self.buildtarget), 'lipo', infiles, implicit = self.implicit_deps(config, variables), variables = variables)

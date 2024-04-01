@@ -4,7 +4,9 @@
 #endif
 
 #include <rpmalloc.h>
+#ifdef _WIN32
 #include <rpnew.h>
+#endif
 #include <thread.h>
 #include <test.h>
 
@@ -14,6 +16,11 @@
 #include <string.h>
 #include <math.h>
 #include <inttypes.h>
+#include <new>
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
+#endif
 
 extern "C" void* RPMALLOC_CDECL pvalloc(size_t size);
 extern "C" void* RPMALLOC_CDECL valloc(size_t size);
@@ -28,6 +35,21 @@ test_fail(const char* reason) {
 	fprintf(stderr, "FAIL: %s\n", reason);
 	return -1;
 }
+
+struct test_struct {
+	uint8_t *buf;
+	test_struct() {
+		buf = static_cast<uint8_t*>(rpmalloc(128));
+		if (rpmalloc_usable_size(buf) != 128) {
+			this->~test_struct();
+			fprintf(stderr, "FAIL: usable invalid test_struct buf size");
+			throw std::bad_alloc();
+		}
+	}
+	~test_struct() {
+		rpfree(buf);
+	}
+};
 
 static int
 test_alloc(void) {
@@ -60,6 +82,14 @@ test_alloc(void) {
 	if (rpmalloc_usable_size(p) != 32*sizeof(int))
 		return test_fail("usable size invalid (4)");
 	delete[] static_cast<int*>(p);
+	p = new unsigned char[sizeof(test_struct)];
+	if (!p)
+		return test_fail("new[] failed");
+	if (rpmalloc_usable_size(p) != 16)
+		return test_fail("usable size invalid (5)");
+	test_struct *ts = new (p) test_struct();
+	ts->~test_struct();
+	delete[] static_cast<char*>(p);
 
 	p = valloc(873);
 	if (reinterpret_cast<uintptr_t>(p) & (config->page_size - 1)) {
@@ -90,7 +120,7 @@ test_free(void) {
 	free(new int[16]);
 	free(pvalloc(1275));
 	printf("Free tests passed\n");
-	return 0;	
+	return 0;
 }
 
 static void

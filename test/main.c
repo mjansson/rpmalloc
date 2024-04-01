@@ -10,6 +10,9 @@
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wnonportable-system-include-path"
 #endif
+#if defined(__GNUC__)
+#pragma GCC diagnostic ignored "-Wunused-result"
+#endif
 
 #include <rpmalloc.h>
 #include <thread.h>
@@ -20,9 +23,12 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <unistd.h>
 #include <math.h>
 #include <time.h>
+
+#ifndef _MSC_VER
+#include <unistd.h>
+#endif
 
 #define pointer_offset(ptr, ofs) (void*)((char*)(ptr) + (ptrdiff_t)(ofs))
 #define pointer_diff(first, second) (ptrdiff_t)((const char*)(first) - (const char*)(second))
@@ -93,7 +99,11 @@ test_alloc(void) {
 	}
 
 	//Verify medium block sizes (until class merging kicks in)
-	for (iloop = 1025; iloop <= 6000; ++iloop) {
+	unsigned int medium_size_limit = (unsigned int)(rpmalloc_config()->span_size / 2);
+	unsigned int check_size_limit = 1024 + 512;
+	while ((medium_size_limit / check_size_limit) != (medium_size_limit / (check_size_limit + 512)))
+		check_size_limit += 512;
+	for (iloop = 1025; iloop <= check_size_limit; ++iloop) {
 		testptr = rpmalloc(iloop);
 		wanted_usable_size = 512 * ((iloop / 512) + ((iloop % 512) ? 1 : 0));
 		if (rpmalloc_usable_size(testptr) != wanted_usable_size)
@@ -331,7 +341,7 @@ test_alloc(void) {
 	rpmalloc_initialize();
 	{
 		addr[0] = rpmalloc(23457);
-	
+
 		thread_arg targ;
 		targ.fn = defer_free_thread;
 		targ.arg = addr[0];
@@ -408,6 +418,8 @@ test_superalign(void) {
 	for (size_t ipass = 0; ipass < 8; ++ipass) {
 		for (size_t iloop = 0; iloop < 4096; ++iloop) {
 			for (size_t ialign = 0, asize = sizeof(alignment) / sizeof(alignment[0]); ialign < asize; ++ialign) {
+				if (alignment[ialign] >= rpmalloc_config()->span_size)
+					continue;
 				for (size_t isize = 0, ssize = sizeof(sizes) / sizeof(sizes[0]); isize < ssize; ++isize) {
 					size_t alloc_size = sizes[isize] + iloop + ipass;
 					uint8_t* ptr = rpaligned_alloc(alignment[ialign], alloc_size);
@@ -780,7 +792,7 @@ initfini_thread(void* argp) {
 				ret = test_fail("Data corrupted");
 				goto end;
 			}
-			
+
 			rpfree(addr[ipass]);
 		}
 
@@ -868,7 +880,7 @@ test_threaded(void) {
 	return ret;
 }
 
-static int 
+static int
 test_crossthread(void) {
 	uintptr_t thread[32];
 	allocator_thread_arg_t arg[32];
@@ -941,7 +953,7 @@ test_crossthread(void) {
 	return 0;
 }
 
-static int 
+static int
 test_threadspam(void) {
 	uintptr_t thread[64];
 	uintptr_t threadres[64];
@@ -1008,6 +1020,34 @@ test_threadspam(void) {
 	return 0;
 }
 
+#if RPMALLOC_FIRST_CLASS_HEAPS
+
+static void
+heap_allocator_mixed_thread(void* arg) {
+    (void)sizeof(arg);
+
+	rpmalloc_heap_t* outer_heap = rpmalloc_heap_acquire();
+
+	void* array[4];
+	for (int i = 0; i < 4; ++i)
+		array[i] = rpmalloc_heap_alloc(outer_heap, 32256);
+
+	thread_sleep(1);
+
+	for (int i = 0; i < 4; ++i)
+		rpmalloc_heap_free(outer_heap, array[i]);
+
+	thread_sleep(1);
+
+	void* ptr = rpmalloc_heap_alloc(outer_heap, 32256);
+	rpmalloc_heap_free(outer_heap, ptr);
+
+	rpmalloc_heap_free_all(outer_heap);
+	rpmalloc_heap_release(outer_heap);
+}
+
+#endif
+
 static int
 test_first_class_heaps(void) {
 #if RPMALLOC_FIRST_CLASS_HEAPS
@@ -1017,7 +1057,9 @@ test_first_class_heaps(void) {
 	size_t num_alloc_threads;
 	allocator_thread_arg_t arg[32];
 
-	rpmalloc_initialize();
+	rpmalloc_config_t config = {0};
+	// config.unmap_on_finalize = 1;
+	rpmalloc_initialize_config(&config);
 
 	num_alloc_threads = hardware_threads * 2;
 	if (num_alloc_threads < 2)
@@ -1031,7 +1073,7 @@ test_first_class_heaps(void) {
 		arg[i].datasize[2] = 797;
 		arg[i].datasize[3] = 3058;
 		arg[i].datasize[4] = 47892;
-		arg[i].datasize[5] = 173902;
+		arg[i].datasize[5] = 173932;
 		arg[i].datasize[6] = 389;
 		arg[i].datasize[7] = 19;
 		arg[i].datasize[8] = 2493;
@@ -1072,6 +1114,19 @@ test_first_class_heaps(void) {
 		if (threadres[i])
 			return -1;
 	}
+
+	rpmalloc_initialize();
+
+	thread_arg targ;
+	targ.fn = heap_allocator_mixed_thread;
+
+	thread[0] = thread_run(&targ);
+
+	thread_sleep(10);
+
+	thread_join(thread[0]);
+
+	rpmalloc_finalize();
 
 	printf("First class heap tests passed\n");
 #endif
