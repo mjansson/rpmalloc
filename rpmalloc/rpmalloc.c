@@ -281,7 +281,11 @@ rpmalloc_clz(uintptr_t x) {
 static inline void
 wait_spin(void) {
 #if defined(_MSC_VER)
+#if defined(_M_ARM64)
+	__yield();
+#else
 	_mm_pause();
+#endif
 #elif defined(__x86_64__) || defined(__i386__)
 	__asm__ volatile("pause" ::: "memory");
 #elif defined(__aarch64__) || (defined(__arm__) && __ARM_ARCH >= 7)
