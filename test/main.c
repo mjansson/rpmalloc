@@ -10,6 +10,9 @@
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wnonportable-system-include-path"
 #endif
+#if defined(__GNUC__)
+#pragma GCC diagnostic ignored "-Wunused-result"
+#endif
 
 #include <rpmalloc.h>
 #include <thread.h>
