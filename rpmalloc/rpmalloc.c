@@ -183,12 +183,12 @@ madvise(caddr_t, size_t, int);
 
 //! Threshold number of pages for when free pages are decommitted
 #ifndef PAGE_FREE_OVERFLOW
-#define PAGE_FREE_OVERFLOW 32
+#define PAGE_FREE_OVERFLOW 16
 #endif
 
 //! Number of pages to decommit when free page threshold overflows
 #ifndef PAGE_FREE_DECOMMIT
-#define PAGE_FREE_DECOMMIT 16
+#define PAGE_FREE_DECOMMIT 8
 #endif
 
 ////////////
@@ -701,9 +701,15 @@ os_mmap(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
 	size_t map_size = size + alignment;
 #if PLATFORM_WINDOWS
 	// Ok to MEM_COMMIT - according to MSDN, "actual physical pages are not allocated unless/until the virtual addresses
-	// are actually accessed"
+	// are actually accessed". But if we enable decommit it's better to not immediately commit and instead commit per
+	// page to avoid saturating the OS commit limit
+#if ENABLE_DECOMMIT
+	DWORD do_commit = 0;
+#else
+	DWORD do_commit = 1;
+#endif
 	void* ptr =
-	    VirtualAlloc(0, map_size, (os_huge_pages ? MEM_LARGE_PAGES : 0) | MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	    VirtualAlloc(0, map_size, (os_huge_pages ? MEM_LARGE_PAGES : 0) | MEM_RESERVE | do_commit, PAGE_READWRITE);
 #else
 	int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED;
 #if defined(__APPLE__) && !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
@@ -768,6 +774,7 @@ os_mmap(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
 		                                          page_mapped_current, memory_order_relaxed, memory_order_relaxed))
 			break;
 	}
+#if !ENABLE_DECOMMIT
 	size_t page_active_current =
 	    atomic_fetch_add_explicit(&global_statistics.page_active, page_count, memory_order_relaxed) + page_count;
 	size_t page_active_peak = atomic_load_explicit(&global_statistics.page_active_peak, memory_order_relaxed);
@@ -776,6 +783,7 @@ os_mmap(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
 		                                          page_active_current, memory_order_relaxed, memory_order_relaxed))
 			break;
 	}
+#endif
 #endif
 	return ptr;
 }
@@ -1226,6 +1234,12 @@ span_allocate_page(span_t* span) {
 	rpmalloc_assert(span->page_initialized < span->page_count, "Page initialization internal failure");
 	heap_t* heap = span->heap;
 	page_t* page = pointer_offset(span, span->page_size * span->page_initialized);
+
+#if ENABLE_DECOMMIT
+	// The first page is always committed on initial span map of memory
+	if (span->page_initialized)
+		global_memory_interface->memory_commit(page, span->page_size);
+#endif
 	++span->page_initialized;
 
 	page->page_type = span->page_type;
@@ -1346,10 +1360,15 @@ heap_initialize(void* block) {
 
 static heap_t*
 heap_allocate_new(void) {
+	if (!global_config.page_size)
+		rpmalloc_initialize(0);
 	size_t heap_size = get_page_aligned_size(sizeof(heap_t));
 	size_t offset = 0;
 	size_t mapped_size = 0;
 	block_t* block = global_memory_interface->memory_map(heap_size, 0, &offset, &mapped_size);
+#if ENABLE_DECOMMIT
+	global_memory_interface->memory_commit(block, heap_size);
+#endif
 	heap_t* heap = heap_initialize((void*)block);
 	heap->offset = (uint32_t)offset;
 	heap->mapped_size = mapped_size;
@@ -1454,21 +1473,30 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 	size_t mapped_size = 0;
 	span_t* span = global_memory_interface->memory_map(SPAN_SIZE, SPAN_SIZE, &offset, &mapped_size);
 	if (EXPECTED(span != 0)) {
+		uint32_t page_count = 0;
+		uint32_t page_size = 0;
+		uintptr_t page_address_mask = 0;
+		if (page_type == PAGE_SMALL) {
+			page_count = SPAN_SIZE / SMALL_PAGE_SIZE;
+			page_size = SMALL_PAGE_SIZE;
+			page_address_mask = SMALL_PAGE_MASK;
+		} else if (page_type == PAGE_MEDIUM) {
+			page_count = SPAN_SIZE / MEDIUM_PAGE_SIZE;
+			page_size = MEDIUM_PAGE_SIZE;
+			page_address_mask = MEDIUM_PAGE_MASK;
+		} else {
+			page_count = SPAN_SIZE / LARGE_PAGE_SIZE;
+			page_size = LARGE_PAGE_SIZE;
+			page_address_mask = LARGE_PAGE_MASK;
+		}
+#if ENABLE_DECOMMIT
+		global_memory_interface->memory_commit(span, page_size);
+#endif
 		span->heap = heap;
 		span->page_type = page_type;
-		if (page_type == PAGE_SMALL) {
-			span->page_count = SPAN_SIZE / SMALL_PAGE_SIZE;
-			span->page_size = SMALL_PAGE_SIZE;
-			span->page_address_mask = SMALL_PAGE_MASK;
-		} else if (page_type == PAGE_MEDIUM) {
-			span->page_count = SPAN_SIZE / MEDIUM_PAGE_SIZE;
-			span->page_size = MEDIUM_PAGE_SIZE;
-			span->page_address_mask = MEDIUM_PAGE_MASK;
-		} else {
-			span->page_count = SPAN_SIZE / LARGE_PAGE_SIZE;
-			span->page_size = LARGE_PAGE_SIZE;
-			span->page_address_mask = LARGE_PAGE_MASK;
-		}
+		span->page_count = page_count;
+		span->page_size = page_size;
+		span->page_address_mask = page_address_mask;
 		span->offset = (uint32_t)offset;
 		span->mapped_size = mapped_size;
 
@@ -1575,6 +1603,9 @@ heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
 	void* block = global_memory_interface->memory_map(alloc_size, SPAN_SIZE, &offset, &mapped_size);
 	if (block) {
 		span_t* span = block;
+#if ENABLE_DECOMMIT
+		global_memory_interface->memory_commit(span, alloc_size);
+#endif
 		span->heap = heap;
 		span->page_type = PAGE_HUGE;
 		span->page_size = (uint32_t)global_config.page_size;
@@ -1593,7 +1624,7 @@ heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
 		}
 		void* ptr = pointer_offset(block, SPAN_HEADER_SIZE);
 		if (zero)
-			memset(ptr, 0, alloc_size);
+			memset(ptr, 0, size);
 		return ptr;
 	}
 	return 0;
