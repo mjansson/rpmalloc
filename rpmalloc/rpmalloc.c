@@ -550,7 +550,8 @@ static size_t os_page_size;
 #define TLS_MODEL
 #define _Thread_local __declspec(thread)
 #else
-#define TLS_MODEL __attribute__((tls_model("initial-exec")))
+//#define TLS_MODEL __attribute__((tls_model("initial-exec")))
+#define TLS_MODEL
 #endif
 static _Thread_local heap_t* global_thread_heap TLS_MODEL = &global_heap_fallback;
 
