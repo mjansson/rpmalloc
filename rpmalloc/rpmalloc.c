@@ -264,13 +264,13 @@ static rpmalloc_statistics_t global_statistics;
 static inline size_t
 rpmalloc_clz(uintptr_t x) {
 #if ARCH_64BIT
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && !defined(__clang__)
 	return (size_t)_lzcnt_u64(x);
 #else
 	return (size_t)__builtin_clzll(x);
 #endif
 #else
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && !defined(__clang__)
 	return (size_t)_lzcnt_u32(x);
 #else
 	return (size_t)__builtin_clzl(x);
