@@ -2095,6 +2095,11 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 	if (global_config.enable_huge_pages || global_config.page_size > (256 * 1024))
 		global_config.disable_decommit = 1;
 
+#if defined(__linux__) || defined(__ANDROID__)
+	if (global_config.disable_thp)
+		(void)prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0);
+#endif
+
 #ifdef _WIN32
 	fls_key = FlsAlloc(&rpmalloc_thread_destructor);
 #else
