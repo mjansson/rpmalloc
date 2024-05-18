@@ -3,6 +3,12 @@
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 
+#if defined(__clang__)
+#if __has_warning("-Wunsafe-buffer-usage")
+#pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
+#endif
+#endif
+
 #include <rpmalloc.h>
 #ifdef _WIN32
 #include <rpnew.h>

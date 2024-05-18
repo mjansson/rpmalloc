@@ -9,6 +9,9 @@
 #endif
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wnonportable-system-include-path"
+#if __has_warning("-Wunsafe-buffer-usage")
+#pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
+#endif
 #endif
 #if defined(__GNUC__)
 #pragma GCC diagnostic ignored "-Wunused-result"

@@ -30,6 +30,9 @@
 #if __has_warning("-Wstatic-in-inline")
 #pragma clang diagnostic ignored "-Wstatic-in-inline"
 #endif
+#if __has_warning("-Wunsafe-buffer-usage")
+#pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
+#endif
 #elif defined(__GNUC__)
 #pragma GCC diagnostic ignored "-Wunused-macros"
 #pragma GCC diagnostic ignored "-Wunused-function"
@@ -180,16 +183,6 @@ madvise(caddr_t, size_t, int);
 
 #define SPAN_SIZE (256 * 1024 * 1024)
 #define SPAN_MASK (~((uintptr_t)(SPAN_SIZE - 1)))
-
-//! Threshold number of pages for when free pages are decommitted
-#ifndef PAGE_FREE_OVERFLOW
-#define PAGE_FREE_OVERFLOW 16
-#endif
-
-//! Number of pages to decommit when free page threshold overflows
-#ifndef PAGE_FREE_DECOMMIT
-#define PAGE_FREE_DECOMMIT 8
-#endif
 
 ////////////
 ///
@@ -453,8 +446,8 @@ struct heap_t {
 	page_t* page_free[3];
 	//! Free but still committed page count for each page tyoe
 	uint32_t page_free_commit_count[3];
-	//! Multithreaded free pages for each page type
-	atomic_uintptr_t page_free_thread[3];
+	//! Multithreaded free list
+	atomic_uintptr_t thread_free[3];
 	//! Available partially initialized spans for each page type
 	span_t* span_partial[3];
 	//! Spans in full use for each page type
@@ -532,6 +525,12 @@ static const size_class_t global_size_class[SIZE_CLASS_COUNT] = {
     LCLASS(81920),  LCLASS(98304),  LCLASS(114688), LCLASS(131072), LCLASS(163840), LCLASS(196608), LCLASS(229376),
     LCLASS(262144), LCLASS(327680), LCLASS(393216), LCLASS(458752), LCLASS(524288)};
 
+//! Threshold number of pages for when free pages are decommitted
+static uint32_t global_page_free_overflow[4] = {16, 8, 2, 0};
+
+//! Number of pages to retain when free page threshold overflows
+static uint32_t global_page_free_retain[4] = {4, 2, 1, 0};
+
 //! OS huge page support
 static int os_huge_pages;
 //! OS memory map granularity
@@ -550,7 +549,7 @@ static size_t os_page_size;
 #define TLS_MODEL
 #define _Thread_local __declspec(thread)
 #else
-//#define TLS_MODEL __attribute__((tls_model("initial-exec")))
+// #define TLS_MODEL __attribute__((tls_model("initial-exec")))
 #define TLS_MODEL
 #endif
 static _Thread_local heap_t* global_thread_heap TLS_MODEL = &global_heap_fallback;
@@ -566,32 +565,38 @@ static inline uintptr_t
 get_thread_id(void) {
 #if defined(_WIN32)
 	return (uintptr_t)((void*)NtCurrentTeb());
-#elif (defined(__GNUC__) || defined(__clang__)) && !defined(__CYGWIN__)
-	uintptr_t tid;
-#if defined(__i386__)
-	__asm__("movl %%gs:0, %0" : "=r"(tid) : :);
-#elif defined(__x86_64__)
-#if defined(__MACH__)
-	__asm__("movq %%gs:0, %0" : "=r"(tid) : :);
 #else
-	__asm__("movq %%fs:0, %0" : "=r"(tid) : :);
+	void* thp = __builtin_thread_pointer();
+	return (uintptr_t)thp;
 #endif
-#elif defined(__arm__)
-	__asm__ volatile("mrc p15, 0, %0, c13, c0, 3" : "=r"(tid));
-#elif defined(__aarch64__)
-#if defined(__MACH__)
-	// tpidr_el0 likely unused, always return 0 on iOS
-	__asm__ volatile("mrs %0, tpidrro_el0" : "=r"(tid));
-#else
-	__asm__ volatile("mrs %0, tpidr_el0" : "=r"(tid));
-#endif
-#else
-#error This platform needs implementation of get_thread_id()
-#endif
-	return tid;
-#else
-#error This platform needs implementation of get_thread_id()
-#endif
+	/*
+	#elif (defined(__GNUC__) || defined(__clang__)) && !defined(__CYGWIN__)
+	    uintptr_t tid;
+	#if defined(__i386__)
+	    __asm__("movl %%gs:0, %0" : "=r"(tid) : :);
+	#elif defined(__x86_64__)
+	#if defined(__MACH__)
+	    __asm__("movq %%gs:0, %0" : "=r"(tid) : :);
+	#else
+	    __asm__("movq %%fs:0, %0" : "=r"(tid) : :);
+	#endif
+	#elif defined(__arm__)
+	    __asm__ volatile("mrc p15, 0, %0, c13, c0, 3" : "=r"(tid));
+	#elif defined(__aarch64__)
+	#if defined(__MACH__)
+	    // tpidr_el0 likely unused, always return 0 on iOS
+	    __asm__ volatile("mrs %0, tpidrro_el0" : "=r"(tid));
+	#else
+	    __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tid));
+	#endif
+	#else
+	#error This platform needs implementation of get_thread_id()
+	#endif
+	    return tid;
+	#else
+	#error This platform needs implementation of get_thread_id()
+	#endif
+	*/
 }
 
 //! Set the current thread heap
@@ -707,7 +712,7 @@ os_mmap(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
 #if ENABLE_DECOMMIT
 	DWORD do_commit = 0;
 #else
-	DWORD do_commit = 1;
+	DWORD do_commit = MEM_COMMIT;
 #endif
 	void* ptr =
 	    VirtualAlloc(0, map_size, (os_huge_pages ? MEM_LARGE_PAGES : 0) | MEM_RESERVE | do_commit, PAGE_READWRITE);
@@ -775,7 +780,7 @@ os_mmap(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
 		                                          page_mapped_current, memory_order_relaxed, memory_order_relaxed))
 			break;
 	}
-#if !ENABLE_DECOMMIT
+#if ENABLE_DECOMMIT
 	size_t page_active_current =
 	    atomic_fetch_add_explicit(&global_statistics.page_active, page_count, memory_order_relaxed) + page_count;
 	size_t page_active_peak = atomic_load_explicit(&global_statistics.page_active_peak, memory_order_relaxed);
@@ -1013,8 +1018,8 @@ page_available_to_free(page_t* page) {
 	page->is_zero = 0;
 	page->next = heap->page_free[page->page_type];
 	heap->page_free[page->page_type] = page;
-	if (++heap->page_free_commit_count[page->page_type] > PAGE_FREE_OVERFLOW)
-		heap_page_free_decommit(heap, page->page_type, PAGE_FREE_DECOMMIT);
+	if (++heap->page_free_commit_count[page->page_type] >= global_page_free_overflow[page->page_type])
+		heap_page_free_decommit(heap, page->page_type, global_page_free_retain[page->page_type]);
 }
 
 static void
@@ -1042,8 +1047,8 @@ page_full_to_free_on_new_heap(page_t* page, heap_t* heap) {
 	atomic_store_explicit(&page->thread_free, 0, memory_order_relaxed);
 	page->next = heap->page_free[page->page_type];
 	heap->page_free[page->page_type] = page;
-	if (++heap->page_free_commit_count[page->page_type] > PAGE_FREE_OVERFLOW)
-		heap_page_free_decommit(heap, page->page_type, PAGE_FREE_DECOMMIT);
+	if (++heap->page_free_commit_count[page->page_type] >= global_page_free_overflow[page->page_type])
+		heap_page_free_decommit(heap, page->page_type, global_page_free_retain[page->page_type]);
 }
 
 static void
@@ -1091,37 +1096,29 @@ page_adopt_thread_free_block_list(page_t* page) {
 
 static NOINLINE void
 page_put_thread_free_block(page_t* page, block_t* block) {
-	unsigned long long prev_thread_free = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
-	uint32_t block_index = page_block_index(page, block);
-	rpmalloc_assert(page_block(page, block_index) == block, "Block pointer is not aligned to start of block");
-	uint32_t list_size = page_block_from_thread_free_list(page, prev_thread_free, &block->next) + 1;
-	uint64_t thread_free = page_block_to_thread_free_list(page, block_index, list_size);
-	while (!atomic_compare_exchange_weak_explicit(&page->thread_free, &prev_thread_free, thread_free,
-	                                              memory_order_relaxed, memory_order_relaxed)) {
-		list_size = page_block_from_thread_free_list(page, prev_thread_free, &block->next) + 1;
-		thread_free = page_block_to_thread_free_list(page, block_index, list_size);
-		wait_spin();
-	}
-	if ((list_size == 1) && page->is_full) {
-		// TODO: Add the page to heap list of potentially available pages
-		// rpmalloc_assert(0, "Not implemented");
-	} else if (list_size >= page->block_count) {
-		// Page is completely freed by multithreaded deallocations, clean up
-		// Safe since the page is marked as full and will never be touched by owning heap
-		rpmalloc_assert(page->is_full, "Mismatch between page full flag and thread free list");
-		heap_t* heap = get_thread_heap();
-		if (heap->id && heap->page_free_commit_count[page->page_type] < page->heap->page_free_commit_count[page->page_type]) {
-			page_full_to_free_on_new_heap(page, heap);
-		} else {
-			heap = page->heap;
-			uintptr_t prev_head = atomic_load_explicit(&heap->page_free_thread[page->page_type], memory_order_relaxed);
-			page->next = (void*)prev_head;
-			while (!atomic_compare_exchange_weak_explicit(&heap->page_free_thread[page->page_type], &prev_head,
-			                                              (uintptr_t)page, memory_order_relaxed,
-			                                              memory_order_relaxed)) {
-				page->next = (void*)prev_head;
-				wait_spin();
-			}
+	atomic_thread_fence(memory_order_acquire);
+	if (page->is_full) {
+		// Page is full, put the block in the heap thread free list instead, otherwise
+		// the heap will not pick up the free blocks until a thread local free happens
+		heap_t* heap = page->heap;
+		uintptr_t prev_head = atomic_load_explicit(&heap->thread_free[page->page_type], memory_order_relaxed);
+		block->next = (void*)prev_head;
+		while (!atomic_compare_exchange_weak_explicit(&heap->thread_free[page->page_type], &prev_head, (uintptr_t)block,
+		                                              memory_order_relaxed, memory_order_relaxed)) {
+			block->next = (void*)prev_head;
+			wait_spin();
+		}
+	} else {
+		unsigned long long prev_thread_free = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
+		uint32_t block_index = page_block_index(page, block);
+		rpmalloc_assert(page_block(page, block_index) == block, "Block pointer is not aligned to start of block");
+		uint32_t list_size = page_block_from_thread_free_list(page, prev_thread_free, &block->next) + 1;
+		uint64_t thread_free = page_block_to_thread_free_list(page, block_index, list_size);
+		while (!atomic_compare_exchange_weak_explicit(&page->thread_free, &prev_thread_free, thread_free,
+		                                              memory_order_relaxed, memory_order_relaxed)) {
+			list_size = page_block_from_thread_free_list(page, prev_thread_free, &block->next) + 1;
+			thread_free = page_block_to_thread_free_list(page, block_index, list_size);
+			wait_spin();
 		}
 	}
 }
@@ -1508,9 +1505,33 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 }
 
 static page_t*
+heap_get_page(heap_t* heap, uint32_t size_class);
+
+static void
+block_deallocate(block_t* block);
+
+static page_t*
 heap_get_page_generic(heap_t* heap, uint32_t size_class) {
-	// Check if there is a free page
 	page_type_t page_type = get_page_type(size_class);
+
+	// Check if there is a free page from multithreaded deallocations
+	uintptr_t block_mt = atomic_load_explicit(&heap->thread_free[page_type], memory_order_relaxed);
+	if (UNEXPECTED(block_mt != 0)) {
+		while (!atomic_compare_exchange_weak_explicit(&heap->thread_free[page_type], &block_mt, 0, memory_order_relaxed,
+		                                              memory_order_relaxed)) {
+			wait_spin();
+		}
+		block_t* block = (void*)block_mt;
+		while (block) {
+			block_t* next_block = block->next;
+			block_deallocate(block);
+			block = next_block;
+		}
+		// Retry after processing deferred thread frees
+		return heap_get_page(heap, size_class);
+	}
+
+	// Check if there is a free page
 	page_t* page = heap->page_free[page_type];
 	if (EXPECTED(page != 0)) {
 		heap->page_free[page_type] = page->next;
@@ -1526,30 +1547,7 @@ heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 	if (heap->id == 0) {
 		// Thread has not yet initialized, assign heap and try again
 		rpmalloc_initialize(0);
-		return heap_get_page_generic(get_thread_heap(), size_class);
-	}
-
-	// Check if there is a free page from multithreaded deallocations
-	uintptr_t page_mt = atomic_load_explicit(&heap->page_free_thread[page_type], memory_order_relaxed);
-	if (UNEXPECTED(page_mt != 0)) {
-		while (!atomic_compare_exchange_weak_explicit(&heap->page_free_thread[page_type], &page_mt, 0,
-		                                              memory_order_relaxed, memory_order_relaxed)) {
-			wait_spin();
-		}
-		page = (void*)page_mt;
-		if (EXPECTED(page != 0)) {
-			heap->page_free[page_type] = page->next;
-			heap_make_free_page_available(heap, size_class, page);
-			rpmalloc_assert(heap->page_free_commit_count[page_type] == 0, "Free committed page count out of sync");
-			page_t* free_page = heap->page_free[page_type];
-			while (free_page) {
-				++heap->page_free_commit_count[page_type];
-				free_page = free_page->next;
-			}
-			if (heap->page_free_commit_count[page->page_type] > PAGE_FREE_OVERFLOW)
-				heap_page_free_decommit(heap, page->page_type, PAGE_FREE_DECOMMIT);
-			return page;
-		}
+		return heap_get_page(get_thread_heap(), size_class);
 	}
 
 	// Fallback path, find or allocate span for given size class
@@ -1792,7 +1790,7 @@ heap_free_all(heap_t* heap) {
 		heap->span_partial[itype] = 0;
 		heap->page_free[itype] = 0;
 		heap->page_free_commit_count[itype] = 0;
-		atomic_store_explicit(&heap->page_free_thread[itype], 0, memory_order_relaxed);
+		atomic_store_explicit(&heap->thread_free[itype], 0, memory_order_relaxed);
 	}
 	for (int itype = 0; itype < 4; ++itype) {
 		span_t* span = heap->span_used[itype];
