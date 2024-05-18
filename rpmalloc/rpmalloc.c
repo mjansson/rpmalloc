@@ -184,16 +184,6 @@ madvise(caddr_t, size_t, int);
 #define SPAN_SIZE (256 * 1024 * 1024)
 #define SPAN_MASK (~((uintptr_t)(SPAN_SIZE - 1)))
 
-//! Threshold number of pages for when free pages are decommitted
-#ifndef PAGE_FREE_OVERFLOW
-#define PAGE_FREE_OVERFLOW 8
-#endif
-
-//! Number of pages to retain when free page threshold overflows
-#ifndef PAGE_FREE_RETAIN
-#define PAGE_FREE_RETAIN 2
-#endif
-
 ////////////
 ///
 /// Utility macros
@@ -535,6 +525,12 @@ static const size_class_t global_size_class[SIZE_CLASS_COUNT] = {
     LCLASS(81920),  LCLASS(98304),  LCLASS(114688), LCLASS(131072), LCLASS(163840), LCLASS(196608), LCLASS(229376),
     LCLASS(262144), LCLASS(327680), LCLASS(393216), LCLASS(458752), LCLASS(524288)};
 
+//! Threshold number of pages for when free pages are decommitted
+static uint32_t global_page_free_overflow[4] = {16, 8, 2, 0};
+
+//! Number of pages to retain when free page threshold overflows
+static uint32_t global_page_free_retain[4] = {4, 2, 1, 0};
+
 //! OS huge page support
 static int os_huge_pages;
 //! OS memory map granularity
@@ -573,34 +569,34 @@ get_thread_id(void) {
 	void* thp = __builtin_thread_pointer();
 	return (uintptr_t)thp;
 #endif
-/*
-#elif (defined(__GNUC__) || defined(__clang__)) && !defined(__CYGWIN__)
-	uintptr_t tid;
-#if defined(__i386__)
-	__asm__("movl %%gs:0, %0" : "=r"(tid) : :);
-#elif defined(__x86_64__)
-#if defined(__MACH__)
-	__asm__("movq %%gs:0, %0" : "=r"(tid) : :);
-#else
-	__asm__("movq %%fs:0, %0" : "=r"(tid) : :);
-#endif
-#elif defined(__arm__)
-	__asm__ volatile("mrc p15, 0, %0, c13, c0, 3" : "=r"(tid));
-#elif defined(__aarch64__)
-#if defined(__MACH__)
-	// tpidr_el0 likely unused, always return 0 on iOS
-	__asm__ volatile("mrs %0, tpidrro_el0" : "=r"(tid));
-#else
-	__asm__ volatile("mrs %0, tpidr_el0" : "=r"(tid));
-#endif
-#else
-#error This platform needs implementation of get_thread_id()
-#endif
-	return tid;
-#else
-#error This platform needs implementation of get_thread_id()
-#endif
-*/
+	/*
+	#elif (defined(__GNUC__) || defined(__clang__)) && !defined(__CYGWIN__)
+	    uintptr_t tid;
+	#if defined(__i386__)
+	    __asm__("movl %%gs:0, %0" : "=r"(tid) : :);
+	#elif defined(__x86_64__)
+	#if defined(__MACH__)
+	    __asm__("movq %%gs:0, %0" : "=r"(tid) : :);
+	#else
+	    __asm__("movq %%fs:0, %0" : "=r"(tid) : :);
+	#endif
+	#elif defined(__arm__)
+	    __asm__ volatile("mrc p15, 0, %0, c13, c0, 3" : "=r"(tid));
+	#elif defined(__aarch64__)
+	#if defined(__MACH__)
+	    // tpidr_el0 likely unused, always return 0 on iOS
+	    __asm__ volatile("mrs %0, tpidrro_el0" : "=r"(tid));
+	#else
+	    __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tid));
+	#endif
+	#else
+	#error This platform needs implementation of get_thread_id()
+	#endif
+	    return tid;
+	#else
+	#error This platform needs implementation of get_thread_id()
+	#endif
+	*/
 }
 
 //! Set the current thread heap
@@ -1022,8 +1018,8 @@ page_available_to_free(page_t* page) {
 	page->is_zero = 0;
 	page->next = heap->page_free[page->page_type];
 	heap->page_free[page->page_type] = page;
-	if (++heap->page_free_commit_count[page->page_type] > PAGE_FREE_OVERFLOW)
-		heap_page_free_decommit(heap, page->page_type, PAGE_FREE_RETAIN);
+	if (++heap->page_free_commit_count[page->page_type] >= global_page_free_overflow[page->page_type])
+		heap_page_free_decommit(heap, page->page_type, global_page_free_retain[page->page_type]);
 }
 
 static void
@@ -1051,8 +1047,8 @@ page_full_to_free_on_new_heap(page_t* page, heap_t* heap) {
 	atomic_store_explicit(&page->thread_free, 0, memory_order_relaxed);
 	page->next = heap->page_free[page->page_type];
 	heap->page_free[page->page_type] = page;
-	if (++heap->page_free_commit_count[page->page_type] > PAGE_FREE_OVERFLOW)
-		heap_page_free_decommit(heap, page->page_type, PAGE_FREE_RETAIN);
+	if (++heap->page_free_commit_count[page->page_type] >= global_page_free_overflow[page->page_type])
+		heap_page_free_decommit(heap, page->page_type, global_page_free_retain[page->page_type]);
 }
 
 static void
