@@ -187,6 +187,13 @@ typedef struct rpmalloc_config_t {
 	//  when process exits, but if using rpmalloc in a dynamic library you might want to unmap
 	//  all pages when the dynamic library unloads to avoid process memory leaks and bloat.
 	int unmap_on_finalize;
+#if defined(__linux__) || defined(__ANDROID__)
+	///! Allows to disable the Transparent Huge Page feature on Linux on a process basis,
+	///  rather than enabling/disabling system-wise (done via /sys/kernel/mm/transparent_hugepage/enabled).
+	///  It can possibly improve performance and reduced allocation overhead in some contexts, albeit
+	///  THP is usually enabled by default.
+	int disable_thp;
+#endif
 } rpmalloc_config_t;
 
 //! Initialize allocator
