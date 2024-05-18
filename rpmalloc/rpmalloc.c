@@ -186,9 +186,9 @@ madvise(caddr_t, size_t, int);
 #define PAGE_FREE_OVERFLOW 16
 #endif
 
-//! Number of pages to decommit when free page threshold overflows
-#ifndef PAGE_FREE_DECOMMIT
-#define PAGE_FREE_DECOMMIT 8
+//! Number of pages to retain when free page threshold overflows
+#ifndef PAGE_FREE_RETAIN
+#define PAGE_FREE_RETAIN 8
 #endif
 
 ////////////
@@ -1014,7 +1014,7 @@ page_available_to_free(page_t* page) {
 	page->next = heap->page_free[page->page_type];
 	heap->page_free[page->page_type] = page;
 	if (++heap->page_free_commit_count[page->page_type] > PAGE_FREE_OVERFLOW)
-		heap_page_free_decommit(heap, page->page_type, PAGE_FREE_DECOMMIT);
+		heap_page_free_decommit(heap, page->page_type, PAGE_FREE_RETAIN);
 }
 
 static void
@@ -1043,7 +1043,7 @@ page_full_to_free_on_new_heap(page_t* page, heap_t* heap) {
 	page->next = heap->page_free[page->page_type];
 	heap->page_free[page->page_type] = page;
 	if (++heap->page_free_commit_count[page->page_type] > PAGE_FREE_OVERFLOW)
-		heap_page_free_decommit(heap, page->page_type, PAGE_FREE_DECOMMIT);
+		heap_page_free_decommit(heap, page->page_type, PAGE_FREE_RETAIN);
 }
 
 static void
@@ -1508,6 +1508,9 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 }
 
 static page_t*
+heap_get_page(heap_t* heap, uint32_t size_class);
+
+static page_t*
 heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 	// Check if there is a free page
 	page_type_t page_type = get_page_type(size_class);
@@ -1526,7 +1529,7 @@ heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 	if (heap->id == 0) {
 		// Thread has not yet initialized, assign heap and try again
 		rpmalloc_initialize(0);
-		return heap_get_page_generic(get_thread_heap(), size_class);
+		return heap_get_page(get_thread_heap(), size_class);
 	}
 
 	// Check if there is a free page from multithreaded deallocations
@@ -1547,7 +1550,7 @@ heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 				free_page = free_page->next;
 			}
 			if (heap->page_free_commit_count[page->page_type] > PAGE_FREE_OVERFLOW)
-				heap_page_free_decommit(heap, page->page_type, PAGE_FREE_DECOMMIT);
+				heap_page_free_decommit(heap, page->page_type, PAGE_FREE_RETAIN);
 			return page;
 		}
 	}
