@@ -569,6 +569,11 @@ static inline uintptr_t
 get_thread_id(void) {
 #if defined(_WIN32)
 	return (uintptr_t)((void*)NtCurrentTeb());
+#else
+	void* thp = __builtin_thread_pointer();
+	return (uintptr_t)thp;
+#endif
+/*
 #elif (defined(__GNUC__) || defined(__clang__)) && !defined(__CYGWIN__)
 	uintptr_t tid;
 #if defined(__i386__)
@@ -595,6 +600,7 @@ get_thread_id(void) {
 #else
 #error This platform needs implementation of get_thread_id()
 #endif
+*/
 }
 
 //! Set the current thread heap
@@ -710,7 +716,7 @@ os_mmap(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
 #if ENABLE_DECOMMIT
 	DWORD do_commit = 0;
 #else
-	DWORD do_commit = 1;
+	DWORD do_commit = MEM_COMMIT;
 #endif
 	void* ptr =
 	    VirtualAlloc(0, map_size, (os_huge_pages ? MEM_LARGE_PAGES : 0) | MEM_RESERVE | do_commit, PAGE_READWRITE);
