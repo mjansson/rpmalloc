@@ -30,6 +30,9 @@
 #if __has_warning("-Wstatic-in-inline")
 #pragma clang diagnostic ignored "-Wstatic-in-inline"
 #endif
+#if __has_warning("-Wunsafe-buffer-usage")
+#pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
+#endif
 #elif defined(__GNUC__)
 #pragma GCC diagnostic ignored "-Wunused-macros"
 #pragma GCC diagnostic ignored "-Wunused-function"
