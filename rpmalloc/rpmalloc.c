@@ -186,12 +186,12 @@ madvise(caddr_t, size_t, int);
 
 //! Threshold number of pages for when free pages are decommitted
 #ifndef PAGE_FREE_OVERFLOW
-#define PAGE_FREE_OVERFLOW 16
+#define PAGE_FREE_OVERFLOW 8
 #endif
 
 //! Number of pages to retain when free page threshold overflows
 #ifndef PAGE_FREE_RETAIN
-#define PAGE_FREE_RETAIN 8
+#define PAGE_FREE_RETAIN 2
 #endif
 
 ////////////
