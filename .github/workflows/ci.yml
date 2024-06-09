@@ -1,7 +1,7 @@
 name: Windows & Linux & macOS
 on:
   pull_request:
-    branches: [ patch-main ]
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
