@@ -25,8 +25,8 @@ jobs:
           sudo apt-get install -y gcc-multilib g++-multilib valgrind libc6-dbg libc6-dbg:i386
       - name: Configure & build
         run: |
-            copy /Y .github/CMakeLists.root CMakeLists.txt
-            copy /Y .github/CMakeLists.test test/CMakeLists.txt
+            cp -f .github/CMakeLists.root CMakeLists.txt
+            cp -f .github/CMakeLists.test test/CMakeLists.txt
             cd build
             cmake -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON -DCMAKE_C_FLAGS=${{ matrix.flags }} ..
             cmake --build .
@@ -70,8 +70,8 @@ jobs:
           brew install cmake
       - name: Configure & build
         run: |
-            copy /Y .github/CMakeLists.root CMakeLists.txt
-            copy /Y .github/CMakeLists.test test/CMakeLists.txt
+            cp -f .github/CMakeLists.root CMakeLists.txt
+            cp -f .github/CMakeLists.test test/CMakeLists.txt
             cd build
             cmake -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON ..
             cmake --build .
