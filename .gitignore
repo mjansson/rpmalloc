@@ -231,3 +231,11 @@ coverallsreport.json
 codecov.json
 codecovreport.json
 benchmark-*.txt
+build/*.vcxproj
+build/*.vcxproj.filters
+build/*.cmake
+build/*.txt
+build/*.sln
+build/CMakeFiles/
+build/test/
+built/

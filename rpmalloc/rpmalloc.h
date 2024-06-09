@@ -368,6 +368,97 @@ rpmalloc_get_heap_for_ptr(void* ptr);
 
 #endif
 
+/* Public API qualifier. */
+#ifndef C_API
+#   define C_API extern
+#endif
+
+#if defined(_WIN32) && defined(_MSC_VER)
+#include <windows.h>
+typedef DWORD tls_t;
+/* see TLS_MAXIMUM_AVAILABLE */
+#define EMULATED_THREADS_TSS_DTOR_SLOTNUM 1088
+#elif defined(__unix__) || defined(__unix)
+#include <pthread.h>
+typedef pthread_key_t tls_t;
+#else
+#error Not supported on this platform.
+#endif
+typedef void (*tls_dtor_t)(void *);
+
+C_API int rpmalloc_tls_create(tls_t *key, tls_dtor_t dtor);
+C_API void rpmalloc_tls_delete(tls_t key);
+C_API void *rpmalloc_tls_get(tls_t key);
+C_API int rpmalloc_tls_set(tls_t key, void *val);
+
+#ifndef thread_storage
+#define thread_storage_get(type, var)                   \
+        type* var(void) {                               \
+            int is_main = 0;                            \
+            if (rpmalloc_##var##_tls == 0) {            \
+                rpmalloc_##var##_tls = sizeof(type);    \
+                is_main = 1;                            \
+                rpmalloc_initialize();                  \
+                if (rpmalloc_tls_create(&rpmalloc_##var##_tss, var##_free) == 0)    \
+                    atexit(var##_delete);               \
+                else                                    \
+                    goto err;                           \
+            }                                           \
+            void *ptr = rpmalloc_tls_get(rpmalloc_##var##_tss); \
+            if (ptr == NULL) {                          \
+                if (!is_main)                           \
+                    rpmalloc_thread_initialize();       \
+                ptr = malloc(rpmalloc_##var##_tls);     \
+                if (ptr == NULL)                        \
+                    goto err;                           \
+                if ((rpmalloc_tls_set(rpmalloc_##var##_tss, ptr)) != 0)	\
+                    goto err;                           \
+            }                                           \
+            return (type *)ptr;                         \
+        err:                                            \
+            return NULL;                                \
+        }
+
+#define thread_storage_free(var)                \
+        void var##_free(void *ptr) {            \
+            if (ptr != NULL) {                  \
+                free(ptr);                      \
+                rpmalloc_thread_finalize(1);    \
+            }                                   \
+        }
+
+#define thread_storage_delete(type, var)    \
+        void var##_delete(void) {           \
+            if(rpmalloc_##var##_tls != 0) { \
+                void *ptr = rpmalloc_tls_get(rpmalloc_##var##_tss);  \
+                if (ptr != NULL)            \
+                    free(ptr);            \
+                rpmalloc_finalize();        \
+                rpmalloc_tls_delete(rpmalloc_##var##_tss);   \
+                rpmalloc_##var##_tss = 0;   \
+                rpmalloc_##var##_tls = 0;   \
+            }                               \
+        }
+
+/* Initialize and setup thread local storage `var` name as functions. */
+#define thread_storage(type, var)           \
+        int rpmalloc_##var##_tls = 0;       \
+        tls_t rpmalloc_##var##_tss = 0;     \
+        thread_storage_free(var)            \
+        thread_storage_delete(type, var)    \
+        thread_storage_get(type, var)
+
+#define thread_storage_proto(type, var, prefix) \
+        prefix int rpmalloc_##var##_tls;        \
+        prefix tls_t rpmalloc_##var##_tss;      \
+        prefix type* var(void);                 \
+        prefix void var##_free(void *ptr);      \
+        prefix void var##_delete(void);
+
+/* Creates a compile time thread local storage variable */
+#define thread_storage_create(type, var) thread_storage_proto(type, var, C_API)
+#endif /* thread_storage */
+
 #ifdef __cplusplus
 }
 #endif
