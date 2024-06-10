@@ -239,3 +239,4 @@ build/*.sln
 build/CMakeFiles/
 build/test/
 built/
+build/Makefile
