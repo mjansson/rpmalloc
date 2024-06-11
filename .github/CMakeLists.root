@@ -8,12 +8,18 @@ project(
     LANGUAGES C
 )
 
-set(C_STANDARD 89)
+set(CMAKE_C_VISIBILITY_PRESET hidden)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_STANDARD 90)
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
 include(CMakeDependentOption)
 include(GNUInstallDirs)
 include(CheckCCompilerFlag)
 include(CMakePackageConfigHelpers)
+include(CTest)
 
 message("Generated with config types: ${CMAKE_CONFIGURATION_TYPES}")
 
