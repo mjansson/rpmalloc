@@ -286,59 +286,41 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 #define EXPECTED(x) (x)
 #define UNEXPECTED(x) (x)
 
-static struct impl_tls_dtor_entry {
-    tls_t key;
-    tls_dtor_t dtor;
-} impl_tls_dtor_tbl[EMULATED_THREADS_TSS_DTOR_SLOTNUM];
-
-static int impl_tls_dtor_register(tls_t key, tls_dtor_t dtor) {
-    int i;
-    for (i = 0; i < EMULATED_THREADS_TSS_DTOR_SLOTNUM; i++) {
-        if (!impl_tls_dtor_tbl[i].dtor)
-            break;
-    }
-    if (i == EMULATED_THREADS_TSS_DTOR_SLOTNUM)
-        return 1;
-    impl_tls_dtor_tbl[i].key = key;
-    impl_tls_dtor_tbl[i].dtor = dtor;
-    return 0;
-}
-
-static void impl_tls_dtor_invoke() {
-    int i;
-    for (i = 0; i < EMULATED_THREADS_TSS_DTOR_SLOTNUM; i++) {
-        if (impl_tls_dtor_tbl[i].dtor) {
-            void *val = rpmalloc_tls_get(impl_tls_dtor_tbl[i].key);
-            if (val)
-                (impl_tls_dtor_tbl[i].dtor)(val);
-        }
-    }
-}
-
-int rpmalloc_tls_create(tls_t *key, tls_dtor_t dtor) {
+int rpmalloc_tls_create(tls_t key, tls_dtor_t dtor) {
     if (!key) return -1;
-    *key = TlsAlloc();
-    if (dtor) {
-        if (impl_tls_dtor_register(*key, dtor)) {
-            TlsFree(*key);
-            return -1;
-        }
-    }
-    return (*key != 0xFFFFFFFF) ? 0 : -1;
+
+    key->tss_key = TlsAlloc();
+#if defined(_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
+    key->fls_key = FlsAlloc(dtor);
+#else
+    key->fls_key = 0;
+#endif
+    key->terminated = 0;
+    return (key->tss_key != 0xFFFFFFFF) ? 0 : -1;
 }
 
-FORCEINLINE void rpmalloc_tls_delete(tls_t key) {
-    TlsFree(key);
+void rpmalloc_tls_delete(tls_t key) {
+    if (key->terminated == 0) {
+        key->terminated = 1;
+        TlsFree(key->tss_key);
+        if (key->fls_key != 0)
+            FlsFree(key->fls_key);
+
+        key->fls_key = 0;
+        key->tss_key = 0;
+    }
 }
 
 FORCEINLINE void *rpmalloc_tls_get(tls_t key) {
-    return TlsGetValue(key);
+    return TlsGetValue(key->tss_key);
 }
 
 FORCEINLINE int rpmalloc_tls_set(tls_t key, void *val) {
-    return TlsSetValue(key, val) ? 0 : -1;
+#if defined(_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
+    FlsSetValue(key->fls_key, val);
+#endif
+    return TlsSetValue(key->tss_key, val) ? 0 : -1;
 }
-
 #else
 
 #include <stdatomic.h>
@@ -365,21 +347,22 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 #define EXPECTED(x) __builtin_expect((x), 1)
 #define UNEXPECTED(x) __builtin_expect((x), 0)
 
-int rpmalloc_tls_create(tls_t *key, tls_dtor_t dtor) {
+int rpmalloc_tls_create(tls_t key, tls_dtor_t dtor) {
     if (!key) return -1;
-    return (pthread_key_create(key, dtor) == 0) ? 0 : -1;
+
+    return (pthread_key_create(&key->tss_key, dtor) == 0) ? 0 : -1;
 }
 
 FORCEINLINE void rpmalloc_tls_delete(tls_t key) {
-    pthread_key_delete(key);
+    pthread_key_delete(key->tss_key);
 }
 
 FORCEINLINE void *rpmalloc_tls_get(tls_t key) {
-    return pthread_getspecific(key);
+    return pthread_getspecific(key->tss_key);
 }
 
 FORCEINLINE int rpmalloc_tls_set(tls_t key, void *val) {
-    return (pthread_setspecific(key, val) == 0) ? 0 : -1;
+    return (pthread_setspecific(key->tss_key, val) == 0) ? 0 : -1;
 }
 #endif
 
@@ -933,7 +916,6 @@ _rpmalloc_spin(void) {
 #if defined(_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
 static void NTAPI
 _rpmalloc_thread_destructor(void* value) {
-    impl_tls_dtor_invoke();
 #if ENABLE_OVERRIDE
 	// If this is called on main thread it means rpmalloc_finalize
 	// has not been called and shutdown is forced (through _exit) or unclean
