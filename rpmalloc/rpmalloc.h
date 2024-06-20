@@ -380,14 +380,12 @@ typedef struct tls_s {
     DWORD fls_key;
     int terminated;
 } tls_t[1];
-#elif defined(__unix__) || defined(__unix)
+#else
 #include <pthread.h>
 typedef struct tls_s {
     pthread_key_t tss_key;
     int terminated;
 } tls_t[1];
-#else
-#error Not supported on this platform.
 #endif
 typedef void (*tls_dtor_t)(void *);
 
