@@ -380,14 +380,15 @@ typedef struct tls_s {
     DWORD fls_key;
     int terminated;
 } tls_t[1];
+typedef VOID (NTAPI *tls_dtor_t)( _In_ PVOID lpFlsData);
 #else
 #include <pthread.h>
 typedef struct tls_s {
     pthread_key_t tss_key;
     int terminated;
 } tls_t[1];
-#endif
 typedef void (*tls_dtor_t)(void *);
+#endif
 
 C_API int rpmalloc_tls_create(tls_t key, tls_dtor_t dtor);
 C_API void rpmalloc_tls_delete(tls_t key);
@@ -402,7 +403,7 @@ C_API int rpmalloc_tls_set(tls_t key, void *val);
                 rpmalloc_##var##_tls = sizeof(type);    \
                 is_main = 1;                            \
                 rpmalloc_initialize();                  \
-                if (rpmalloc_tls_create(rpmalloc_##var##_tss, var##_free) == 0)    \
+                if (rpmalloc_tls_create(rpmalloc_##var##_tss, (tls_dtor_t)var##_free) == 0)    \
                     atexit(var##_delete);               \
                 else                                    \
                     goto err;                           \

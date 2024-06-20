@@ -291,7 +291,7 @@ int rpmalloc_tls_create(tls_t key, tls_dtor_t dtor) {
 
     key->tss_key = TlsAlloc();
 #if defined(_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
-    key->fls_key = FlsAlloc((PFLS_CALLBACK_FUNCTION)dtor);
+    key->fls_key = FlsAlloc(dtor);
 #else
     key->fls_key = 0;
 #endif
