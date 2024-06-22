@@ -285,27 +285,63 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 
 #define EXPECTED(x) (x)
 #define UNEXPECTED(x) (x)
+static struct impl_tls_dtor_entry {
+    tls_t key;
+    tls_dtor_t dtor;
+} impl_tls_dtor_tbl[EMULATED_THREADS_TSS_DTOR_SLOTNUM];
+
+static int impl_tls_dtor_register(tls_t key, tls_dtor_t dtor) {
+    int i;
+    for (i = 0; i < EMULATED_THREADS_TSS_DTOR_SLOTNUM; i++) {
+        if (!impl_tls_dtor_tbl[i].dtor)
+            break;
+    }
+
+    if (i == EMULATED_THREADS_TSS_DTOR_SLOTNUM)
+        return 1;
+
+    impl_tls_dtor_tbl[i].key = key;
+    impl_tls_dtor_tbl[i].dtor = dtor;
+
+    return 0;
+}
+
+static void impl_tls_dtor_invoke() {
+    int i;
+    for (i = 0; i < EMULATED_THREADS_TSS_DTOR_SLOTNUM; i++) {
+        if (impl_tls_dtor_tbl[i].dtor) {
+            void *val = rpmalloc_tls_get(impl_tls_dtor_tbl[i].key);
+            if (val) {
+                (impl_tls_dtor_tbl[i].dtor)(val);
+            }
+        }
+    }
+}
 
 int rpmalloc_tls_create(tls_t *key, tls_dtor_t dtor) {
     if (!key) return -1;
 
-    *key = FlsAlloc(dtor);
+    *key = TlsAlloc();
+    if (dtor) {
+        if (impl_tls_dtor_register(*key, dtor)) {
+            TlsFree(*key);
+            return -1;
+        }
+    }
+
     return (*key != 0xFFFFFFFF) ? 0 : -1;
 }
 
-void rpmalloc_tls_delete(tls_t key) {
-    if (key != 0) {
-        FlsFree(key);
-        key = 0;
-    }
+FORCEINLINE void rpmalloc_tls_delete(tls_t key) {
+    TlsFree(key);
 }
 
 FORCEINLINE void *rpmalloc_tls_get(tls_t key) {
-    return FlsGetValue(key);
+    return TlsGetValue(key);
 }
 
 FORCEINLINE int rpmalloc_tls_set(tls_t key, void *val) {
-    return FlsSetValue(key, val) ? 0 : -1;
+    return TlsSetValue(key, val) ? 0 : -1;
 }
 #else
 
@@ -902,8 +938,9 @@ _rpmalloc_spin(void) {
 #if defined(_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
 static void NTAPI
 _rpmalloc_thread_destructor(void* value) {
+    impl_tls_dtor_invoke();
 #if ENABLE_OVERRIDE
-	// If this is called on main thread it means rpmalloc_finalize
+    // If this is called on main thread it means rpmalloc_finalize
 	// has not been called and shutdown is forced (through _exit) or unclean
 	if (get_thread_id() == _rpmalloc_main_thread_id)
 		return;

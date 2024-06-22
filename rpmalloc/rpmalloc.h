@@ -407,7 +407,7 @@ C_API int rpmalloc_tls_set(tls_t key, void *val);
             if (ptr == NULL) {                          \
                 if (!is_main)                           \
                     rpmalloc_thread_initialize();       \
-                ptr = malloc(rpmalloc_##var##_tls);     \
+                ptr = rpmalloc(rpmalloc_##var##_tls);     \
                 if (ptr == NULL)                        \
                     goto err;                           \
                 if ((rpmalloc_tls_set(rpmalloc_##var##_tss, ptr)) != 0)	\
@@ -421,7 +421,7 @@ C_API int rpmalloc_tls_set(tls_t key, void *val);
 #define thread_storage_free(var)                \
         void var##_free(void *ptr) {            \
             if (ptr != NULL) {                  \
-                free(ptr);                      \
+                rpfree(ptr);                      \
                 rpmalloc_thread_finalize(1);    \
             }                                   \
         }
@@ -430,7 +430,7 @@ C_API int rpmalloc_tls_set(tls_t key, void *val);
         void var##_delete(void) {           \
             if(rpmalloc_##var##_tls != 0) { \
                 rpmalloc_##var##_tls = 0;   \
-                free(rpmalloc_tls_get(rpmalloc_##var##_tss));    \
+                rpfree(rpmalloc_tls_get(rpmalloc_##var##_tss));    \
                 rpmalloc_finalize();        \
                 rpmalloc_tls_delete(rpmalloc_##var##_tss);   \
                 rpmalloc_##var##_tss = 0;   \
