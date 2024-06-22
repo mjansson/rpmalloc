@@ -286,40 +286,26 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 #define EXPECTED(x) (x)
 #define UNEXPECTED(x) (x)
 
-int rpmalloc_tls_create(tls_t key, tls_dtor_t dtor) {
+int rpmalloc_tls_create(tls_t *key, tls_dtor_t dtor) {
     if (!key) return -1;
 
-    key->tss_key = TlsAlloc();
-#if defined(_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
-    key->fls_key = FlsAlloc(dtor);
-#else
-    key->fls_key = 0;
-#endif
-    key->terminated = 0;
-    return (key->tss_key != 0xFFFFFFFF) ? 0 : -1;
+    *key = FlsAlloc(dtor);
+    return (*key != 0xFFFFFFFF) ? 0 : -1;
 }
 
 void rpmalloc_tls_delete(tls_t key) {
-    if (key->terminated == 0) {
-        key->terminated = 1;
-        TlsFree(key->tss_key);
-        if (key->fls_key != 0)
-            FlsFree(key->fls_key);
-
-        key->fls_key = 0;
-        key->tss_key = 0;
+    if (key != 0) {
+        FlsFree(key);
+        key = 0;
     }
 }
 
 FORCEINLINE void *rpmalloc_tls_get(tls_t key) {
-    return TlsGetValue(key->tss_key);
+    return FlsGetValue(key);
 }
 
 FORCEINLINE int rpmalloc_tls_set(tls_t key, void *val) {
-#if defined(_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
-    FlsSetValue(key->fls_key, val);
-#endif
-    return TlsSetValue(key->tss_key, val) ? 0 : -1;
+    return FlsSetValue(key, val) ? 0 : -1;
 }
 #else
 
@@ -347,22 +333,22 @@ static FORCEINLINE int     atomic_cas_ptr(atomicptr_t* dst, void* val, void* ref
 #define EXPECTED(x) __builtin_expect((x), 1)
 #define UNEXPECTED(x) __builtin_expect((x), 0)
 
-int rpmalloc_tls_create(tls_t key, tls_dtor_t dtor) {
+int rpmalloc_tls_create(tls_t *key, tls_dtor_t dtor) {
     if (!key) return -1;
 
-    return (pthread_key_create(&key->tss_key, dtor) == 0) ? 0 : -1;
+    return (pthread_key_create(key, dtor) == 0) ? 0 : -1;
 }
 
 FORCEINLINE void rpmalloc_tls_delete(tls_t key) {
-    pthread_key_delete(key->tss_key);
+    pthread_key_delete(key);
 }
 
 FORCEINLINE void *rpmalloc_tls_get(tls_t key) {
-    return pthread_getspecific(key->tss_key);
+    return pthread_getspecific(key);
 }
 
 FORCEINLINE int rpmalloc_tls_set(tls_t key, void *val) {
-    return (pthread_setspecific(key->tss_key, val) == 0) ? 0 : -1;
+    return (pthread_setspecific(key, val) == 0) ? 0 : -1;
 }
 #endif
 
