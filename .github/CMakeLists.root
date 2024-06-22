@@ -4,7 +4,7 @@ project(
     rpmalloc
     VERSION 1.4.6
     DESCRIPTION "General Purpose Memory Allocator"
-    HOMEPAGE_URL "https://github.com/zelang-dev/rpmalloc"
+    HOMEPAGE_URL "https://github.com/mjansson/rpmalloc"
     LANGUAGES C
 )
 
