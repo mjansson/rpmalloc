@@ -863,7 +863,7 @@ static inline uintptr_t
 get_thread_id(void) {
 #if defined(_WIN32)
 	return (uintptr_t)((void*)NtCurrentTeb());
-#elif (defined(__GNUC__) || defined(__clang__)) && !defined(__CYGWIN__)
+#else
 	uintptr_t tid;
 #  if defined(__i386__)
 	__asm__("movl %%gs:0, %0" : "=r" (tid) : : );
@@ -883,11 +883,9 @@ get_thread_id(void) {
 	__asm__ volatile ("mrs %0, tpidr_el0" : "=r" (tid));
 #    endif
 #  else
-#    error This platform needs implementation of get_thread_id()
+    tid = (uintptr_t)pthread_self();
 #  endif
 	return tid;
-#else
-#    error This platform needs implementation of get_thread_id()
 #endif
 }
 
