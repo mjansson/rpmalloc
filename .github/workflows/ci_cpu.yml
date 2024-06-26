@@ -1,0 +1,53 @@
+name: riscv64, s390x, armv7, aarch64, ppc64le
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-qemu:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: arm
+            arch: armv7
+          - target: aarch64
+            arch: aarch64
+          - target: ppc64v2
+            arch: ppc64le
+          - target: riscv64
+            arch: riscv64
+          - target: s390x
+            arch: s390x
+    steps:
+      - uses: actions/checkout@v4
+      - uses: uraimo/run-on-arch-action@v2
+        with:
+          arch: ${{ matrix.arch }}
+          distro:  ubuntu_latest
+          githubToken: ${{ github.token }}
+          setup: |
+            mkdir -p "${PWD}/artifacts"
+          install: |
+            apt-get update -q -y
+            apt-get install -q -y --no-install-recommends cmake build-essential
+          env: |
+            # Valgrind on arm will fail if the stack size is larger than 8MB.
+            # Set QEMUs stack size to 8MB since Github runners use 16MB default.
+            QEMU_STACK_SIZE: 8388608
+          run: |
+            cp -f .github/CMakeLists.root CMakeLists.txt
+            cp -f .github/CMakeLists.test test/CMakeLists.txt
+            mkdir build
+            cd build
+            cmake -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON ..
+            cmake --build .
+            cd ../build
+            ./main_test
+      - name: Show the artifact
+        run: |
+          ls -al "${PWD}/artifacts"

@@ -1,0 +1,82 @@
+name: Windows & Ubuntu & Apple macOS
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-ubuntu:
+    name: Linux ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: amd64
+            flags: -m64
+          - target: x86
+            flags: -m32
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update -q -y
+          sudo apt-get install -y gcc-multilib g++-multilib valgrind libc6-dbg libc6-dbg:i386
+      - name: Configure & build
+        run: |
+            cp -f .github/CMakeLists.root CMakeLists.txt
+            cp -f .github/CMakeLists.test test/CMakeLists.txt
+            cd build
+            cmake -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON -DCMAKE_C_FLAGS=${{ matrix.flags }} ..
+            cmake --build .
+      - name: Run test
+        run: |
+            cd build
+            ./main_test
+
+  build-windows:
+    name: Windows (${{ matrix.arch }})
+    runs-on: windows-2019
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, Win32]
+    steps:
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch }}
+      - uses: actions/checkout@v4
+      - name: Configure & build
+        shell: cmd
+        run: |
+            copy /Y .github\CMakeLists.root CMakeLists.txt
+            copy /Y .github\CMakeLists.test test\CMakeLists.txt
+            cd build
+            cmake .. -D BUILD_TESTING=ON -A ${{ matrix.arch }}
+            cmake --build . --config Debug
+      - name: Run test
+        shell: cmd
+        run: |
+            cd build\Debug
+            .\main_test.exe
+
+  build-macos:
+    name: macOS
+    runs-on: macos-11
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup
+        run: |
+          brew install cmake
+      - name: Configure & build
+        run: |
+            cp -f .github/CMakeLists.root CMakeLists.txt
+            cp -f .github/CMakeLists.test test/CMakeLists.txt
+            cd build
+            cmake -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON ..
+            cmake --build .
+      - name: Run test examples
+        run: |
+            cd build
+            ./main_test
