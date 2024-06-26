@@ -48,6 +48,7 @@ jobs:
           arch: ${{ matrix.arch }}
       - uses: actions/checkout@v4
       - name: Configure & build
+        shell: cmd
         run: |
             copy /Y .github\CMakeLists.root CMakeLists.txt
             copy /Y .github\CMakeLists.test test\CMakeLists.txt
