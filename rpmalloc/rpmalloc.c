@@ -109,10 +109,6 @@ madvise(caddr_t, size_t, int);
 #define ARCH_32BIT 1
 #endif
 
-#if !defined(__has_builtin)
-#define __has_builtin(b) 0
-#endif
-
 #define pointer_offset(ptr, ofs) (void*)((char*)(ptr) + (ptrdiff_t)(ofs))
 #define pointer_diff(first, second) (ptrdiff_t)((const char*)(first) - (const char*)(second))
 
@@ -210,7 +206,9 @@ madvise(caddr_t, size_t, int);
 	} while (0)
 #endif
 
-#if __has_builtin(__builtin_assume)
+#if defined(_MSC_VER)
+#define rpmalloc_assume(cond) __assume(cond)
+#elif defined(__clang__) && __has_builtin(__builtin_assume)
 #define rpmalloc_assume(cond) __builtin_assume(cond)
 #elif defined(__GNUC__)
 #define rpmalloc_assume(cond)           \
@@ -218,8 +216,6 @@ madvise(caddr_t, size_t, int);
 		if (!__builtin_expect(cond, 0)) \
 			__builtin_unreachable();    \
 	} while (0)
-#elif defined(_MSC_VER)
-#define rpmalloc_assume(cond) __assume(cond)
 #else
 #define rpmalloc_assume(cond) 0
 #endif
@@ -305,8 +301,9 @@ wait_spin(void) {
 #define UNEXPECTED(x) x
 
 #endif
-#if defined(__GNUC__) || defined(__clang__)
 
+#if defined(__GNUC__) || defined(__clang__)
+#ifdef __has_builtin
 #if __has_builtin(__builtin_memcpy_inline)
 #define memcpy_const(x, y, s) __builtin_memcpy_inline(x, y, s)
 #else
@@ -326,7 +323,10 @@ wait_spin(void) {
 		memset(x, y, s);                                                                                        \
 	} while (0)
 #endif
-#else
+#endif
+#endif
+
+#ifndef memcpy_const
 #define memcpy_const(x, y, s) memcpy(x, y, s)
 #define memset_const(x, y, s) memset(x, y, s)
 #endif
