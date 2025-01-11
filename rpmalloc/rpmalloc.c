@@ -745,17 +745,20 @@ static int32_t _huge_pages_peak;
 #if ((defined(__APPLE__) || defined(__HAIKU__)) && ENABLE_PRELOAD) || defined(__TINYC__)
 static pthread_key_t _memory_thread_heap;
 #else
-#  ifdef _MSC_VER
-#    define _Thread_local __declspec(thread)
+#  if defined(_MSC_VER) && !defined(__clang__)
 #    define TLS_MODEL
+#    define _Thread_local __declspec(thread)
+#  elif defined(__ANDROID__)
+#    if __ANDROID_API__ >= 29 && defined(__NDK_MAJOR__) && __NDK_MAJOR__ >= 26
+#      define TLS_MODEL __attribute__((tls_model("local-dynamic")))
+#    else
+#      define TLS_MODEL
+#    endif
 #  else
 #    ifndef __HAIKU__
 #      define TLS_MODEL __attribute__((tls_model("initial-exec")))
 #    else
 #      define TLS_MODEL
-#    endif
-#    if !defined(__clang__) && defined(__GNUC__)
-#      define _Thread_local __thread
 #    endif
 #  endif
 static _Thread_local heap_t* _memory_thread_heap TLS_MODEL;
