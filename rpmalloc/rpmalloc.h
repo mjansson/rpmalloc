@@ -353,7 +353,7 @@ rpmalloc_heap_calloc(rpmalloc_heap_t* heap, size_t num, size_t size) RPMALLOC_AT
 //  also be strictly less than the span size (default 64KiB).
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
 rpmalloc_heap_aligned_calloc(rpmalloc_heap_t* heap, size_t alignment, size_t num, size_t size) RPMALLOC_ATTRIB_MALLOC
-    RPMALLOC_ATTRIB_ALLOC_SIZE2(2, 3);
+    RPMALLOC_ATTRIB_ALLOC_SIZE2(3, 4);
 
 //! Reallocate the given block to at least the given size. The memory block MUST be allocated
 //  by the same heap given to this function.
