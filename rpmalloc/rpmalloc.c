@@ -2028,7 +2028,11 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 	if (global_config.enable_huge_pages) {
 #if PLATFORM_WINDOWS
 		HANDLE token = 0;
+#if WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_APP | WINAPI_PARTITION_SYSTEM)
 		size_t large_page_minimum = GetLargePageMinimum();
+#else
+		size_t large_page_minimum = 2 * 1024 * 1024;
+#endif
 		if (large_page_minimum)
 			OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token);
 		if (token) {
