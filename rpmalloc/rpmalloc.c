@@ -549,7 +549,8 @@ static size_t os_page_size;
 #define TLS_MODEL
 #define _Thread_local __declspec(thread)
 #elif defined(__ANDROID__)
-#if __ANDROID_API__ >= 29 && ((defined(__clang__) && (__clang_major__ >= 17)) || (defined(__NDK_MAJOR__) && (__NDK_MAJOR__ >= 26)))
+#if __ANDROID_API__ >= 29 && \
+    ((defined(__clang__) && (__clang_major__ >= 17)) || (defined(__NDK_MAJOR__) && (__NDK_MAJOR__ >= 26)))
 #define TLS_MODEL __attribute__((tls_model("local-dynamic")))
 #else
 #define TLS_MODEL
@@ -571,8 +572,9 @@ static inline uintptr_t
 get_thread_id(void) {
 #if defined(_WIN32)
 	return (uintptr_t)((void*)NtCurrentTeb());
-#elif !defined(__APPLE__) && !defined(__CYGWIN__) && \
-	(defined(__aarch64__) || defined(__x86_64__))  // Unsure of other archs, needs testing
+#elif !defined(__APPLE__) && !defined(__CYGWIN__) &&                                                \
+    ((defined(__clang__) && (__clang_major__ >= 7)) || ((defined(__GNUC__) && (__GNUC__ >= 5)))) && \
+    (defined(__aarch64__) || defined(__x86_64__))  // Unsure of other archs, needs testing
 	void* thp = __builtin_thread_pointer();
 	return (uintptr_t)thp;
 #else
