@@ -549,7 +549,7 @@ static size_t os_page_size;
 #define TLS_MODEL
 #define _Thread_local __declspec(thread)
 #elif defined(__ANDROID__)
-#if __ANDROID_API__ >= 29 && defined(__NDK_MAJOR__) && __NDK_MAJOR__ >= 26
+#if __ANDROID_API__ >= 29 && ((defined(__clang__) && (__clang_major__ >= 17)) || (defined(__NDK_MAJOR__) && (__NDK_MAJOR__ >= 26)))
 #define TLS_MODEL __attribute__((tls_model("local-dynamic")))
 #else
 #define TLS_MODEL
