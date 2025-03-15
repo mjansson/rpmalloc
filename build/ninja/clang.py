@@ -107,7 +107,7 @@ class ClangToolchain(toolchain.Toolchain):
       self.cflags += ['-w']
     self.cxxflags = list(self.cflags)
 
-    self.cflags += ['-std=c11']
+    self.cflags += ['-std=c11', '-Wno-pre-c11-compat']
     if self.target.is_macos() or self.target.is_ios():
       self.cxxflags += ['-std=c++14', '-stdlib=libc++']
     else:
