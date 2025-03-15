@@ -231,3 +231,12 @@ coverallsreport.json
 codecov.json
 codecovreport.json
 benchmark-*.txt
+build/CMakeFiles/
+build/test/
+build/cmake_install.cmake
+build/CMakeCache.txt
+build/compile_commands.json
+build/CTestTestfile.cmake
+build/DartConfiguration.tcl
+build/Makefile
+built/
