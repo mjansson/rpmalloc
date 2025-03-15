@@ -550,13 +550,13 @@ static size_t os_page_size;
 #define _Thread_local __declspec(thread)
 #elif defined(__ANDROID__)
 #if __ANDROID_API__ >= 29 && defined(__NDK_MAJOR__) && __NDK_MAJOR__ >= 26
-    #define TLS_MODEL __attribute__((tls_model("local-dynamic")))
+#define TLS_MODEL __attribute__((tls_model("local-dynamic")))
 #else
-    #define TLS_MODEL
+#define TLS_MODEL
 #endif
 #else
 #define TLS_MODEL __attribute__((tls_model("initial-exec")))
-//#define TLS_MODEL
+// #define TLS_MODEL
 #endif
 static _Thread_local heap_t* global_thread_heap TLS_MODEL = &global_heap_fallback;
 
@@ -571,38 +571,34 @@ static inline uintptr_t
 get_thread_id(void) {
 #if defined(_WIN32)
 	return (uintptr_t)((void*)NtCurrentTeb());
-#else
+#elif !defined(__APPLE__) && !defined(__CYGWIN__) && \
+	(defined(__aarch64__) || defined(__x86_64__))  // Unsure of other archs, needs testing
 	void* thp = __builtin_thread_pointer();
 	return (uintptr_t)thp;
+#else
+	uintptr_t tid;
+#if defined(__i386__)
+	__asm__("movl %%gs:0, %0" : "=r"(tid) : :);
+#elif defined(__x86_64__)
+#if defined(__MACH__)
+	__asm__("movq %%gs:0, %0" : "=r"(tid) : :);
+#else
+	__asm__("movq %%fs:0, %0" : "=r"(tid) : :);
 #endif
-	/*
-	#elif (defined(__GNUC__) || defined(__clang__)) && !defined(__CYGWIN__)
-	    uintptr_t tid;
-	#if defined(__i386__)
-	    __asm__("movl %%gs:0, %0" : "=r"(tid) : :);
-	#elif defined(__x86_64__)
-	#if defined(__MACH__)
-	    __asm__("movq %%gs:0, %0" : "=r"(tid) : :);
-	#else
-	    __asm__("movq %%fs:0, %0" : "=r"(tid) : :);
-	#endif
-	#elif defined(__arm__)
-	    __asm__ volatile("mrc p15, 0, %0, c13, c0, 3" : "=r"(tid));
-	#elif defined(__aarch64__)
-	#if defined(__MACH__)
-	    // tpidr_el0 likely unused, always return 0 on iOS
-	    __asm__ volatile("mrs %0, tpidrro_el0" : "=r"(tid));
-	#else
-	    __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tid));
-	#endif
-	#else
-	#error This platform needs implementation of get_thread_id()
-	#endif
-	    return tid;
-	#else
-	#error This platform needs implementation of get_thread_id()
-	#endif
-	*/
+#elif defined(__arm__)
+	__asm__ volatile("mrc p15, 0, %0, c13, c0, 3" : "=r"(tid));
+#elif defined(__aarch64__)
+#if defined(__MACH__)
+	// tpidr_el0 likely unused, always return 0 on iOS
+	__asm__ volatile("mrs %0, tpidrro_el0" : "=r"(tid));
+#else
+	__asm__ volatile("mrs %0, tpidr_el0" : "=r"(tid));
+#endif
+#else
+	tid = (uintptr_t)&global_thread_heap;
+#endif
+	return tid;
+#endif
 }
 
 //! Set the current thread heap
