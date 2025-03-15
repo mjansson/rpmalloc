@@ -1050,7 +1050,7 @@ page_full_to_free_on_new_heap(page_t* page, heap_t* heap) {
 	page->is_full = 0;
 	page->is_free = 1;
 	page->heap = heap;
-	atomic_store_explicit(&page->thread_free, 0, memory_order_relaxed);
+	atomic_store_explicit(&page->thread_free, 0, memory_order_release);
 	page->next = heap->page_free[page->page_type];
 	heap->page_free[page->page_type] = page;
 	if (++heap->page_free_commit_count[page->page_type] >= global_page_free_overflow[page->page_type])
@@ -1088,10 +1088,10 @@ static NOINLINE void
 page_adopt_thread_free_block_list(page_t* page) {
 	if (page->local_free)
 		return;
-	unsigned long long thread_free = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
+	unsigned long long thread_free = atomic_load_explicit(&page->thread_free, memory_order_acquire);
 	if (thread_free != 0) {
 		// Other threads can only replace with another valid list head, this will never change to 0 in other threads
-		while (!atomic_compare_exchange_weak_explicit(&page->thread_free, &thread_free, 0, memory_order_relaxed,
+		while (!atomic_compare_exchange_weak_explicit(&page->thread_free, &thread_free, 0, memory_order_acquire,
 		                                              memory_order_relaxed))
 			wait_spin();
 		page->local_free_count = page_block_from_thread_free_list(page, thread_free, &page->local_free);
@@ -1110,7 +1110,7 @@ page_put_thread_free_block(page_t* page, block_t* block) {
 		uintptr_t prev_head = atomic_load_explicit(&heap->thread_free[page->page_type], memory_order_relaxed);
 		block->next = (void*)prev_head;
 		while (!atomic_compare_exchange_weak_explicit(&heap->thread_free[page->page_type], &prev_head, (uintptr_t)block,
-		                                              memory_order_relaxed, memory_order_relaxed)) {
+		                                              memory_order_release, memory_order_relaxed)) {
 			block->next = (void*)prev_head;
 			wait_spin();
 		}
@@ -1121,7 +1121,7 @@ page_put_thread_free_block(page_t* page, block_t* block) {
 		uint32_t list_size = page_block_from_thread_free_list(page, prev_thread_free, &block->next) + 1;
 		uint64_t thread_free = page_block_to_thread_free_list(page, block_index, list_size);
 		while (!atomic_compare_exchange_weak_explicit(&page->thread_free, &prev_thread_free, thread_free,
-		                                              memory_order_relaxed, memory_order_relaxed)) {
+		                                              memory_order_release, memory_order_relaxed)) {
 			list_size = page_block_from_thread_free_list(page, prev_thread_free, &block->next) + 1;
 			thread_free = page_block_to_thread_free_list(page, block_index, list_size);
 			wait_spin();
@@ -1176,7 +1176,7 @@ page_allocate_block(page_t* page, unsigned int zero) {
 	unsigned int is_zero = 0;
 	block_t* block = (page->local_free != 0) ? page_get_local_free_block(page) : 0;
 	if (UNEXPECTED(block == 0)) {
-		if (atomic_load_explicit(&page->thread_free, memory_order_relaxed) != 0) {
+		if (atomic_load_explicit(&page->thread_free, memory_order_acquire) != 0) {
 			page_adopt_thread_free_block_list(page);
 			block = (page->local_free != 0) ? page_get_local_free_block(page) : 0;
 		}
@@ -1457,7 +1457,7 @@ heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page) {
 	page_t* head = heap->page_available[size_class];
 	page->next = head;
 	page->prev = 0;
-	atomic_store_explicit(&page->thread_free, 0, memory_order_relaxed);
+	atomic_store_explicit(&page->thread_free, 0, memory_order_release);
 	if (head)
 		head->prev = page;
 	heap->page_available[size_class] = page;
@@ -1521,9 +1521,9 @@ heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 	page_type_t page_type = get_page_type(size_class);
 
 	// Check if there is a free page from multithreaded deallocations
-	uintptr_t block_mt = atomic_load_explicit(&heap->thread_free[page_type], memory_order_relaxed);
+	uintptr_t block_mt = atomic_load_explicit(&heap->thread_free[page_type], memory_order_acquire);
 	if (UNEXPECTED(block_mt != 0)) {
-		while (!atomic_compare_exchange_weak_explicit(&heap->thread_free[page_type], &block_mt, 0, memory_order_relaxed,
+		while (!atomic_compare_exchange_weak_explicit(&heap->thread_free[page_type], &block_mt, 0, memory_order_release,
 		                                              memory_order_relaxed)) {
 			wait_spin();
 		}
@@ -1796,7 +1796,7 @@ heap_free_all(heap_t* heap) {
 		heap->span_partial[itype] = 0;
 		heap->page_free[itype] = 0;
 		heap->page_free_commit_count[itype] = 0;
-		atomic_store_explicit(&heap->thread_free[itype], 0, memory_order_relaxed);
+		atomic_store_explicit(&heap->thread_free[itype], 0, memory_order_release);
 	}
 	for (int itype = 0; itype < 4; ++itype) {
 		span_t* span = heap->span_used[itype];
