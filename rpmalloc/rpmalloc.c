@@ -574,7 +574,7 @@ get_thread_id(void) {
 	return (uintptr_t)((void*)NtCurrentTeb());
 #elif !defined(__APPLE__) && !defined(__CYGWIN__) &&                                                \
     ((defined(__clang__) && (__clang_major__ >= 7)) || ((defined(__GNUC__) && (__GNUC__ >= 5)))) && \
-    (defined(__aarch64__) || defined(__x86_64__))  // Unsure of other archs, needs testing
+    (defined(__aarch64__) || defined(__x86_64__) || defined(__loongarch__))  // Unsure of other archs, needs testing
 	void* thp = __builtin_thread_pointer();
 	return (uintptr_t)thp;
 #else
