@@ -21,6 +21,10 @@
 #include <stdint.h>
 #include <stdatomic.h>
 
+#if !defined(__has_builtin)
+#define __has_builtin(b) 0
+#endif
+
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wunused-macros"
 #pragma clang diagnostic ignored "-Wunused-function"
@@ -1599,7 +1603,10 @@ heap_allocate_block_small_to_large(heap_t* heap, uint32_t size_class, unsigned i
 //! Generic allocation path from heap pages, spans or new mapping
 static NOINLINE RPMALLOC_ALLOCATOR void*
 heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
-	(void)sizeof(heap);
+	if (heap->id == 0) {
+		rpmalloc_initialize(0);
+		heap = get_thread_heap();
+	}
 	size_t alloc_size = get_page_aligned_size(size + SPAN_HEADER_SIZE);
 	size_t offset = 0;
 	size_t mapped_size = 0;
