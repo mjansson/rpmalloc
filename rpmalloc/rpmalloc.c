@@ -57,6 +57,7 @@
 #endif
 
 #if PLATFORM_WINDOWS
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <fibersapi.h>
 static DWORD fls_key;
@@ -258,13 +259,13 @@ static inline size_t
 rpmalloc_clz(uintptr_t x) {
 #if ARCH_64BIT
 #if defined(_MSC_VER) && !defined(__clang__)
-	return (size_t)_lzcnt_u64(x);
+	return (size_t)__lzcnt64(x);
 #else
 	return (size_t)__builtin_clzll(x);
 #endif
 #else
 #if defined(_MSC_VER) && !defined(__clang__)
-	return (size_t)_lzcnt_u32(x);
+	return (size_t)__lzcnt32(x);
 #else
 	return (size_t)__builtin_clzl(x);
 #endif
