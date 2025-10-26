@@ -811,7 +811,7 @@ os_mcommit(void* address, size_t size) {
 	}
 #if PLATFORM_WINDOWS
 	if (!VirtualAlloc(address, size, MEM_COMMIT, PAGE_READWRITE)) {
-		if (global_memory_interface->map_fail_callback && global_memory_interface->map_fail_callback(map_size))
+		if (global_memory_interface->map_fail_callback && global_memory_interface->map_fail_callback(size))
 			return os_mcommit(address, size);
 		rpmalloc_assert(0, "Failed to commit virtual memory block");
 		return 1;
