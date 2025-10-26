@@ -187,6 +187,12 @@ madvise(caddr_t, size_t, int);
 #define SPAN_SIZE (256 * 1024 * 1024)
 #define SPAN_MASK (~((uintptr_t)(SPAN_SIZE - 1)))
 
+#if ENABLE_VALIDATE_ARGS
+//! Maximum allocation size to avoid integer overflow
+#undef  MAX_ALLOC_SIZE
+#define MAX_ALLOC_SIZE (((size_t)-1) - SPAN_SIZE)
+#endif
+
 ////////////
 ///
 /// Utility macros
@@ -1959,7 +1965,7 @@ rprealloc(void* ptr, size_t size) {
 extern RPMALLOC_ALLOCATOR void*
 rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize, unsigned int flags) {
 #if ENABLE_VALIDATE_ARGS
-	if ((size + alignment < size) || (alignment > _memory_page_size)) {
+	if ((size + alignment < size) || (alignment > SMALL_PAGE_SIZE)) {
 		errno = EINVAL;
 		return 0;
 	}
@@ -2396,7 +2402,7 @@ rpmalloc_heap_realloc(rpmalloc_heap_t* heap, void* ptr, size_t size, unsigned in
 RPMALLOC_ALLOCATOR void*
 rpmalloc_heap_aligned_realloc(rpmalloc_heap_t* heap, void* ptr, size_t alignment, size_t size, unsigned int flags) {
 #if ENABLE_VALIDATE_ARGS
-	if ((size + alignment < size) || (alignment > _memory_page_size)) {
+	if ((size + alignment < size) || (alignment > SMALL_PAGE_SIZE)) {
 		errno = EINVAL;
 		return 0;
 	}
