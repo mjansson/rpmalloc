@@ -134,8 +134,8 @@ class MSVCToolchain(toolchain.Toolchain):
         if int(major_version) >= 15:
           tools_basepath = os.path.join(installpath, 'VC', 'Tools', 'MSVC')
           tools_list = [item for item in os.listdir(tools_basepath) if os.path.isdir(os.path.join(tools_basepath, item))]
-          from distutils.version import StrictVersion
-          tools_list.sort(key=StrictVersion)
+          from packaging.version import Version
+          tools_list.sort(key=Version)
           self.toolchain = os.path.join(tools_basepath, tools_list[-1])
           self.toolchain_version = major_version + ".0"
           break
