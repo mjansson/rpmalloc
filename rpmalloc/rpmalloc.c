@@ -774,12 +774,9 @@ os_mmap(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
 		ptr = 0;
 #endif
 	if (!ptr) {
-		if (global_memory_interface->map_fail_callback) {
-			if (global_memory_interface->map_fail_callback(map_size))
-				return os_mmap(size, alignment, offset, mapped_size);
-		} else {
-			rpmalloc_assert(ptr != 0, "Failed to map more virtual memory");
-		}
+		if (global_memory_interface->map_fail_callback && global_memory_interface->map_fail_callback(map_size))
+			return os_mmap(size, alignment, offset, mapped_size);
+		rpmalloc_assert(ptr != 0, "Failed to map more virtual memory");
 		return 0;
 	}
 	if (alignment) {
@@ -806,14 +803,18 @@ os_mmap(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
 	return ptr;
 }
 
-static void
+static int
 os_mcommit(void* address, size_t size) {
 #if ENABLE_DECOMMIT
-	if (global_config.disable_decommit)
-		return;
+	if (global_config.disable_decommit) {
+		return 0;
+	}
 #if PLATFORM_WINDOWS
 	if (!VirtualAlloc(address, size, MEM_COMMIT, PAGE_READWRITE)) {
+		if (global_memory_interface->map_fail_callback && global_memory_interface->map_fail_callback(map_size))
+			return os_mcommit(address, size);
 		rpmalloc_assert(0, "Failed to commit virtual memory block");
+		return 1;
 	}
 #else
 	/*
@@ -837,16 +838,18 @@ os_mcommit(void* address, size_t size) {
 #endif
 	(void)sizeof(address);
 	(void)sizeof(size);
+	return 0;
 }
 
-static void
+static int
 os_mdecommit(void* address, size_t size) {
 #if ENABLE_DECOMMIT
 	if (global_config.disable_decommit)
-		return;
+		return 1;
 #if PLATFORM_WINDOWS
 	if (!VirtualFree(address, size, MEM_DECOMMIT)) {
 		rpmalloc_assert(0, "Failed to decommit virtual memory block");
+		return 1;
 	}
 #else
 	/*
@@ -869,6 +872,7 @@ os_mdecommit(void* address, size_t size) {
 	if (posix_madvise(address, size, POSIX_MADV_DONTNEED)) {
 #endif
 		rpmalloc_assert(0, "Failed to decommit virtual memory block");
+		return 1;
 	}
 #endif
 #if ENABLE_STATISTICS
@@ -883,6 +887,7 @@ os_mdecommit(void* address, size_t size) {
 	(void)sizeof(address);
 	(void)sizeof(size);
 #endif
+	return 0;
 }
 
 static void
@@ -989,7 +994,8 @@ page_decommit_memory_pages(page_t* page) {
 		return;
 	void* extra_page = pointer_offset(page, global_config.page_size);
 	size_t extra_page_size = page_get_size(page) - global_config.page_size;
-	global_memory_interface->memory_decommit(extra_page, extra_page_size);
+	if (global_memory_interface->memory_decommit(extra_page, extra_page_size) != 0)
+		return;
 #if RPMALLOC_HEAP_STATISTICS && ENABLE_DECOMMIT
 	if (page->heap)
 		page->heap->stats.committed_size -= extra_page_size;
@@ -997,13 +1003,14 @@ page_decommit_memory_pages(page_t* page) {
 	page->is_decommitted = 1;
 }
 
-static inline void
+static inline int
 page_commit_memory_pages(page_t* page) {
 	if (!page->is_decommitted)
-		return;
+		return 0;
 	void* extra_page = pointer_offset(page, global_config.page_size);
 	size_t extra_page_size = page_get_size(page) - global_config.page_size;
-	global_memory_interface->memory_commit(extra_page, extra_page_size);
+	if (global_memory_interface->memory_commit(extra_page, extra_page_size) != 0)
+		return 1;
 	page->is_decommitted = 0;
 #if ENABLE_DECOMMIT
 #if RPMALLOC_HEAP_STATISTICS
@@ -1019,6 +1026,7 @@ page_commit_memory_pages(page_t* page) {
 	page->is_zero = 1;
 #endif
 #endif
+	return 0;
 }
 
 static void
@@ -1255,7 +1263,8 @@ span_allocate_page(span_t* span) {
 #if ENABLE_DECOMMIT
 	// The first page is always committed on initial span map of memory
 	if (span->page_initialized) {
-		global_memory_interface->memory_commit(page, span->page_size);
+		if (global_memory_interface->memory_commit(page, span->page_size) != 0)
+			return 0;
 #if RPMALLOC_HEAP_STATISTICS
 		heap->stats.committed_size += span->page_size;
 #endif
@@ -1408,7 +1417,8 @@ heap_allocate_new(void) {
 	size_t mapped_size = 0;
 	block_t* block = global_memory_interface->memory_map(heap_size, 0, &offset, &mapped_size);
 #if ENABLE_DECOMMIT
-	global_memory_interface->memory_commit(block, heap_size);
+	if (global_memory_interface->memory_commit(block, heap_size) != 0)
+		return 0;
 #endif
 	heap_t* heap = heap_initialize((void*)block);
 	heap->offset = (uint32_t)offset;
@@ -1477,7 +1487,7 @@ heap_page_free_decommit(heap_t* heap, uint32_t page_type, uint32_t page_retain_c
 	}
 }
 
-static inline void
+static inline int
 heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page) {
 	page->size_class = size_class;
 	page->block_size = global_size_class[size_class].block_size;
@@ -1498,8 +1508,9 @@ heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page) {
 	if (head)
 		head->prev = page;
 	heap->page_available[size_class] = page;
-	if (page->is_decommitted)
-		page_commit_memory_pages(page);
+	if (page->is_decommitted != 0)
+		return page_commit_memory_pages(page);
+	return 0;
 }
 
 //! Find or allocate a span for the given page type with the given size class
@@ -1534,7 +1545,8 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 			page_address_mask = LARGE_PAGE_MASK;
 		}
 #if ENABLE_DECOMMIT
-		global_memory_interface->memory_commit(span, page_size);
+		if (global_memory_interface->memory_commit(span, page_size) != 0)
+			return 0;
 #endif
 #if RPMALLOC_HEAP_STATISTICS
 #if ENABLE_DECOMMIT
@@ -1592,7 +1604,8 @@ heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 			rpmalloc_assert(heap->page_free_commit_count[page_type] > 0, "Free committed page count out of sync");
 			--heap->page_free_commit_count[page_type];
 		}
-		heap_make_free_page_available(heap, size_class, page);
+		if (heap_make_free_page_available(heap, size_class, page) != 0)
+			return 0;
 		return page;
 	}
 	rpmalloc_assert(heap->page_free_commit_count[page_type] == 0, "Free committed page count out of sync");
@@ -1610,7 +1623,8 @@ heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 	span_t* span = heap_get_span(heap, page_type);
 	if (EXPECTED(span != 0)) {
 		page = span_allocate_page(span);
-		heap_make_free_page_available(page->heap, size_class, page);
+		if (heap_make_free_page_available(page->heap, size_class, page) != 0)
+			return 0;
 	}
 
 	return page;
@@ -1660,7 +1674,8 @@ heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
 	if (block) {
 		span_t* span = block;
 #if ENABLE_DECOMMIT
-		global_memory_interface->memory_commit(span, alloc_size);
+		if (global_memory_interface->memory_commit(span, alloc_size) != 0)
+			return 0;
 #endif
 #if RPMALLOC_HEAP_STATISTICS
 		heap->stats.mapped_size += mapped_size;
