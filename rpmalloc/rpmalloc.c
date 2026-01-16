@@ -1545,8 +1545,10 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 			page_address_mask = LARGE_PAGE_MASK;
 		}
 #if ENABLE_DECOMMIT
-		if (global_memory_interface->memory_commit(span, page_size) != 0)
+		if (global_memory_interface->memory_commit(span, page_size) != 0) {
+			global_memory_interface->memory_unmap(span, offset, mapped_size);
 			return 0;
+		}
 #endif
 #if RPMALLOC_HEAP_STATISTICS
 #if ENABLE_DECOMMIT
@@ -1674,8 +1676,10 @@ heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
 	if (block) {
 		span_t* span = block;
 #if ENABLE_DECOMMIT
-		if (global_memory_interface->memory_commit(span, alloc_size) != 0)
+		if (global_memory_interface->memory_commit(span, alloc_size) != 0) {
+			global_memory_interface->memory_unmap(block, offset, mapped_size);
 			return 0;
+		}
 #endif
 #if RPMALLOC_HEAP_STATISTICS
 		heap->stats.mapped_size += mapped_size;
