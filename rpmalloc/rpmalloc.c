@@ -1417,8 +1417,10 @@ heap_allocate_new(void) {
 	size_t mapped_size = 0;
 	block_t* block = global_memory_interface->memory_map(heap_size, 0, &offset, &mapped_size);
 #if ENABLE_DECOMMIT
-	if (global_memory_interface->memory_commit(block, heap_size) != 0)
+	if (global_memory_interface->memory_commit(block, heap_size) != 0) {
+		global_memory_interface->memory_unmap(block, offset, mapped_size);
 		return 0;
+	}
 #endif
 	heap_t* heap = heap_initialize((void*)block);
 	heap->offset = (uint32_t)offset;
