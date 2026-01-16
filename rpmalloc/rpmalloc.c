@@ -1298,7 +1298,7 @@ span_deallocate_block(span_t* span, page_t* page, void* block) {
 #if ENABLE_DECOMMIT
 			span->heap->stats.committed_size -= span->page_count * span->page_size;
 #else
-			span->heap->stats.committed_size -= mapped_size;
+			span->heap->stats.committed_size -= span->mapped_size;
 #endif
 		}
 #endif
