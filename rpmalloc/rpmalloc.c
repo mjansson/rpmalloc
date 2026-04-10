@@ -774,9 +774,12 @@ os_mmap(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
 		ptr = 0;
 #endif
 	if (!ptr) {
-		if (global_memory_interface->map_fail_callback && global_memory_interface->map_fail_callback(map_size))
-			return os_mmap(size, alignment, offset, mapped_size);
-		rpmalloc_assert(ptr != 0, "Failed to map more virtual memory");
+		if (global_memory_interface->map_fail_callback) {
+			if (global_memory_interface->map_fail_callback(map_size))
+				return os_mmap(size, alignment, offset, mapped_size);
+		} else {
+			rpmalloc_assert(ptr != 0, "Failed to map more virtual memory");
+		}
 		return 0;
 	}
 	if (alignment) {
@@ -906,6 +909,7 @@ os_munmap(void* address, size_t offset, size_t mapped_size) {
 #if ENABLE_STATISTICS
 	size_t page_count = mapped_size / global_config.page_size;
 	atomic_fetch_sub_explicit(&global_statistics.page_mapped, page_count, memory_order_relaxed);
+	atomic_fetch_sub_explicit(&global_statistics.page_active, page_count, memory_order_relaxed);
 #endif
 #endif
 }
@@ -1109,7 +1113,7 @@ static NOINLINE void
 page_adopt_thread_free_block_list(page_t* page) {
 	if (page->local_free)
 		return;
-	unsigned long long thread_free = atomic_load_explicit(&page->thread_free, memory_order_acquire);
+	unsigned long long thread_free = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
 	if (thread_free != 0) {
 		// Other threads can only replace with another valid list head, this will never change to 0 in other threads
 		while (!atomic_compare_exchange_weak_explicit(&page->thread_free, &thread_free, 0, memory_order_acquire,
@@ -1580,9 +1584,9 @@ heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 	page_type_t page_type = get_page_type(size_class);
 
 	// Check if there is a free page from multithreaded deallocations
-	uintptr_t block_mt = atomic_load_explicit(&heap->thread_free[page_type], memory_order_acquire);
+	uintptr_t block_mt = atomic_load_explicit(&heap->thread_free[page_type], memory_order_relaxed);
 	if (UNEXPECTED(block_mt != 0)) {
-		while (!atomic_compare_exchange_weak_explicit(&heap->thread_free[page_type], &block_mt, 0, memory_order_release,
+		while (!atomic_compare_exchange_weak_explicit(&heap->thread_free[page_type], &block_mt, 0, memory_order_acquire,
 		                                              memory_order_relaxed)) {
 			wait_spin();
 		}
