@@ -166,20 +166,26 @@ madvise(caddr_t, size_t, int);
 #define SMALL_GRANULARITY 16
 
 #define SMALL_BLOCK_SIZE_LIMIT (4 * 1024)
-#define MEDIUM_BLOCK_SIZE_LIMIT (256 * 1024)
+#define MEDIUM_SMALL_BLOCK_SIZE_LIMIT (32 * 1024)
+#define MEDIUM_LARGE_BLOCK_SIZE_LIMIT (256 * 1024)
 #define LARGE_BLOCK_SIZE_LIMIT (2 * 1024 * 1024)
 
 #define SMALL_SIZE_CLASS_COUNT 73
-#define MEDIUM_SIZE_CLASS_COUNT 24
+#define MEDIUM_SMALL_SIZE_CLASS_COUNT 12
+#define MEDIUM_LARGE_SIZE_CLASS_COUNT 12
 #define LARGE_SIZE_CLASS_COUNT 12
-#define SIZE_CLASS_COUNT (SMALL_SIZE_CLASS_COUNT + MEDIUM_SIZE_CLASS_COUNT + LARGE_SIZE_CLASS_COUNT)
+#define SIZE_CLASS_COUNT \
+	(SMALL_SIZE_CLASS_COUNT + MEDIUM_SMALL_SIZE_CLASS_COUNT + MEDIUM_LARGE_SIZE_CLASS_COUNT + LARGE_SIZE_CLASS_COUNT)
 
 #define SMALL_PAGE_SIZE_SHIFT 16
 #define SMALL_PAGE_SIZE (1 << SMALL_PAGE_SIZE_SHIFT)
 #define SMALL_PAGE_MASK (~((uintptr_t)SMALL_PAGE_SIZE - 1))
-#define MEDIUM_PAGE_SIZE_SHIFT 22
-#define MEDIUM_PAGE_SIZE (1 << MEDIUM_PAGE_SIZE_SHIFT)
-#define MEDIUM_PAGE_MASK (~((uintptr_t)MEDIUM_PAGE_SIZE - 1))
+#define MEDIUM_SMALL_PAGE_SIZE_SHIFT 20
+#define MEDIUM_SMALL_PAGE_SIZE (1 << MEDIUM_SMALL_PAGE_SIZE_SHIFT)
+#define MEDIUM_SMALL_PAGE_MASK (~((uintptr_t)MEDIUM_SMALL_PAGE_SIZE - 1))
+#define MEDIUM_LARGE_PAGE_SIZE_SHIFT 22
+#define MEDIUM_LARGE_PAGE_SIZE (1 << MEDIUM_LARGE_PAGE_SIZE_SHIFT)
+#define MEDIUM_LARGE_PAGE_MASK (~((uintptr_t)MEDIUM_LARGE_PAGE_SIZE - 1))
 #define LARGE_PAGE_SIZE_SHIFT 24
 #define LARGE_PAGE_SIZE (1 << LARGE_PAGE_SIZE_SHIFT)
 #define LARGE_PAGE_MASK (~((uintptr_t)LARGE_PAGE_SIZE - 1))
@@ -363,9 +369,10 @@ typedef struct size_class_t size_class_t;
 
 //! Memory page type
 typedef enum page_type_t {
-	PAGE_SMALL,   // 64KiB
-	PAGE_MEDIUM,  // 4MiB
-	PAGE_LARGE,   // 64MiB
+	PAGE_SMALL,         // 64KiB
+	PAGE_MEDIUM_SMALL,  // 1MiB
+	PAGE_MEDIUM_LARGE,  // 4MiB
+	PAGE_LARGE,         // 16MiB
 	PAGE_HUGE
 } page_type_t;
 
@@ -458,15 +465,15 @@ struct heap_t {
 	//! Available non-full pages for each size class
 	page_t* page_available[SIZE_CLASS_COUNT];
 	//! Free pages for each page type
-	page_t* page_free[3];
+	page_t* page_free[4];
 	//! Free but still committed page count for each page tyoe
-	uint32_t page_free_commit_count[3];
+	uint32_t page_free_commit_count[4];
 	//! Multithreaded free list
-	atomic_uintptr_t thread_free[3];
+	atomic_uintptr_t thread_free[4];
 	//! Available partially initialized spans for each page type
-	span_t* span_partial[3];
+	span_t* span_partial[4];
 	//! Spans in full use for each page type
-	span_t* span_used[4];
+	span_t* span_used[5];
 	//! Next heap in queue
 	heap_t* next;
 	//! Previous heap in queue
@@ -520,8 +527,10 @@ static uintptr_t global_main_thread_id;
 //! Size classes
 #define SCLASS(n) \
 	{ (n * SMALL_GRANULARITY), (SMALL_PAGE_SIZE - PAGE_HEADER_SIZE) / (n * SMALL_GRANULARITY) }
-#define MCLASS(n) \
-	{ (n * SMALL_GRANULARITY), (MEDIUM_PAGE_SIZE - PAGE_HEADER_SIZE) / (n * SMALL_GRANULARITY) }
+#define MSCLASS(n) \
+	{ (n * SMALL_GRANULARITY), (MEDIUM_SMALL_PAGE_SIZE - PAGE_HEADER_SIZE) / (n * SMALL_GRANULARITY) }
+#define MLCLASS(n) \
+	{ (n * SMALL_GRANULARITY), (MEDIUM_LARGE_PAGE_SIZE - PAGE_HEADER_SIZE) / (n * SMALL_GRANULARITY) }
 #define LCLASS(n) \
 	{ (n * SMALL_GRANULARITY), (LARGE_PAGE_SIZE - PAGE_HEADER_SIZE) / (n * SMALL_GRANULARITY) }
 static const size_class_t global_size_class[SIZE_CLASS_COUNT] = {
@@ -535,18 +544,18 @@ static const size_class_t global_size_class[SIZE_CLASS_COUNT] = {
     SCLASS(49),     SCLASS(50),     SCLASS(51),     SCLASS(52),     SCLASS(53),     SCLASS(54),     SCLASS(55),
     SCLASS(56),     SCLASS(57),     SCLASS(58),     SCLASS(59),     SCLASS(60),     SCLASS(61),     SCLASS(62),
     SCLASS(63),     SCLASS(64),     SCLASS(80),     SCLASS(96),     SCLASS(112),    SCLASS(128),    SCLASS(160),
-    SCLASS(192),    SCLASS(224),    SCLASS(256),    MCLASS(320),    MCLASS(384),    MCLASS(448),    MCLASS(512),
-    MCLASS(640),    MCLASS(768),    MCLASS(896),    MCLASS(1024),   MCLASS(1280),   MCLASS(1536),   MCLASS(1792),
-    MCLASS(2048),   MCLASS(2560),   MCLASS(3072),   MCLASS(3584),   MCLASS(4096),   MCLASS(5120),   MCLASS(6144),
-    MCLASS(7168),   MCLASS(8192),   MCLASS(10240),  MCLASS(12288),  MCLASS(14336),  MCLASS(16384),  LCLASS(20480),
+    SCLASS(192),    SCLASS(224),    SCLASS(256),    MSCLASS(320),   MSCLASS(384),   MSCLASS(448),   MSCLASS(512),
+    MSCLASS(640),   MSCLASS(768),   MSCLASS(896),   MSCLASS(1024),  MSCLASS(1280),  MSCLASS(1536),  MSCLASS(1792),
+    MSCLASS(2048),  MLCLASS(2560),  MLCLASS(3072),  MLCLASS(3584),  MLCLASS(4096),  MLCLASS(5120),  MLCLASS(6144),
+    MLCLASS(7168),  MLCLASS(8192),  MLCLASS(10240), MLCLASS(12288), MLCLASS(14336), MLCLASS(16384), LCLASS(20480),
     LCLASS(24576),  LCLASS(28672),  LCLASS(32768),  LCLASS(40960),  LCLASS(49152),  LCLASS(57344),  LCLASS(65536),
     LCLASS(81920),  LCLASS(98304),  LCLASS(114688), LCLASS(131072)};
 
 //! Threshold number of pages for when free pages are decommitted
-static uint32_t global_page_free_overflow[4] = {16, 8, 2, 0};
+static uint32_t global_page_free_overflow[5] = {16, 16, 8, 2, 0};
 
 //! Number of pages to retain when free page threshold overflows
-static uint32_t global_page_free_retain[4] = {4, 2, 1, 0};
+static uint32_t global_page_free_retain[5] = {4, 4, 2, 1, 0};
 
 //! OS huge page support
 static int os_huge_pages;
@@ -687,8 +696,10 @@ static inline page_type_t
 get_page_type(uint32_t size_class) {
 	if (size_class < SMALL_SIZE_CLASS_COUNT)
 		return PAGE_SMALL;
-	else if (size_class < (SMALL_SIZE_CLASS_COUNT + MEDIUM_SIZE_CLASS_COUNT))
-		return PAGE_MEDIUM;
+	else if (size_class < (SMALL_SIZE_CLASS_COUNT + MEDIUM_SMALL_SIZE_CLASS_COUNT))
+		return PAGE_MEDIUM_SMALL;
+	else if (size_class < (SMALL_SIZE_CLASS_COUNT + MEDIUM_SMALL_SIZE_CLASS_COUNT + MEDIUM_LARGE_SIZE_CLASS_COUNT))
+		return PAGE_MEDIUM_LARGE;
 	else if (size_class < SIZE_CLASS_COUNT)
 		return PAGE_LARGE;
 	return PAGE_HUGE;
@@ -930,8 +941,10 @@ static inline size_t
 page_get_size(page_t* page) {
 	if (page->page_type == PAGE_SMALL)
 		return SMALL_PAGE_SIZE;
-	else if (page->page_type == PAGE_MEDIUM)
-		return MEDIUM_PAGE_SIZE;
+	else if (page->page_type == PAGE_MEDIUM_SMALL)
+		return MEDIUM_SMALL_PAGE_SIZE;
+	else if (page->page_type == PAGE_MEDIUM_LARGE)
+		return MEDIUM_LARGE_PAGE_SIZE;
 	else if (page->page_type == PAGE_LARGE)
 		return LARGE_PAGE_SIZE;
 	else
@@ -1700,10 +1713,14 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 			page_count = SPAN_SIZE / SMALL_PAGE_SIZE;
 			page_size = SMALL_PAGE_SIZE;
 			page_address_mask = SMALL_PAGE_MASK;
-		} else if (page_type == PAGE_MEDIUM) {
-			page_count = SPAN_SIZE / MEDIUM_PAGE_SIZE;
-			page_size = MEDIUM_PAGE_SIZE;
-			page_address_mask = MEDIUM_PAGE_MASK;
+		} else if (page_type == PAGE_MEDIUM_SMALL) {
+			page_count = SPAN_SIZE / MEDIUM_SMALL_PAGE_SIZE;
+			page_size = MEDIUM_SMALL_PAGE_SIZE;
+			page_address_mask = MEDIUM_SMALL_PAGE_MASK;
+		} else if (page_type == PAGE_MEDIUM_LARGE) {
+			page_count = SPAN_SIZE / MEDIUM_LARGE_PAGE_SIZE;
+			page_size = MEDIUM_LARGE_PAGE_SIZE;
+			page_address_mask = MEDIUM_LARGE_PAGE_MASK;
 		} else {
 			page_count = SPAN_SIZE / LARGE_PAGE_SIZE;
 			page_size = LARGE_PAGE_SIZE;
@@ -2057,7 +2074,7 @@ heap_reallocate_block_aligned(heap_t* heap, void* block, size_t alignment, size_
 
 static void
 heap_free_all(heap_t* heap) {
-	for (int itype = 0; itype < 3; ++itype) {
+	for (int itype = 0; itype < 4; ++itype) {
 		span_t* span = heap->span_partial[itype];
 		while (span) {
 			span_t* span_next = span->next;
@@ -2069,7 +2086,7 @@ heap_free_all(heap_t* heap) {
 		heap->page_free_commit_count[itype] = 0;
 		atomic_store_explicit(&heap->thread_free[itype], 0, memory_order_release);
 	}
-	for (int itype = 0; itype < 4; ++itype) {
+	for (int itype = 0; itype < 5; ++itype) {
 		span_t* span = heap->span_used[itype];
 		while (span) {
 			span_t* span_next = span->next;
