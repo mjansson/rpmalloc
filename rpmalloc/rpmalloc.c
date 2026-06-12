@@ -1295,6 +1295,154 @@ span_allocate_page(span_t* span) {
 	return page;
 }
 
+//! Cache recently freed huge block mappings for reuse instead of paying a
+//! munmap + mmap + page fault round trip per huge allocation cycle. Entries
+//! are bounded by a committed byte budget and unmapped after an idle epoch.
+//! A cached mapping is reused when its size fits the request within the size
+//! class spacing (25% overshoot).
+#ifndef HUGE_CACHE_SLOT_COUNT
+#define HUGE_CACHE_SLOT_COUNT 16
+#endif
+#ifndef HUGE_CACHE_COMMITTED_LIMIT
+#define HUGE_CACHE_COMMITTED_LIMIT (128 * 1024 * 1024)
+#endif
+#ifndef HUGE_CACHE_EPOCH_MS
+#define HUGE_CACHE_EPOCH_MS 1000
+#endif
+
+#if HUGE_CACHE_SLOT_COUNT
+
+//! Coarse monotonic time in milliseconds (no syscall on Linux/vDSO)
+static inline uint64_t
+monotonic_time_ms(void) {
+#if PLATFORM_WINDOWS
+	return (uint64_t)GetTickCount64();
+#else
+	struct timespec ts;
+#if defined(CLOCK_MONOTONIC_COARSE)
+	clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
+#else
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+#endif
+	return ((uint64_t)ts.tv_sec * 1000ULL) + ((uint64_t)ts.tv_nsec / 1000000ULL);
+#endif
+}
+
+typedef struct huge_cache_t {
+	//! Cache lock
+	atomic_uintptr_t lock;
+	//! Committed bytes currently cached
+	size_t committed;
+	//! Cached mappings with their free timestamp
+	struct {
+		span_t* span;
+		uint64_t free_ms;
+	} slot[HUGE_CACHE_SLOT_COUNT];
+} huge_cache_t;
+
+static huge_cache_t global_huge_cache;
+
+static inline void
+huge_cache_lock_acquire(void) {
+	uintptr_t lock = 0;
+	while (!atomic_compare_exchange_weak_explicit(&global_huge_cache.lock, &lock, 1, memory_order_acquire,
+	                                              memory_order_relaxed)) {
+		lock = 0;
+		wait_spin();
+	}
+}
+
+static inline void
+huge_cache_lock_release(void) {
+	atomic_store_explicit(&global_huge_cache.lock, 0, memory_order_release);
+}
+
+//! Unmap cached mappings that have been idle for an epoch (syscalls are made
+//! outside the cache lock)
+static void
+huge_cache_purge_aged(uint64_t now) {
+	span_t* purge[HUGE_CACHE_SLOT_COUNT];
+	uint32_t purge_count = 0;
+	huge_cache_lock_acquire();
+	for (uint32_t islot = 0; islot < HUGE_CACHE_SLOT_COUNT; ++islot) {
+		span_t* span = global_huge_cache.slot[islot].span;
+		if (span && ((now - global_huge_cache.slot[islot].free_ms) >= HUGE_CACHE_EPOCH_MS)) {
+			global_huge_cache.committed -= (size_t)span->page_count * span->page_size;
+			global_huge_cache.slot[islot].span = 0;
+			purge[purge_count++] = span;
+		}
+	}
+	huge_cache_lock_release();
+	for (uint32_t ispan = 0; ispan < purge_count; ++ispan)
+		global_memory_interface->memory_unmap(purge[ispan], purge[ispan]->offset, purge[ispan]->mapped_size);
+}
+
+//! Try to cache a freed huge mapping, returns nonzero if cached
+static int
+huge_cache_push(span_t* span) {
+	size_t committed_size = (size_t)span->page_count * span->page_size;
+	if (committed_size > HUGE_CACHE_COMMITTED_LIMIT)
+		return 0;
+	uint64_t now = monotonic_time_ms();
+	huge_cache_purge_aged(now);
+	int cached = 0;
+	huge_cache_lock_acquire();
+	if (global_huge_cache.committed + committed_size <= HUGE_CACHE_COMMITTED_LIMIT) {
+		for (uint32_t islot = 0; islot < HUGE_CACHE_SLOT_COUNT; ++islot) {
+			if (!global_huge_cache.slot[islot].span) {
+				global_huge_cache.slot[islot].span = span;
+				global_huge_cache.slot[islot].free_ms = now;
+				global_huge_cache.committed += committed_size;
+				cached = 1;
+				break;
+			}
+		}
+	}
+	huge_cache_lock_release();
+	return cached;
+}
+
+//! Try to pop a cached huge mapping fitting the requested size (within the
+//! size class spacing), returns 0 on miss
+static span_t*
+huge_cache_pop(size_t alloc_size) {
+	// Racy emptiness peek is fine - a missed entry only costs a fresh mapping
+	int empty = 1;
+	for (uint32_t islot = 0; islot < HUGE_CACHE_SLOT_COUNT; ++islot) {
+		if (global_huge_cache.slot[islot].span) {
+			empty = 0;
+			break;
+		}
+	}
+	if (empty)
+		return 0;
+	size_t size_limit = alloc_size + (alloc_size >> 2);
+	span_t* best = 0;
+	size_t best_size = 0;
+	uint32_t best_slot = 0;
+	huge_cache_lock_acquire();
+	for (uint32_t islot = 0; islot < HUGE_CACHE_SLOT_COUNT; ++islot) {
+		span_t* span = global_huge_cache.slot[islot].span;
+		if (!span)
+			continue;
+		size_t committed_size = (size_t)span->page_count * span->page_size;
+		if ((committed_size >= alloc_size) && (committed_size <= size_limit) &&
+		    (!best || (committed_size < best_size))) {
+			best = span;
+			best_size = committed_size;
+			best_slot = islot;
+		}
+	}
+	if (best) {
+		global_huge_cache.slot[best_slot].span = 0;
+		global_huge_cache.committed -= best_size;
+	}
+	huge_cache_lock_release();
+	return best;
+}
+
+#endif
+
 static NOINLINE void
 span_deallocate_block(span_t* span, page_t* page, void* block) {
 	if (UNEXPECTED(page->page_type == PAGE_HUGE)) {
@@ -1307,6 +1455,10 @@ span_deallocate_block(span_t* span, page_t* page, void* block) {
 			span->heap->stats.committed_size -= span->mapped_size;
 #endif
 		}
+#endif
+#if HUGE_CACHE_SLOT_COUNT
+		if (huge_cache_push(span))
+			return;
 #endif
 		global_memory_interface->memory_unmap(span, span->offset, span->mapped_size);
 		return;
@@ -1680,11 +1832,21 @@ heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
 	size_t alloc_size = get_page_aligned_size(size + SPAN_HEADER_SIZE);
 	size_t offset = 0;
 	size_t mapped_size = 0;
-	void* block = global_memory_interface->memory_map(alloc_size, SPAN_SIZE, &offset, &mapped_size);
+	void* block = 0;
+	int from_cache = 0;
+#if HUGE_CACHE_SLOT_COUNT
+	// Reuse a recently freed huge mapping of fitting size if available (the
+	// cached span keeps its own offset/mapped_size/page_count fields)
+	block = huge_cache_pop(alloc_size);
+	if (block)
+		from_cache = 1;
+#endif
+	if (!block)
+		block = global_memory_interface->memory_map(alloc_size, SPAN_SIZE, &offset, &mapped_size);
 	if (block) {
 		span_t* span = block;
 #if ENABLE_DECOMMIT
-		if (global_memory_interface->memory_commit(span, alloc_size) != 0) {
+		if (!from_cache && (global_memory_interface->memory_commit(span, alloc_size) != 0)) {
 			global_memory_interface->memory_unmap(block, offset, mapped_size);
 			return 0;
 		}
@@ -1699,11 +1861,13 @@ heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
 #endif
 		span->heap = heap;
 		span->page_type = PAGE_HUGE;
-		span->page_size = (uint32_t)global_config.page_size;
-		span->page_count = (uint32_t)(alloc_size / global_config.page_size);
 		span->page_address_mask = LARGE_PAGE_MASK;
-		span->offset = (uint32_t)offset;
-		span->mapped_size = mapped_size;
+		if (!from_cache) {
+			span->page_size = (uint32_t)global_config.page_size;
+			span->page_count = (uint32_t)(alloc_size / global_config.page_size);
+			span->offset = (uint32_t)offset;
+			span->mapped_size = mapped_size;
+		}
 		span->page.heap = heap;
 		span->page.is_full = 1;
 		span->page.generic_free = 1;
