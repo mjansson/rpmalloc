@@ -1302,7 +1302,7 @@ span_deallocate_block(span_t* span, page_t* page, void* block) {
 #if ENABLE_DECOMMIT
 			span->heap->stats.committed_size -= span->page_count * span->page_size;
 #else
-			span->heap->stats.committed_size -= mapped_size;
+			span->heap->stats.committed_size -= span->mapped_size;
 #endif
 		}
 #endif
@@ -1421,8 +1421,10 @@ heap_allocate_new(void) {
 	size_t mapped_size = 0;
 	block_t* block = global_memory_interface->memory_map(heap_size, 0, &offset, &mapped_size);
 #if ENABLE_DECOMMIT
-	if (global_memory_interface->memory_commit(block, heap_size) != 0)
+	if (global_memory_interface->memory_commit(block, heap_size) != 0) {
+		global_memory_interface->memory_unmap(block, offset, mapped_size);
 		return 0;
+	}
 #endif
 	heap_t* heap = heap_initialize((void*)block);
 	heap->offset = (uint32_t)offset;
@@ -1549,8 +1551,10 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 			page_address_mask = LARGE_PAGE_MASK;
 		}
 #if ENABLE_DECOMMIT
-		if (global_memory_interface->memory_commit(span, page_size) != 0)
+		if (global_memory_interface->memory_commit(span, page_size) != 0) {
+			global_memory_interface->memory_unmap(span, offset, mapped_size);
 			return 0;
+		}
 #endif
 #if RPMALLOC_HEAP_STATISTICS
 #if ENABLE_DECOMMIT
@@ -1678,8 +1682,10 @@ heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
 	if (block) {
 		span_t* span = block;
 #if ENABLE_DECOMMIT
-		if (global_memory_interface->memory_commit(span, alloc_size) != 0)
+		if (global_memory_interface->memory_commit(span, alloc_size) != 0) {
+			global_memory_interface->memory_unmap(block, offset, mapped_size);
 			return 0;
+		}
 #endif
 #if RPMALLOC_HEAP_STATISTICS
 		heap->stats.mapped_size += mapped_size;
