@@ -37,6 +37,9 @@
 #if __has_warning("-Wunsafe-buffer-usage")
 #pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
 #endif
+#if __has_warning("-Wimplicit-void-ptr-cast")
+#pragma clang diagnostic ignored "-Wimplicit-void-ptr-cast"
+#endif
 #elif defined(__GNUC__)
 #pragma GCC diagnostic ignored "-Wunused-macros"
 #pragma GCC diagnostic ignored "-Wunused-function"
