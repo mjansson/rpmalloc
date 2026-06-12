@@ -257,10 +257,25 @@ typedef struct rpmalloc_statistics_t {
 	atomic_size_t page_decommit;
 	atomic_size_t page_active;
 	atomic_size_t page_active_peak;
+	atomic_size_t huge_alloc;
+	atomic_size_t huge_alloc_peak;
 	atomic_size_t heap_count;
 } rpmalloc_statistics_t;
 
 static rpmalloc_statistics_t global_statistics;
+
+//! Subtract from a statistics counter, clamping at zero. Counters are in units of the
+//! configured page size and heaps with committed pages are retained across finalize and
+//! initialize cycles where the page size can change, so strict accounting is not possible.
+static void
+statistics_sub_saturating(atomic_size_t* counter, size_t value) {
+	size_t current = atomic_load_explicit(counter, memory_order_relaxed);
+	size_t next;
+	do {
+		next = (current > value) ? (current - value) : 0;
+	} while (
+	    !atomic_compare_exchange_weak_explicit(counter, &current, next, memory_order_relaxed, memory_order_relaxed));
+}
 
 #else
 
@@ -562,6 +577,11 @@ static uint32_t global_page_free_retain[5] = {4, 2, 1, 1, 0};
 
 //! OS huge page support
 static int os_huge_pages;
+//! OS transparent huge page support (advise mappings to be huge page backed without
+//! requiring a preallocated huge page pool, currently Linux/Android only)
+static int os_thp;
+//! Shift for the huge page size (log2 of huge page size when huge pages are enabled)
+static size_t os_huge_page_shift;
 //! OS memory map granularity
 static size_t os_map_granularity;
 //! OS memory page size
@@ -753,6 +773,11 @@ os_mmap(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
 #endif
 	void* ptr =
 	    VirtualAlloc(0, map_size, (os_huge_pages ? MEM_LARGE_PAGES : 0) | MEM_RESERVE | do_commit, PAGE_READWRITE);
+	if (!ptr && os_huge_pages) {
+		// Large page allocations can fail due to physical memory fragmentation
+		// or exhausted large page quota, fall back to regular pages
+		ptr = VirtualAlloc(0, map_size, MEM_RESERVE | do_commit, PAGE_READWRITE);
+	}
 #else
 	int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED;
 #if defined(__APPLE__) && !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
@@ -760,19 +785,38 @@ os_mmap(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
 	if (os_huge_pages)
 		fd |= VM_FLAGS_SUPERPAGE_SIZE_2MB;
 	void* ptr = mmap(0, map_size, PROT_READ | PROT_WRITE, flags, fd, 0);
+	if (((ptr == MAP_FAILED) || !ptr) && os_huge_pages) {
+		// Superpage allocations can fail due to physical memory fragmentation,
+		// fall back to regular pages
+		ptr = mmap(0, map_size, PROT_READ | PROT_WRITE, flags, (int)VM_MAKE_TAG(240U), 0);
+	}
 #elif defined(MAP_HUGETLB)
-	void* ptr = mmap(0, map_size, PROT_READ | PROT_WRITE | PROT_MAX(PROT_READ | PROT_WRITE),
-	                 (os_huge_pages ? MAP_HUGETLB : 0) | flags, -1, 0);
+	int huge_flags = 0;
+	if (os_huge_pages) {
+		huge_flags = MAP_HUGETLB;
+#if defined(MAP_HUGE_SHIFT)
+		// Explicitly request the detected huge page size, the system default huge
+		// page size can be a different (unusable) size like 1GiB
+		if (os_huge_page_shift)
+			huge_flags |= (int)(os_huge_page_shift << MAP_HUGE_SHIFT);
+#endif
+	}
+	void* ptr =
+	    mmap(0, map_size, PROT_READ | PROT_WRITE | PROT_MAX(PROT_READ | PROT_WRITE), huge_flags | flags, -1, 0);
 #if defined(MADV_HUGEPAGE)
 	// In some configurations, huge pages allocations might fail thus
 	// we fallback to normal allocations and promote the region as transparent huge page
 	if ((ptr == MAP_FAILED || !ptr) && os_huge_pages) {
 		ptr = mmap(0, map_size, PROT_READ | PROT_WRITE, flags, -1, 0);
-		if (ptr && ptr != MAP_FAILED) {
-			int prm = madvise(ptr, size, MADV_HUGEPAGE);
+		if (ptr && (ptr != MAP_FAILED)) {
+			int prm = madvise(ptr, map_size, MADV_HUGEPAGE);
 			(void)prm;
 			rpmalloc_assert((prm == 0), "Failed to promote the page to transparent huge page");
 		}
+	} else if (os_thp && ptr && (ptr != MAP_FAILED)) {
+		// Transparent huge page mode, advise the kernel to back this mapping with
+		// huge pages without requiring a preallocated huge page pool
+		(void)madvise(ptr, map_size, MADV_HUGEPAGE);
 	}
 #endif
 	os_set_page_name(ptr, map_size);
@@ -803,8 +847,22 @@ os_mmap(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
 			padding = alignment - padding;
 		rpmalloc_assert(padding <= alignment, "Internal failure in padding");
 		rpmalloc_assert(!(padding % 8), "Internal failure in padding");
+#if !PLATFORM_WINDOWS
+		// Unmap the alignment padding head and tail to avoid holding on to unusable
+		// address space (and huge page reservations when using huge pages). Both the
+		// mmap result and the alignment are multiples of the mapping page size, so
+		// head and tail stay page aligned (huge page aligned for huge page mappings)
+		if (padding)
+			munmap(ptr, padding);
+		ptr = pointer_offset(ptr, padding);
+		if (alignment - padding)
+			munmap(pointer_offset(ptr, size), alignment - padding);
+		*offset = 0;
+		map_size = size;
+#else
 		ptr = pointer_offset(ptr, padding);
 		*offset = padding;
+#endif
 	}
 	*mapped_size = map_size;
 #if ENABLE_STATISTICS
@@ -889,6 +947,14 @@ os_mdecommit(void* address, size_t size) {
 #else
 	if (posix_madvise(address, size, POSIX_MADV_DONTNEED)) {
 #endif
+#if defined(__linux__)
+		if (os_huge_pages) {
+			// MADV_DONTNEED on huge page mappings requires Linux 5.18 or later, keep
+			// pages committed and stop further decommit attempts
+			global_config.disable_decommit = 1;
+			return 1;
+		}
+#endif
 		rpmalloc_assert(0, "Failed to decommit virtual memory block");
 		return 1;
 	}
@@ -896,10 +962,7 @@ os_mdecommit(void* address, size_t size) {
 #if ENABLE_STATISTICS
 	size_t page_count = size / global_config.page_size;
 	atomic_fetch_add_explicit(&global_statistics.page_decommit, page_count, memory_order_relaxed);
-	size_t page_active_current =
-	    atomic_fetch_sub_explicit(&global_statistics.page_active, page_count, memory_order_relaxed);
-	rpmalloc_assert(page_active_current >= page_count, "Decommit counter out of sync");
-	(void)sizeof(page_active_current);
+	statistics_sub_saturating(&global_statistics.page_active, page_count);
 #endif
 #else
 	(void)sizeof(address);
@@ -923,8 +986,8 @@ os_munmap(void* address, size_t offset, size_t mapped_size) {
 #endif
 #if ENABLE_STATISTICS
 	size_t page_count = mapped_size / global_config.page_size;
-	atomic_fetch_sub_explicit(&global_statistics.page_mapped, page_count, memory_order_relaxed);
-	atomic_fetch_sub_explicit(&global_statistics.page_active, page_count, memory_order_relaxed);
+	statistics_sub_saturating(&global_statistics.page_mapped, page_count);
+	statistics_sub_saturating(&global_statistics.page_active, page_count);
 #endif
 #endif
 }
@@ -1013,8 +1076,14 @@ static inline void
 page_decommit_memory_pages(page_t* page) {
 	if (page->is_decommitted)
 		return;
+	// Only the range beyond the first configured page can be decommitted - skip page
+	// types that are not larger than the configured page size (which is always the
+	// case for the smaller page types when huge pages are enabled)
+	size_t page_size = page_get_size(page);
+	if (page_size <= global_config.page_size)
+		return;
 	void* extra_page = pointer_offset(page, global_config.page_size);
-	size_t extra_page_size = page_get_size(page) - global_config.page_size;
+	size_t extra_page_size = page_size - global_config.page_size;
 	if (global_memory_interface->memory_decommit(extra_page, extra_page_size) != 0)
 		return;
 #if RPMALLOC_HEAP_STATISTICS && ENABLE_DECOMMIT
@@ -1398,6 +1467,25 @@ huge_cache_purge_aged(uint64_t now) {
 		global_memory_interface->memory_unmap(purge[ispan], purge[ispan]->offset, purge[ispan]->mapped_size);
 }
 
+//! Unmap all cached huge mappings, the cache must not outlive allocator finalization
+static void
+huge_cache_flush(void) {
+	span_t* purge[HUGE_CACHE_SLOT_COUNT];
+	uint32_t purge_count = 0;
+	huge_cache_lock_acquire();
+	for (uint32_t islot = 0; islot < HUGE_CACHE_SLOT_COUNT; ++islot) {
+		span_t* span = global_huge_cache.slot[islot].span;
+		if (span) {
+			global_huge_cache.committed -= (size_t)span->page_count * span->page_size;
+			global_huge_cache.slot[islot].span = 0;
+			purge[purge_count++] = span;
+		}
+	}
+	huge_cache_lock_release();
+	for (uint32_t ispan = 0; ispan < purge_count; ++ispan)
+		global_memory_interface->memory_unmap(purge[ispan], purge[ispan]->offset, purge[ispan]->mapped_size);
+}
+
 //! Try to cache a freed huge mapping, returns nonzero if cached
 static int
 huge_cache_push(span_t* span) {
@@ -1467,6 +1555,9 @@ huge_cache_pop(size_t alloc_size) {
 static NOINLINE void
 span_deallocate_block(span_t* span, page_t* page, void* block) {
 	if (UNEXPECTED(page->page_type == PAGE_HUGE)) {
+#if ENABLE_STATISTICS
+		statistics_sub_saturating(&global_statistics.huge_alloc, (size_t)span->page_count * span->page_size);
+#endif
 #if RPMALLOC_HEAP_STATISTICS
 		if (span->heap) {
 			span->heap->stats.mapped_size -= span->mapped_size;
@@ -1663,6 +1754,11 @@ heap_page_free_decommit(heap_t* heap, uint32_t page_type, uint32_t page_retain_c
 	}
 	while (page && (page->is_decommitted == 0)) {
 		page_decommit_memory_pages(page);
+		// Decommit can be refused (decommit disabled, page type not larger than the
+		// configured page size, or kernel rejecting decommit of huge page mappings),
+		// in which case remaining pages cannot be decommitted either
+		if (page->is_decommitted == 0)
+			break;
 		--heap->page_free_commit_count[page_type];
 		page = page->next;
 	}
@@ -1897,6 +1993,18 @@ heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
 		span->page.is_full = 1;
 		span->page.generic_free = 1;
 		span->page.page_type = PAGE_HUGE;
+#if ENABLE_STATISTICS
+		size_t huge_alloc_size = (size_t)span->page_count * span->page_size;
+		size_t huge_alloc_current =
+		    atomic_fetch_add_explicit(&global_statistics.huge_alloc, huge_alloc_size, memory_order_relaxed) +
+		    huge_alloc_size;
+		size_t huge_alloc_peak = atomic_load_explicit(&global_statistics.huge_alloc_peak, memory_order_relaxed);
+		while (huge_alloc_current > huge_alloc_peak) {
+			if (atomic_compare_exchange_weak_explicit(&global_statistics.huge_alloc_peak, &huge_alloc_peak,
+			                                          huge_alloc_current, memory_order_relaxed, memory_order_relaxed))
+				break;
+		}
+#endif
 		// Keep track of span if first class heap
 		if (!heap->owner_thread) {
 			span->next = heap->span_used[PAGE_HUGE];
@@ -2320,6 +2428,9 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 #else
 	os_page_size = os_map_granularity;
 #endif
+	os_huge_pages = 0;
+	os_thp = 0;
+	os_huge_page_shift = 0;
 	if (global_config.enable_huge_pages) {
 #if PLATFORM_WINDOWS
 		HANDLE token = 0;
@@ -2363,6 +2474,14 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 			}
 			fclose(meminfo);
 		}
+		// Sanity check the detected default huge page size, the builtin page geometry
+		// cannot use huge pages larger than the largest builtin page size (e.g. 1GiB
+		// default huge pages). Since the huge page size is passed explicitly to mmap,
+		// a non-default 2MiB huge page pool can still be used in that case.
+		if (huge_page_size & (huge_page_size - 1))
+			huge_page_size = 0;
+		if (huge_page_size > LARGE_PAGE_SIZE)
+			huge_page_size = 2 * 1024 * 1024;
 		if (huge_page_size) {
 			os_huge_pages = 1;
 			os_page_size = huge_page_size;
@@ -2377,27 +2496,57 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 			os_page_size = 2 * 1024 * 1024;
 			os_map_granularity = os_page_size;
 		}
-#elif defined(__APPLE__) || defined(__NetBSD__)
+#elif defined(__APPLE__)
+#if defined(__x86_64__) && !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+		// Superpages are only supported on x86-64, Apple silicon has no huge page support
 		os_huge_pages = 1;
 		os_page_size = 2 * 1024 * 1024;
 		os_map_granularity = os_page_size;
 #endif
-	} else {
-		os_huge_pages = 0;
+#elif defined(__NetBSD__)
+		os_huge_pages = 1;
+		os_page_size = 2 * 1024 * 1024;
+		os_map_granularity = os_page_size;
+#endif
 	}
 
 	global_config.enable_huge_pages = os_huge_pages;
 
+	if (os_huge_pages) {
+		while (((size_t)1 << os_huge_page_shift) < os_page_size)
+			++os_huge_page_shift;
+	}
+
 	if (!memory_interface || (global_config.page_size < os_page_size))
 		global_config.page_size = os_page_size;
 
-	if (global_config.enable_huge_pages || global_config.page_size > (256 * 1024))
+#if PLATFORM_WINDOWS
+	// Large pages on Windows must be committed when mapped and can never be decommitted
+	if (global_config.enable_huge_pages)
 		global_config.disable_decommit = 1;
+#endif
 
 #if defined(__linux__) || defined(__ANDROID__)
+	// Transparent huge pages, advise mappings to be huge page backed without requiring
+	// a preallocated huge page pool and without affecting page size or decommit
+	if (global_config.enable_thp && !os_huge_pages && !global_config.disable_thp)
+		os_thp = 1;
 	if (global_config.disable_thp)
 		(void)prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0);
 #endif
+	global_config.enable_thp = os_thp;
+
+	// Decommit of free pages only applies to page types larger than the configured
+	// page size, disable the free page overflow pass for page types where it can
+	// never apply (always the case when huge pages or a large page size is in use)
+	const uint32_t page_free_overflow_default[4] = {16, 8, 4, 2};
+	const uint32_t builtin_page_size[4] = {SMALL_PAGE_SIZE, MEDIUM_SMALL_PAGE_SIZE, MEDIUM_LARGE_PAGE_SIZE,
+	                                       LARGE_PAGE_SIZE};
+	for (unsigned int itype = 0; itype < 4; ++itype) {
+		int page_can_decommit =
+		    !global_config.disable_decommit && ((size_t)builtin_page_size[itype] > global_config.page_size);
+		global_page_free_overflow[itype] = page_can_decommit ? page_free_overflow_default[itype] : 0xFFFFFFFFU;
+	}
 
 #ifdef _WIN32
 	fls_key = FlsAlloc(&rpmalloc_thread_destructor);
@@ -2420,6 +2569,12 @@ rpmalloc_config(void) {
 extern void
 rpmalloc_finalize(void) {
 	rpmalloc_thread_finalize();
+
+#if HUGE_CACHE_SLOT_COUNT
+	// Release cached huge mappings, the cache must not hold memory across a finalize
+	// (and potential re-initialize with a different page size)
+	huge_cache_flush();
+#endif
 
 	if (global_config.unmap_on_finalize) {
 		heap_t* heap = global_heap_queue;
@@ -2489,6 +2644,10 @@ rpmalloc_dump_statistics(void* file) {
 	        (unsigned long long)atomic_load_explicit(&global_statistics.page_commit, memory_order_relaxed));
 	fprintf(file, "Pages decommitted:   %llu\n",
 	        (unsigned long long)atomic_load_explicit(&global_statistics.page_decommit, memory_order_relaxed));
+	fprintf(file, "Huge bytes:          %llu\n",
+	        (unsigned long long)atomic_load_explicit(&global_statistics.huge_alloc, memory_order_relaxed));
+	fprintf(file, "Huge bytes (peak):   %llu\n",
+	        (unsigned long long)atomic_load_explicit(&global_statistics.huge_alloc_peak, memory_order_relaxed));
 	fprintf(file, "Heaps created:       %llu\n",
 	        (unsigned long long)atomic_load_explicit(&global_statistics.heap_count, memory_order_relaxed));
 #else
@@ -2505,6 +2664,8 @@ rpmalloc_global_statistics(rpmalloc_global_statistics_t* stats) {
     stats->decommitted = global_config.page_size * atomic_load_explicit(&global_statistics.page_decommit, memory_order_relaxed);
     stats->active = global_config.page_size * atomic_load_explicit(&global_statistics.page_active, memory_order_relaxed);
     stats->active_peak = global_config.page_size * atomic_load_explicit(&global_statistics.page_active_peak, memory_order_relaxed);
+    stats->huge_alloc = atomic_load_explicit(&global_statistics.huge_alloc, memory_order_relaxed);
+    stats->huge_alloc_peak = atomic_load_explicit(&global_statistics.huge_alloc_peak, memory_order_relaxed);
     stats->heap_count = atomic_load_explicit(&global_statistics.heap_count, memory_order_relaxed);
 #else
     memset(stats, 0, sizeof(rpmalloc_global_statistics_t));
