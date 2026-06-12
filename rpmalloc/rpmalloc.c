@@ -427,7 +427,9 @@ struct page_t {
 struct span_t {
 	//! Page header
 	page_t page;
-	//! Owning heap
+	//! Owning heap (do not deduplicate into page.heap - that field is the
+	//! owner of page 0 as a memory page and changes if the page is adopted
+	//! by another heap, while the span owner must remain stable)
 	heap_t* heap;
 	//! Page address mask
 	uintptr_t page_address_mask;
@@ -1217,13 +1219,13 @@ page_allocate_block(page_t* page, unsigned int zero) {
 
 	// The page might be full when free list has been pushed to heap local free list,
 	// check if there is a thread free list to adopt
-	if (page->block_used == page->block_count)
-		page_adopt_thread_free_block_list(page);
-
 	if (page->block_used == page->block_count) {
-		// Page is now fully utilized
-		rpmalloc_assert(!page->is_full, "Page block use counter out of sync with full flag");
-		page_available_to_full(page);
+		page_adopt_thread_free_block_list(page);
+		if (page->block_used == page->block_count) {
+			// Page is now fully utilized
+			rpmalloc_assert(!page->is_full, "Page block use counter out of sync with full flag");
+			page_available_to_full(page);
+		}
 	}
 
 	if (zero) {
@@ -1753,6 +1755,12 @@ heap_allocate_block(heap_t* heap, size_t size, unsigned int zero) {
 #endif
 			return block;
 		}
+#if RPMALLOC_HEAP_STATISTICS
+		heap->stats.allocated_size += global_size_class[size_class].block_size;
+#endif
+		// The size class is already known - refill directly, skipping the
+		// generic path size class recomputation and dead local free list pop
+		return heap_allocate_block_small_to_large(heap, size_class, zero);
 	}
 	return heap_allocate_block_generic(heap, size, zero);
 }
