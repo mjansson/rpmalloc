@@ -1306,6 +1306,12 @@ span_allocate_page(span_t* span) {
 #ifndef HUGE_CACHE_COMMITTED_LIMIT
 #define HUGE_CACHE_COMMITTED_LIMIT (128 * 1024 * 1024)
 #endif
+//! Largest single mapping the cache will hold - keeps one rare giant from
+//! monopolizing the committed budget and starving caching of the smaller,
+//! more frequently cycled sizes
+#ifndef HUGE_CACHE_ENTRY_LIMIT
+#define HUGE_CACHE_ENTRY_LIMIT (HUGE_CACHE_COMMITTED_LIMIT / 4)
+#endif
 #ifndef HUGE_CACHE_EPOCH_MS
 #define HUGE_CACHE_EPOCH_MS 1000
 #endif
@@ -1381,7 +1387,7 @@ huge_cache_purge_aged(uint64_t now) {
 static int
 huge_cache_push(span_t* span) {
 	size_t committed_size = (size_t)span->page_count * span->page_size;
-	if (committed_size > HUGE_CACHE_COMMITTED_LIMIT)
+	if (committed_size > HUGE_CACHE_ENTRY_LIMIT)
 		return 0;
 	uint64_t now = monotonic_time_ms();
 	huge_cache_purge_aged(now);
