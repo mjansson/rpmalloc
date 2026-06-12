@@ -166,21 +166,27 @@ madvise(caddr_t, size_t, int);
 #define SMALL_GRANULARITY 16
 
 #define SMALL_BLOCK_SIZE_LIMIT (4 * 1024)
-#define MEDIUM_BLOCK_SIZE_LIMIT (256 * 1024)
-#define LARGE_BLOCK_SIZE_LIMIT (8 * 1024 * 1024)
+#define MEDIUM_SMALL_BLOCK_SIZE_LIMIT (32 * 1024)
+#define MEDIUM_LARGE_BLOCK_SIZE_LIMIT (256 * 1024)
+#define LARGE_BLOCK_SIZE_LIMIT (2 * 1024 * 1024)
 
 #define SMALL_SIZE_CLASS_COUNT 73
-#define MEDIUM_SIZE_CLASS_COUNT 24
-#define LARGE_SIZE_CLASS_COUNT 20
-#define SIZE_CLASS_COUNT (SMALL_SIZE_CLASS_COUNT + MEDIUM_SIZE_CLASS_COUNT + LARGE_SIZE_CLASS_COUNT)
+#define MEDIUM_SMALL_SIZE_CLASS_COUNT 12
+#define MEDIUM_LARGE_SIZE_CLASS_COUNT 12
+#define LARGE_SIZE_CLASS_COUNT 12
+#define SIZE_CLASS_COUNT \
+	(SMALL_SIZE_CLASS_COUNT + MEDIUM_SMALL_SIZE_CLASS_COUNT + MEDIUM_LARGE_SIZE_CLASS_COUNT + LARGE_SIZE_CLASS_COUNT)
 
 #define SMALL_PAGE_SIZE_SHIFT 16
 #define SMALL_PAGE_SIZE (1 << SMALL_PAGE_SIZE_SHIFT)
 #define SMALL_PAGE_MASK (~((uintptr_t)SMALL_PAGE_SIZE - 1))
-#define MEDIUM_PAGE_SIZE_SHIFT 22
-#define MEDIUM_PAGE_SIZE (1 << MEDIUM_PAGE_SIZE_SHIFT)
-#define MEDIUM_PAGE_MASK (~((uintptr_t)MEDIUM_PAGE_SIZE - 1))
-#define LARGE_PAGE_SIZE_SHIFT 26
+#define MEDIUM_SMALL_PAGE_SIZE_SHIFT 20
+#define MEDIUM_SMALL_PAGE_SIZE (1 << MEDIUM_SMALL_PAGE_SIZE_SHIFT)
+#define MEDIUM_SMALL_PAGE_MASK (~((uintptr_t)MEDIUM_SMALL_PAGE_SIZE - 1))
+#define MEDIUM_LARGE_PAGE_SIZE_SHIFT 22
+#define MEDIUM_LARGE_PAGE_SIZE (1 << MEDIUM_LARGE_PAGE_SIZE_SHIFT)
+#define MEDIUM_LARGE_PAGE_MASK (~((uintptr_t)MEDIUM_LARGE_PAGE_SIZE - 1))
+#define LARGE_PAGE_SIZE_SHIFT 24
 #define LARGE_PAGE_SIZE (1 << LARGE_PAGE_SIZE_SHIFT)
 #define LARGE_PAGE_MASK (~((uintptr_t)LARGE_PAGE_SIZE - 1))
 
@@ -363,9 +369,10 @@ typedef struct size_class_t size_class_t;
 
 //! Memory page type
 typedef enum page_type_t {
-	PAGE_SMALL,   // 64KiB
-	PAGE_MEDIUM,  // 4MiB
-	PAGE_LARGE,   // 64MiB
+	PAGE_SMALL,         // 64KiB
+	PAGE_MEDIUM_SMALL,  // 1MiB
+	PAGE_MEDIUM_LARGE,  // 4MiB
+	PAGE_LARGE,         // 16MiB
 	PAGE_HUGE
 } page_type_t;
 
@@ -458,15 +465,15 @@ struct heap_t {
 	//! Available non-full pages for each size class
 	page_t* page_available[SIZE_CLASS_COUNT];
 	//! Free pages for each page type
-	page_t* page_free[3];
+	page_t* page_free[4];
 	//! Free but still committed page count for each page tyoe
-	uint32_t page_free_commit_count[3];
+	uint32_t page_free_commit_count[4];
 	//! Multithreaded free list
-	atomic_uintptr_t thread_free[3];
+	atomic_uintptr_t thread_free[4];
 	//! Available partially initialized spans for each page type
-	span_t* span_partial[3];
+	span_t* span_partial[4];
 	//! Spans in full use for each page type
-	span_t* span_used[4];
+	span_t* span_used[5];
 	//! Next heap in queue
 	heap_t* next;
 	//! Previous heap in queue
@@ -520,8 +527,10 @@ static uintptr_t global_main_thread_id;
 //! Size classes
 #define SCLASS(n) \
 	{ (n * SMALL_GRANULARITY), (SMALL_PAGE_SIZE - PAGE_HEADER_SIZE) / (n * SMALL_GRANULARITY) }
-#define MCLASS(n) \
-	{ (n * SMALL_GRANULARITY), (MEDIUM_PAGE_SIZE - PAGE_HEADER_SIZE) / (n * SMALL_GRANULARITY) }
+#define MSCLASS(n) \
+	{ (n * SMALL_GRANULARITY), (MEDIUM_SMALL_PAGE_SIZE - PAGE_HEADER_SIZE) / (n * SMALL_GRANULARITY) }
+#define MLCLASS(n) \
+	{ (n * SMALL_GRANULARITY), (MEDIUM_LARGE_PAGE_SIZE - PAGE_HEADER_SIZE) / (n * SMALL_GRANULARITY) }
 #define LCLASS(n) \
 	{ (n * SMALL_GRANULARITY), (LARGE_PAGE_SIZE - PAGE_HEADER_SIZE) / (n * SMALL_GRANULARITY) }
 static const size_class_t global_size_class[SIZE_CLASS_COUNT] = {
@@ -535,19 +544,18 @@ static const size_class_t global_size_class[SIZE_CLASS_COUNT] = {
     SCLASS(49),     SCLASS(50),     SCLASS(51),     SCLASS(52),     SCLASS(53),     SCLASS(54),     SCLASS(55),
     SCLASS(56),     SCLASS(57),     SCLASS(58),     SCLASS(59),     SCLASS(60),     SCLASS(61),     SCLASS(62),
     SCLASS(63),     SCLASS(64),     SCLASS(80),     SCLASS(96),     SCLASS(112),    SCLASS(128),    SCLASS(160),
-    SCLASS(192),    SCLASS(224),    SCLASS(256),    MCLASS(320),    MCLASS(384),    MCLASS(448),    MCLASS(512),
-    MCLASS(640),    MCLASS(768),    MCLASS(896),    MCLASS(1024),   MCLASS(1280),   MCLASS(1536),   MCLASS(1792),
-    MCLASS(2048),   MCLASS(2560),   MCLASS(3072),   MCLASS(3584),   MCLASS(4096),   MCLASS(5120),   MCLASS(6144),
-    MCLASS(7168),   MCLASS(8192),   MCLASS(10240),  MCLASS(12288),  MCLASS(14336),  MCLASS(16384),  LCLASS(20480),
+    SCLASS(192),    SCLASS(224),    SCLASS(256),    MSCLASS(320),   MSCLASS(384),   MSCLASS(448),   MSCLASS(512),
+    MSCLASS(640),   MSCLASS(768),   MSCLASS(896),   MSCLASS(1024),  MSCLASS(1280),  MSCLASS(1536),  MSCLASS(1792),
+    MSCLASS(2048),  MLCLASS(2560),  MLCLASS(3072),  MLCLASS(3584),  MLCLASS(4096),  MLCLASS(5120),  MLCLASS(6144),
+    MLCLASS(7168),  MLCLASS(8192),  MLCLASS(10240), MLCLASS(12288), MLCLASS(14336), MLCLASS(16384), LCLASS(20480),
     LCLASS(24576),  LCLASS(28672),  LCLASS(32768),  LCLASS(40960),  LCLASS(49152),  LCLASS(57344),  LCLASS(65536),
-    LCLASS(81920),  LCLASS(98304),  LCLASS(114688), LCLASS(131072), LCLASS(163840), LCLASS(196608), LCLASS(229376),
-    LCLASS(262144), LCLASS(327680), LCLASS(393216), LCLASS(458752), LCLASS(524288)};
+    LCLASS(81920),  LCLASS(98304),  LCLASS(114688), LCLASS(131072)};
 
 //! Threshold number of pages for when free pages are decommitted
-static uint32_t global_page_free_overflow[4] = {16, 8, 2, 0};
+static uint32_t global_page_free_overflow[5] = {16, 8, 4, 2, 0};
 
 //! Number of pages to retain when free page threshold overflows
-static uint32_t global_page_free_retain[4] = {4, 2, 1, 0};
+static uint32_t global_page_free_retain[5] = {4, 2, 1, 1, 0};
 
 //! OS huge page support
 static int os_huge_pages;
@@ -688,8 +696,10 @@ static inline page_type_t
 get_page_type(uint32_t size_class) {
 	if (size_class < SMALL_SIZE_CLASS_COUNT)
 		return PAGE_SMALL;
-	else if (size_class < (SMALL_SIZE_CLASS_COUNT + MEDIUM_SIZE_CLASS_COUNT))
-		return PAGE_MEDIUM;
+	else if (size_class < (SMALL_SIZE_CLASS_COUNT + MEDIUM_SMALL_SIZE_CLASS_COUNT))
+		return PAGE_MEDIUM_SMALL;
+	else if (size_class < (SMALL_SIZE_CLASS_COUNT + MEDIUM_SMALL_SIZE_CLASS_COUNT + MEDIUM_LARGE_SIZE_CLASS_COUNT))
+		return PAGE_MEDIUM_LARGE;
 	else if (size_class < SIZE_CLASS_COUNT)
 		return PAGE_LARGE;
 	return PAGE_HUGE;
@@ -931,8 +941,10 @@ static inline size_t
 page_get_size(page_t* page) {
 	if (page->page_type == PAGE_SMALL)
 		return SMALL_PAGE_SIZE;
-	else if (page->page_type == PAGE_MEDIUM)
-		return MEDIUM_PAGE_SIZE;
+	else if (page->page_type == PAGE_MEDIUM_SMALL)
+		return MEDIUM_SMALL_PAGE_SIZE;
+	else if (page->page_type == PAGE_MEDIUM_LARGE)
+		return MEDIUM_LARGE_PAGE_SIZE;
 	else if (page->page_type == PAGE_LARGE)
 		return LARGE_PAGE_SIZE;
 	else
@@ -1295,6 +1307,160 @@ span_allocate_page(span_t* span) {
 	return page;
 }
 
+//! Cache recently freed huge block mappings for reuse instead of paying a
+//! munmap + mmap + page fault round trip per huge allocation cycle. Entries
+//! are bounded by a committed byte budget and unmapped after an idle epoch.
+//! A cached mapping is reused when its size fits the request within the size
+//! class spacing (25% overshoot).
+#ifndef HUGE_CACHE_SLOT_COUNT
+#define HUGE_CACHE_SLOT_COUNT 32
+#endif
+#ifndef HUGE_CACHE_COMMITTED_LIMIT
+#define HUGE_CACHE_COMMITTED_LIMIT (128 * 1024 * 1024)
+#endif
+//! Largest single mapping the cache will hold - keeps one rare giant from
+//! monopolizing the committed budget and starving caching of the smaller,
+//! more frequently cycled sizes
+#ifndef HUGE_CACHE_ENTRY_LIMIT
+#define HUGE_CACHE_ENTRY_LIMIT (HUGE_CACHE_COMMITTED_LIMIT / 4)
+#endif
+#ifndef HUGE_CACHE_EPOCH_MS
+#define HUGE_CACHE_EPOCH_MS 1000
+#endif
+
+#if HUGE_CACHE_SLOT_COUNT
+
+//! Coarse monotonic time in milliseconds (no syscall on Linux/vDSO)
+static inline uint64_t
+monotonic_time_ms(void) {
+#if PLATFORM_WINDOWS
+	return (uint64_t)GetTickCount64();
+#else
+	struct timespec ts;
+#if defined(CLOCK_MONOTONIC_COARSE)
+	clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
+#else
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+#endif
+	return ((uint64_t)ts.tv_sec * 1000ULL) + ((uint64_t)ts.tv_nsec / 1000000ULL);
+#endif
+}
+
+typedef struct huge_cache_t {
+	//! Cache lock
+	atomic_uintptr_t lock;
+	//! Committed bytes currently cached
+	size_t committed;
+	//! Cached mappings with their free timestamp
+	struct {
+		span_t* span;
+		uint64_t free_ms;
+	} slot[HUGE_CACHE_SLOT_COUNT];
+} huge_cache_t;
+
+static huge_cache_t global_huge_cache;
+
+static inline void
+huge_cache_lock_acquire(void) {
+	uintptr_t lock = 0;
+	while (!atomic_compare_exchange_weak_explicit(&global_huge_cache.lock, &lock, 1, memory_order_acquire,
+	                                              memory_order_relaxed)) {
+		lock = 0;
+		wait_spin();
+	}
+}
+
+static inline void
+huge_cache_lock_release(void) {
+	atomic_store_explicit(&global_huge_cache.lock, 0, memory_order_release);
+}
+
+//! Unmap cached mappings that have been idle for an epoch (syscalls are made
+//! outside the cache lock)
+static void
+huge_cache_purge_aged(uint64_t now) {
+	span_t* purge[HUGE_CACHE_SLOT_COUNT];
+	uint32_t purge_count = 0;
+	huge_cache_lock_acquire();
+	for (uint32_t islot = 0; islot < HUGE_CACHE_SLOT_COUNT; ++islot) {
+		span_t* span = global_huge_cache.slot[islot].span;
+		if (span && ((now - global_huge_cache.slot[islot].free_ms) >= HUGE_CACHE_EPOCH_MS)) {
+			global_huge_cache.committed -= (size_t)span->page_count * span->page_size;
+			global_huge_cache.slot[islot].span = 0;
+			purge[purge_count++] = span;
+		}
+	}
+	huge_cache_lock_release();
+	for (uint32_t ispan = 0; ispan < purge_count; ++ispan)
+		global_memory_interface->memory_unmap(purge[ispan], purge[ispan]->offset, purge[ispan]->mapped_size);
+}
+
+//! Try to cache a freed huge mapping, returns nonzero if cached
+static int
+huge_cache_push(span_t* span) {
+	size_t committed_size = (size_t)span->page_count * span->page_size;
+	if (committed_size > HUGE_CACHE_ENTRY_LIMIT)
+		return 0;
+	uint64_t now = monotonic_time_ms();
+	huge_cache_purge_aged(now);
+	int cached = 0;
+	huge_cache_lock_acquire();
+	if (global_huge_cache.committed + committed_size <= HUGE_CACHE_COMMITTED_LIMIT) {
+		for (uint32_t islot = 0; islot < HUGE_CACHE_SLOT_COUNT; ++islot) {
+			if (!global_huge_cache.slot[islot].span) {
+				global_huge_cache.slot[islot].span = span;
+				global_huge_cache.slot[islot].free_ms = now;
+				global_huge_cache.committed += committed_size;
+				cached = 1;
+				break;
+			}
+		}
+	}
+	huge_cache_lock_release();
+	return cached;
+}
+
+//! Try to pop a cached huge mapping fitting the requested size (within the
+//! size class spacing), returns 0 on miss
+static span_t*
+huge_cache_pop(size_t alloc_size) {
+	// Racy emptiness peek is fine - a missed entry only costs a fresh mapping
+	int empty = 1;
+	for (uint32_t islot = 0; islot < HUGE_CACHE_SLOT_COUNT; ++islot) {
+		if (global_huge_cache.slot[islot].span) {
+			empty = 0;
+			break;
+		}
+	}
+	if (empty)
+		return 0;
+	size_t size_limit = alloc_size + (alloc_size >> 2);
+	span_t* best = 0;
+	size_t best_size = 0;
+	uint32_t best_slot = 0;
+	huge_cache_lock_acquire();
+	for (uint32_t islot = 0; islot < HUGE_CACHE_SLOT_COUNT; ++islot) {
+		span_t* span = global_huge_cache.slot[islot].span;
+		if (!span)
+			continue;
+		size_t committed_size = (size_t)span->page_count * span->page_size;
+		if ((committed_size >= alloc_size) && (committed_size <= size_limit) &&
+		    (!best || (committed_size < best_size))) {
+			best = span;
+			best_size = committed_size;
+			best_slot = islot;
+		}
+	}
+	if (best) {
+		global_huge_cache.slot[best_slot].span = 0;
+		global_huge_cache.committed -= best_size;
+	}
+	huge_cache_lock_release();
+	return best;
+}
+
+#endif
+
 static NOINLINE void
 span_deallocate_block(span_t* span, page_t* page, void* block) {
 	if (UNEXPECTED(page->page_type == PAGE_HUGE)) {
@@ -1307,6 +1473,10 @@ span_deallocate_block(span_t* span, page_t* page, void* block) {
 			span->heap->stats.committed_size -= span->mapped_size;
 #endif
 		}
+#endif
+#if HUGE_CACHE_SLOT_COUNT
+		if (huge_cache_push(span))
+			return;
 #endif
 		global_memory_interface->memory_unmap(span, span->offset, span->mapped_size);
 		return;
@@ -1543,10 +1713,14 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 			page_count = SPAN_SIZE / SMALL_PAGE_SIZE;
 			page_size = SMALL_PAGE_SIZE;
 			page_address_mask = SMALL_PAGE_MASK;
-		} else if (page_type == PAGE_MEDIUM) {
-			page_count = SPAN_SIZE / MEDIUM_PAGE_SIZE;
-			page_size = MEDIUM_PAGE_SIZE;
-			page_address_mask = MEDIUM_PAGE_MASK;
+		} else if (page_type == PAGE_MEDIUM_SMALL) {
+			page_count = SPAN_SIZE / MEDIUM_SMALL_PAGE_SIZE;
+			page_size = MEDIUM_SMALL_PAGE_SIZE;
+			page_address_mask = MEDIUM_SMALL_PAGE_MASK;
+		} else if (page_type == PAGE_MEDIUM_LARGE) {
+			page_count = SPAN_SIZE / MEDIUM_LARGE_PAGE_SIZE;
+			page_size = MEDIUM_LARGE_PAGE_SIZE;
+			page_address_mask = MEDIUM_LARGE_PAGE_MASK;
 		} else {
 			page_count = SPAN_SIZE / LARGE_PAGE_SIZE;
 			page_size = LARGE_PAGE_SIZE;
@@ -1680,11 +1854,21 @@ heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
 	size_t alloc_size = get_page_aligned_size(size + SPAN_HEADER_SIZE);
 	size_t offset = 0;
 	size_t mapped_size = 0;
-	void* block = global_memory_interface->memory_map(alloc_size, SPAN_SIZE, &offset, &mapped_size);
+	void* block = 0;
+	int from_cache = 0;
+#if HUGE_CACHE_SLOT_COUNT
+	// Reuse a recently freed huge mapping of fitting size if available (the
+	// cached span keeps its own offset/mapped_size/page_count fields)
+	block = huge_cache_pop(alloc_size);
+	if (block)
+		from_cache = 1;
+#endif
+	if (!block)
+		block = global_memory_interface->memory_map(alloc_size, SPAN_SIZE, &offset, &mapped_size);
 	if (block) {
 		span_t* span = block;
 #if ENABLE_DECOMMIT
-		if (global_memory_interface->memory_commit(span, alloc_size) != 0) {
+		if (!from_cache && (global_memory_interface->memory_commit(span, alloc_size) != 0)) {
 			global_memory_interface->memory_unmap(block, offset, mapped_size);
 			return 0;
 		}
@@ -1699,11 +1883,13 @@ heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
 #endif
 		span->heap = heap;
 		span->page_type = PAGE_HUGE;
-		span->page_size = (uint32_t)global_config.page_size;
-		span->page_count = (uint32_t)(alloc_size / global_config.page_size);
 		span->page_address_mask = LARGE_PAGE_MASK;
-		span->offset = (uint32_t)offset;
-		span->mapped_size = mapped_size;
+		if (!from_cache) {
+			span->page_size = (uint32_t)global_config.page_size;
+			span->page_count = (uint32_t)(alloc_size / global_config.page_size);
+			span->offset = (uint32_t)offset;
+			span->mapped_size = mapped_size;
+		}
 		span->page.heap = heap;
 		span->page.is_full = 1;
 		span->page.generic_free = 1;
@@ -1888,7 +2074,7 @@ heap_reallocate_block_aligned(heap_t* heap, void* block, size_t alignment, size_
 
 static void
 heap_free_all(heap_t* heap) {
-	for (int itype = 0; itype < 3; ++itype) {
+	for (int itype = 0; itype < 4; ++itype) {
 		span_t* span = heap->span_partial[itype];
 		while (span) {
 			span_t* span_next = span->next;
@@ -1900,7 +2086,7 @@ heap_free_all(heap_t* heap) {
 		heap->page_free_commit_count[itype] = 0;
 		atomic_store_explicit(&heap->thread_free[itype], 0, memory_order_release);
 	}
-	for (int itype = 0; itype < 4; ++itype) {
+	for (int itype = 0; itype < 5; ++itype) {
 		span_t* span = heap->span_used[itype];
 		while (span) {
 			span_t* span_next = span->next;
