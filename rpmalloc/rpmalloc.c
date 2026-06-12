@@ -2018,9 +2018,9 @@ heap_reallocate_block(heap_t* heap, void* block, size_t size, size_t old_size, u
 			void* block_start = pointer_offset(span, SPAN_HEADER_SIZE);
 			if (!old_size)
 				old_size = ((size_t)span->page_size * (size_t)span->page_count) - SPAN_HEADER_SIZE;
-			if ((size < old_size) && (size > LARGE_BLOCK_SIZE_LIMIT)) {
-				// Still fits in block and still huge, never mind trying to save memory,
-				// but preserve data if alignment changed
+			if ((size < old_size) && (size >= (old_size / 2)) && (size > LARGE_BLOCK_SIZE_LIMIT)) {
+				// Still fits in block, still huge and saves less than half the memory,
+				// never mind trying to save memory, but preserve data if alignment changed
 				if ((block_start != block) && !(flags & RPMALLOC_NO_PRESERVE))
 					memmove(block_start, block, old_size);
 				return block_start;
