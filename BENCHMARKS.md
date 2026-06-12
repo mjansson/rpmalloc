@@ -16,8 +16,6 @@ The benchmark configurations are to be interpreted as performing alloc/free pair
 # Result analysis
 rpmalloc is faster than all allocators, except lockfree-malloc in a few cases when number of threads exceeds number of processor cores. However, the latter suffers from massive memory overhead as the number of threads increases. Allocators such as tcmalloc and jemalloc trail behind ~15% in performance, and jemalloc also suffers from erratic higher memory overhead.
 
-For an example of how rpmalloc cache configurations affect performance and memory overhead, see the [CACHE](CACHE.md) file.
-
 # Random size in [16, 1000] range
 Parameters: `benchmark <num threads> 0 0 2 20000 50000 5000 16 1000`
 Evenly distributed sizes in `[16, 1000]` range, 20000 loops with 50000 blocks per thread. Every iteration 5000 blocks (10%) are freed and allocated in a scattered pattern. Cross thread allocations/deallocations of 5000 blocks in each thread every other loop iteration.
