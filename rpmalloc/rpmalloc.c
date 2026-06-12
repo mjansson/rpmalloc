@@ -552,10 +552,10 @@ static const size_class_t global_size_class[SIZE_CLASS_COUNT] = {
     LCLASS(81920),  LCLASS(98304),  LCLASS(114688), LCLASS(131072)};
 
 //! Threshold number of pages for when free pages are decommitted
-static uint32_t global_page_free_overflow[5] = {16, 16, 8, 2, 0};
+static uint32_t global_page_free_overflow[5] = {16, 8, 4, 2, 0};
 
 //! Number of pages to retain when free page threshold overflows
-static uint32_t global_page_free_retain[5] = {4, 4, 2, 1, 0};
+static uint32_t global_page_free_retain[5] = {4, 2, 1, 1, 0};
 
 //! OS huge page support
 static int os_huge_pages;
@@ -1313,7 +1313,7 @@ span_allocate_page(span_t* span) {
 //! A cached mapping is reused when its size fits the request within the size
 //! class spacing (25% overshoot).
 #ifndef HUGE_CACHE_SLOT_COUNT
-#define HUGE_CACHE_SLOT_COUNT 16
+#define HUGE_CACHE_SLOT_COUNT 32
 #endif
 #ifndef HUGE_CACHE_COMMITTED_LIMIT
 #define HUGE_CACHE_COMMITTED_LIMIT (128 * 1024 * 1024)
