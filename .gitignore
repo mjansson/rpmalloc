@@ -231,3 +231,7 @@ coverallsreport.json
 codecov.json
 codecovreport.json
 benchmark-*.txt
+
+# Python
+__pycache__/
+*.pyc
