@@ -18,15 +18,15 @@ This library is put in the public domain; you can redistribute it and/or modify 
 # Performance
 We believe rpmalloc is faster than most popular memory allocators like tcmalloc, hoard, ptmalloc3 and others without causing extra allocated memory overhead in the thread caches compared to these allocators. We also believe the implementation to be easier to read and modify compared to these allocators, as it is a single source file of ~2800 lines of C code. All allocations have a natural 16-byte alignment.
 
-Contained in a parallel repository is a benchmark utility that performs interleaved unaligned allocations and deallocations (both in-thread and cross-thread) in multiple threads. It measures number of memory operations performed per CPU second, as well as memory overhead by comparing the virtual memory mapped with the number of bytes requested in allocation calls. The setup of number of thread, cross-thread deallocation rate and allocation size limits is configured by command line arguments.
+The chart below shows throughput on the `rptest` benchmark, allocating randomly sized blocks in the `[16, 8000]` bytes range with a linear falloff distribution and cross-thread frees, as the number of threads scales from 1 to 16. Higher is better.
 
-https://github.com/mjansson/rpmalloc-benchmark
+![rptest throughput, random [16,8000] bytes, 1-16 threads](benchmark/images/rptest-perf.png)
 
-Below is an example performance comparison chart of rpmalloc and other popular allocator implementations, with default configurations used.
+Peak resident memory for the same benchmark, lower is better:
 
-![Ubuntu 16.10, random [16, 8000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=301017877&format=image)
+![rptest peak memory, random [16,8000] bytes, 1-16 threads](benchmark/images/rptest-memory.png)
 
-The benchmark producing these numbers were run on an Ubuntu 16.10 machine with 8 logical cores (4 physical, HT). The actual numbers are not to be interpreted as absolute performance figures, but rather as relative comparisons between the different allocators. For additional benchmark results, see the [BENCHMARKS](BENCHMARKS.md) file.
+The numbers were collected on a 13th Gen Intel Core i7-13800H (14 cores / 20 threads) running Ubuntu 26.04, comparing rpmalloc against the current releases of several popular allocators. The actual numbers are not to be interpreted as absolute performance figures, but rather as relative comparisons between the different allocators. For a full allocator comparison across the mimalloc-bench benchmark suite, including peak memory usage, see the [BENCHMARKS](BENCHMARKS.md) file. The captured results and the script that produces these graphs live in the [benchmark](benchmark) directory.
 
 # Required functions
 

@@ -1,55 +1,118 @@
 # Benchmarks
-Contained in a parallel repository is a benchmark utility that performs interleaved allocations (both aligned to 8 or 16 bytes, and unaligned) and deallocations (both in-thread and cross-thread) in multiple threads. It measures number of memory operations performed per CPU second, as well as memory overhead by comparing the virtual memory mapped with the number of bytes requested in allocation calls. The setup of number of thread, cross-thread deallocation rate and allocation size limits is configured by command line arguments.
 
-https://github.com/mjansson/rpmalloc-benchmark
+These results are produced with the [mimalloc-bench](https://github.com/daanx/mimalloc-bench)
+allocator benchmark suite, running its `allt` set of benchmarks across a wide range of
+allocators. The raw captured results and the plotting script live in the [benchmark](benchmark)
+directory, so the graphs below can be regenerated and extended (see
+[Reproducing](#reproducing) below).
 
-Benchmarks are run with parameters `benchmark <num threads> <mode> <distribution> <cross-thread rate> <loop count> <block count> <op count> <min size> <max size>`. It runs the given number of threads allocating randomly or fixed sized blocks in `[<min size>, <max size>]` bytes range. The `<mode>` parameter controls if it is random or fixed size. If random size, the `<distribution>` parameter controls if sizes are evenly distributed, have a linear falloff rate with size or an exponential falloff rate with size. In each thread, `<loop count>` number of loops are performed, allocating up to `<block count>` blocks in each thread. Every loop iteration `<op count>` number of blocks are deallocated, scattered across the entire set of blocks, then another set of `<op count>` number of blocks are allocated, also scattered across the entire set of slots in the block array (also deallocating any previous block in that slot). Every `<cross-thread rate>` loop iteration an `<op count>` number of blocks are allocated and handed off to another thread for cross-thread deallocation (memory allocated in one thread is freed in another thread).
+All numbers were collected on a single machine:
 
-The benchmark also measures the maximum requested allocated size and the used virtual memory by the process to calculate a overhead percentage. This is done at the end of the loop iterations, once all cross-thread deallocations are processed. This will naturally introduce overhead in allocator implementations that have some form of caching of free blocks, which is intended.
+- 13th Gen Intel Core i7-13800H, 14 cores / 20 threads
+- 30 GiB RAM
+- Ubuntu 26.04, glibc 2.43
+- allocators and benchmarks built with `-march=native`
 
-The loop sequence is run four times in all threads, first two times in each thread with a full free of all blocks in between. The threads are then terminated and restarted, running another set of similar two loop sequences. The idea is to measure both how well allocators perform at starting up fresh threads, as well as reusing memory within a thread and when warm starting another thread.
+As with any allocator benchmark, the absolute numbers are specific to this machine and
+workload mix and should be read as relative comparisons, not absolute performance figures.
 
-Below is a collection of benchmark results for various allocation sizes. The machines running the Windows 10 and Linux benchmarks have 8 cores (4 physical cores with HT) and 12GiB RAM. The macOS machine is a MacBook, 2 cores (1 physical with HT) and 8GiB RAM. (Windows and macOS results coming soon)
+## Summary
 
-The benchmark configurations are to be interpreted as performing alloc/free pairs of 10% of the allocated blocks in each loop iteration (in each thread). Since the free and alloc operations are scattered the patterns of requested sizes and block addresses are random and does not follow any sequential order.
+The chart below is the geometric mean across all 20 `allt` benchmarks of each allocator's
+result normalized to the best result on each benchmark (so 1.00 means "fastest/smallest on
+every benchmark"). To keep a single pathological benchmark from dominating the mean, each
+per-benchmark ratio is capped at 4x. Allocators that crashed on one or more benchmarks are
+excluded from this summary but still appear in the per-benchmark charts below.
 
-# Result analysis
-rpmalloc is faster than all allocators, except lockfree-malloc in a few cases when number of threads exceeds number of processor cores. However, the latter suffers from massive memory overhead as the number of threads increases. Allocators such as tcmalloc and jemalloc trail behind ~15% in performance, and jemalloc also suffers from erratic higher memory overhead.
+![mimalloc-bench allt summary](benchmark/images/allt-summary.png)
 
-# Random size in [16, 1000] range
-Parameters: `benchmark <num threads> 0 0 2 20000 50000 5000 16 1000`
-Evenly distributed sizes in `[16, 1000]` range, 20000 loops with 50000 blocks per thread. Every iteration 5000 blocks (10%) are freed and allocated in a scattered pattern. Cross thread allocations/deallocations of 5000 blocks in each thread every other loop iteration.
-![Ubuntu 16.10 random [16, 1000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=1979506104&format=image)
-![Ubuntu 16.10 random [16, 1000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=853552429&format=image)
+On aggregate throughput rpmalloc sits in the leading group, within a few percent of snmalloc
+and the three mimalloc generations and ahead of jemalloc and tcmalloc. On peak resident
+memory it is mid-pack: rpmalloc trades some memory for the larger page geometry and free page
+retention that drive its throughput, which is the intended design point for a performance
+oriented general purpose allocator. Where the smaller footprint matters more than peak
+throughput, the `disable_decommit` configuration is off by default and unused pages are
+returned to the OS.
 
-# Random size in [16, 8000] range
-Parameters: `benchmark <num threads> 0 1 2 20000 50000 5000 16 8000`
-Linear falloff distributed sizes in `[16, 8000]` range, 20000 loops with 50000 blocks per thread. Every iteration 5000 blocks (10%) are freed and allocated in a scattered pattern. Cross thread allocations/deallocations of 5000 blocks in each thread every other loop iteration.
-![Ubuntu 16.10 random [16, 8000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=301017877&format=image)
-![Ubuntu 16.10 random [16, 8000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=1224595675&format=image)
+## Per-benchmark results
 
-Ignoring the lockfree-malloc and jemalloc memory overhead range and focusing on the other allocators we can see they are pretty close in memory overhead factors, with most of the multithreaded cases hovering around the 10-15% overhead mark.
+Elapsed wall-clock time per benchmark, lower is better. Allocators more than 4x slower than
+rpmalloc on a given benchmark are omitted from that benchmark's chart for readability (the
+captured result files contain the complete data).
 
-![Ubuntu 16.10 random [16, 8000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=812830245&format=image)
+![mimalloc-bench allt time](benchmark/images/allt-time.png)
 
-# Random size in [16, 16000] range
-Parameters: `benchmark <num threads> 0 1 2 20000 50000 5000 16 16000`
-Linear falloff distributed sizes in `[16, 16000]` range, 20000 loops with 50000 blocks per thread. Every iteration 5000 blocks (10%) are freed and allocated in a scattered pattern. Cross thread allocations/deallocations of 5000 blocks in each thread every other loop iteration.
-![Ubuntu 16.10 random [16, 16000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=554347956&format=image)
-![Ubuntu 16.10 random [16, 16000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=1568940233&format=image)
+Peak resident memory per benchmark, lower is better.
 
-Once again focusing on the lower overhead allocators
+![mimalloc-bench allt rss](benchmark/images/allt-rss.png)
 
-![Ubuntu 16.10 random [16, 16000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=1749852896&format=image)
+## Benchmarks
 
-# Random size in [128, 64000] range
-Parameters: `benchmark <num threads> 0 2 2 20000 30000 3000 128 64000`
-Exponential falloff distributed sizes in `[128, 64000]` range, 20000 loops with 30000 blocks per thread. Every iteration 3000 blocks (10%) are freed and allocated in a scattered pattern. Cross thread allocations/deallocations of 3000 blocks in each thread every other loop iteration.
-![Ubuntu 16.10 random [16, 16000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=1077134401&format=image)
-![Ubuntu 16.10 random [16, 16000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=307285196&format=image)
+The `allt` set exercises a mix of real programs and synthetic stress tests:
 
-# Random size in [512, 16000] range
-Parameters: `benchmark <num threads> 0 2 2 20000 20000 2000 512 160000`
-Exponential falloff distributed sizes in `[512, 160000]` range, 20000 loops with 20000 blocks per thread. Every iteration 2000 blocks (10%) are freed and allocated in a scattered pattern. Cross thread allocations/deallocations of 2000 blocks in each thread every other loop iteration.
-![Ubuntu 16.10 random [16, 16000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=1203594510&format=image)
-![Ubuntu 16.10 random [16, 16000] bytes, 8 cores](https://docs.google.com/spreadsheets/d/1NWNuar1z0uPCB5iVS_Cs6hSo2xPkTmZf0KsgWS_Fb_4/pubchart?oid=1849152448&format=image)
+- **cfrac, espresso, barnes, lean, lua, gs (ghostscript)** - real single and lightly
+  threaded programs, dominated by realistic allocation patterns.
+- **redis, rocksdb** - real servers driven by their own benchmark clients.
+- **larson, mstress, rptest, xmalloc-test, alloc-test, sh6bench, sh8bench, cache-scratch** -
+  multithreaded synthetic stress tests covering producer/consumer hand-off, cross-thread
+  frees, sharing and contention.
+- **glibc-simple, glibc-thread** - the glibc malloc microbenchmarks.
+
+rptest is the same benchmark used for the throughput-versus-threads graph in the
+[README](README.md); the suite runs it at a single fixed configuration.
+
+## Allocators
+
+The following allocators were built and run. Versions are those pinned by mimalloc-bench at
+the time of the run:
+
+| Key | Allocator | Version |
+|-----|-----------|---------|
+| rp | rpmalloc | develop |
+| mi, mi2, mi3 | mimalloc | 1.8.2, 2.1.2, 3.3.2 |
+| je | jemalloc | 5.3.0 |
+| tc | tcmalloc (gperftools minimal) | 2.18 |
+| sn, sn-sec | snmalloc | 0.7.4 |
+| hd | Hoard | 2025-07 |
+| tbb | Intel TBB malloc | 2023.0.0 |
+| sm | SuperMalloc | master |
+| scudo | scudo (LLVM standalone) | main |
+| lt | ltalloc | master |
+| mng | musl mallocng | master |
+| iso | isoalloc | 1.2.5 |
+| hm, hml | hardened_malloc, light | 11 |
+| sg | SlimGuard | master |
+| ff, fg, gd | ffmalloc, FreeGuard, Guarder | master |
+| mesh, nomesh | Mesh | master |
+| lf | lockfree-malloc | master |
+| lp | libpas (WebKit bmalloc) | main |
+| yal | yalloc | main |
+| rmalloc | rmalloc | master |
+| sys | system glibc malloc | 2.43 |
+
+## Reproducing
+
+The graphs are generated from two captured result files in
+[benchmark/results](benchmark/results):
+
+- `mimalloc-bench-allt.csv` - the merged `allt` suite results, in the mimalloc-bench
+  `benchres.csv` format (`benchmark allocator elapsed rss user sys page-faults page-reclaims`).
+- `rptest-threads.csv` - the rptest thread sweep used by the README graph.
+
+To regenerate the `allt` data, build the allocators and benchmarks in a mimalloc-bench
+checkout and run the suite from `out/bench`:
+
+```
+../../bench.sh sys rp mi mi2 mi3 je tc sn sn-sec hd sm tbb lt iso scudo \
+    ff gd hm hml lf lp mesh nomesh mng sg fg yal rmalloc allt
+```
+
+The resulting `benchres.csv` replaces `benchmark/results/mimalloc-bench-allt.csv`. Then
+regenerate the graphs:
+
+```
+python3 benchmark/plot.py
+```
+
+`plot.py` requires only `matplotlib`. The 4x omission rule and the summary capping are
+applied in the plotting step; the captured CSV files are always complete and unfiltered.
