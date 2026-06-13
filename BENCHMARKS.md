@@ -16,25 +16,15 @@ All numbers were collected on a single machine:
 As with any allocator benchmark, the absolute numbers are specific to this machine and
 workload mix and should be read as relative comparisons, not absolute performance figures.
 
-## Summary
-
-The chart below is the geometric mean across all 20 `allt` benchmarks of each allocator's
-result normalized to the best result on each benchmark (so 1.00 means "fastest/smallest on
-every benchmark"). To keep a single pathological benchmark from dominating the mean, each
-per-benchmark ratio is capped at 4x. Allocators that crashed on one or more benchmarks are
-excluded from this summary but still appear in the per-benchmark charts below.
-
-![mimalloc-bench allt summary](benchmark/images/allt-summary.png)
-
-On aggregate throughput rpmalloc sits in the leading group, within a few percent of snmalloc
-and the three mimalloc generations and ahead of jemalloc and tcmalloc. On peak resident
-memory it is mid-pack: rpmalloc trades some memory for the larger page geometry and free page
-retention that drive its throughput, which is the intended design point for a performance
-oriented general purpose allocator. Where the smaller footprint matters more than peak
-throughput, the `disable_decommit` configuration is off by default and unused pages are
-returned to the OS.
-
 ## Per-benchmark results
+
+The `allt` benchmarks are deliberately diverse - real programs, servers and synthetic stress
+tests - so they are best read per benchmark rather than reduced to a single aggregate number.
+Across the suite rpmalloc sits in the leading throughput group, competitive with snmalloc and
+the three mimalloc generations and ahead of jemalloc and tcmalloc, while trading some peak
+memory for the larger page geometry and free page retention that drive that throughput. Where
+the smaller footprint matters more than peak throughput, the `disable_decommit` configuration
+is off by default and unused pages are returned to the OS.
 
 Elapsed wall-clock time per benchmark, lower is better. Allocators more than 4x slower than
 rpmalloc on a given benchmark are omitted from that benchmark's chart for readability (the
@@ -63,8 +53,9 @@ rptest is the same benchmark used for the throughput-versus-threads graph in the
 
 ## Allocators
 
-The following allocators were built and run. Versions are those pinned by mimalloc-bench at
-the time of the run:
+The following allocators were built and run. The `Key` column is the short name used by
+mimalloc-bench and in the captured CSV files (the graphs spell out the full names). Versions
+are those pinned by mimalloc-bench at the time of the run:
 
 | Key | Allocator | Version |
 |-----|-----------|---------|
@@ -114,5 +105,15 @@ regenerate the graphs:
 python3 benchmark/plot.py
 ```
 
-`plot.py` requires only `matplotlib`. The 4x omission rule and the summary capping are
-applied in the plotting step; the captured CSV files are always complete and unfiltered.
+`plot.py` requires only `matplotlib`. The graph filtering (the 4x omission rule and dropping
+allocators that failed many benchmarks) is applied in the plotting step; the captured CSV
+files are always complete and unfiltered.
+
+In the captured `mimalloc-bench-allt.csv` a benchmark that an allocator crashed on is recorded
+with a zero or blank elapsed time, or - when the process died after starting but before doing
+any real work - with a short elapsed time but zero user and system CPU time (for example
+rocksdb under mallocng, which exits immediately with an empty report). `plot.py` treats all of
+these as failures rather than as instant (fastest/smallest) results: an allocator that failed
+more than two benchmarks is dropped from the graphs entirely (on this run Guarder, Hoard and
+FreeGuard - `gd`, `hd`, `fg`), and isolated failures such as mallocng on rocksdb simply leave a
+missing data point.

@@ -13,7 +13,6 @@
 # Usage: python3 plot.py
 
 import csv
-import math
 import os
 
 import matplotlib
@@ -36,6 +35,8 @@ ALLOC_ORDER = [
     "fg", "lf", "lp", "mesh", "nomesh", "yal", "rmalloc",
 ]
 
+# Full allocator names keyed by the mimalloc-bench short name used in the data.
+# Keep this in sync with the allocator table in BENCHMARKS.md.
 ALLOC_LABEL = {
     "sys": "glibc",
     "rp": "rpmalloc",
@@ -45,6 +46,7 @@ ALLOC_LABEL = {
     "je": "jemalloc",
     "tc": "tcmalloc",
     "sn": "snmalloc",
+    "sn-sec": "snmalloc-checks",
     "hd": "hoard",
     "tbb": "tbbmalloc",
     "sm": "supermalloc",
@@ -52,6 +54,18 @@ ALLOC_LABEL = {
     "lt": "ltalloc",
     "mng": "mallocng",
     "iso": "isoalloc",
+    "hm": "hardened_malloc",
+    "hml": "hardened_malloc-light",
+    "sg": "SlimGuard",
+    "ff": "ffmalloc",
+    "fg": "FreeGuard",
+    "gd": "Guarder",
+    "mesh": "mesh",
+    "nomesh": "mesh (no-mesh)",
+    "lf": "lockfree-malloc",
+    "lp": "libpas",
+    "yal": "yalloc",
+    "rmalloc": "rmalloc",
 }
 
 
@@ -148,24 +162,59 @@ def plot_rptest():
 # mimalloc-bench allt graphs
 # --------------------------------------------------------------------
 
+# Allocators failing more than this many benchmarks are dropped from the allt
+# graphs entirely rather than shown with large gaps.
+FAIL_LIMIT = 2
+
+
 def read_allt():
     path = os.path.join(resultdir, "mimalloc-bench-allt.csv")
     results = {}  # test -> alloc -> (time, rss_mib)
+    fail_count = {}  # alloc -> number of failed benchmarks
     with open(path) as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
             fields = line.split()
-            if len(fields) < 4:
+            # A failed run is recorded by the timing wrapper with an empty
+            # elapsed column (so the row has fewer fields than a success), or
+            # with a zero elapsed time - the allocator crashed before doing any
+            # work. A crash can also produce a short nonzero elapsed time but
+            # zero user+sys CPU time (the process died before running the
+            # workload, e.g. rocksdb under mallocng exits immediately with an
+            # empty report). Treat all of these as failures rather than letting
+            # a crashed allocator masquerade as the fastest/smallest result.
+            if len(fields) < 8:
+                if len(fields) >= 2:
+                    fail_count[fields[1]] = fail_count.get(fields[1], 0) + 1
                 continue
             test, alloc, time_text, rss_text = fields[0], fields[1], fields[2], fields[3]
             try:
                 seconds = parse_time(time_text)
                 rss = float(rss_text) / 1024.0
+                cpu = float(fields[4]) + float(fields[5])
             except ValueError:
                 continue
+            if seconds == 0.0 or cpu == 0.0:
+                fail_count[alloc] = fail_count.get(alloc, 0) + 1
+                continue
             results.setdefault(test, {})[alloc] = (seconds, rss)
+
+    # Allocators that failed many benchmarks are unreliable on this machine and
+    # would clutter the charts with gaps, so drop them entirely; allocators with
+    # only a few isolated failures simply miss those data points.
+    excluded = sorted(a for a, n in fail_count.items() if n > FAIL_LIMIT)
+    for alloc in excluded:
+        for entries in results.values():
+            entries.pop(alloc, None)
+    if excluded:
+        print("allt: excluded (failed >{} benchmarks): {}".format(
+            FAIL_LIMIT, ", ".join("{} ({})".format(a, fail_count[a]) for a in excluded)))
+    isolated = sorted(a for a, n in fail_count.items() if 0 < n <= FAIL_LIMIT)
+    if isolated:
+        print("allt: isolated failures dropped as data points: " + ", ".join(
+            "{} ({})".format(a, fail_count[a]) for a in isolated))
     return results
 
 
@@ -215,66 +264,9 @@ def plot_allt_grid(results, index, fmt, title, image):
     plt.close(fig)
 
 
-def plot_allt_summary(results):
-    # Geometric mean over all tests of the per-test result normalized to the
-    # best (lowest) result for that test. Uses the unfiltered data and ranks
-    # every allocator that completed all tests, but caps each per-test ratio at
-    # SLOW_FACTOR so a single pathological test cannot dominate the mean - this
-    # embodies the same "ignore anything beyond SLOW_FACTOR" rule as the grids
-    # while keeping every allocator in a single fair head-to-head. Allocators
-    # that crashed on one or more tests are excluded (listed at run time).
-    tests = list(results.keys())
-    test_count = len(tests)
-    allocs = {a for entries in results.values() for a in entries}
-    complete = sorted((a for a in allocs if all(a in results[t] for t in tests)), key=alloc_sort_key)
-    excluded = sorted(a for a in allocs if a not in complete)
-    if excluded:
-        print("allt summary: excluded (incomplete test coverage): " + ", ".join(excluded))
-    norm = {alloc: ([], []) for alloc in complete}
-    for test in tests:
-        entries = results[test]
-        best_time = min(entries[a][0] for a in complete)
-        best_rss = min(entries[a][1] for a in complete)
-        for alloc in complete:
-            seconds, rss = entries[alloc]
-            norm[alloc][0].append(min(max(seconds, 0.001) / max(best_time, 0.001), SLOW_FACTOR))
-            norm[alloc][1].append(min(max(rss, 0.001) / max(best_rss, 0.001), SLOW_FACTOR))
-
-    def geomean(values):
-        return math.exp(sum(math.log(v) for v in values) / len(values))
-
-    fig, axes = plt.subplots(1, 2, figsize=(14, 0.35 * len(norm) + 2))
-    for index, (ax, title) in enumerate(
-        zip(axes, ("time (normalized to best, geometric mean)", "rss (normalized to best, geometric mean)"))
-    ):
-        entries = []
-        for alloc, values in norm.items():
-            entries.append((geomean(values[index]), alloc_label(alloc), alloc))
-        entries.sort()
-        bar_colors = ["#202020" if alloc == "rp" else "#5a9bd4" for _, _, alloc in entries]
-        ax.barh(range(len(entries)), [value for value, _, _ in entries], color=bar_colors)
-        ax.set_yticks(range(len(entries)))
-        ax.set_yticklabels([label for _, label, _ in entries], fontsize=8)
-        ax.invert_yaxis()
-        ax.set_title(title, fontsize=11)
-        ax.grid(True, axis="x", alpha=0.3)
-        for ibar, (value, _, _) in enumerate(entries):
-            ax.text(value, ibar, " {:.2f}".format(value), va="center", fontsize=7)
-    fig.suptitle(
-        "mimalloc-bench allt summary, geometric mean over {} tests normalized to best (lower is better)\n"
-        "per-test ratio capped at {:g}x".format(test_count, SLOW_FACTOR),
-        fontsize=12,
-    )
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
-    fig.savefig(os.path.join(imagedir, "allt-summary.png"), dpi=150)
-    plt.close(fig)
-
-
 if __name__ == "__main__":
     plot_rptest()
-    # Summary uses the complete unfiltered data (with per-test capping); the
-    # per-test grids drop allocators beyond SLOW_FACTOR for readability.
-    plot_allt_summary(read_allt())
+    # The per-test grids drop allocators beyond SLOW_FACTOR for readability.
     results = filter_slow(read_allt())
     plot_allt_grid(results, 0, "{:.2f}", "mimalloc-bench allt, elapsed time in seconds (lower is better)", "allt-time.png")
     plot_allt_grid(results, 1, "{:.0f}", "mimalloc-bench allt, peak resident memory in MiB (lower is better)", "allt-rss.png")

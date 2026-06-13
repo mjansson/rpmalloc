@@ -1,4 +1,5 @@
 # benchmark allocator elapsed rss user sys page-faults page-reclaims
+# a zero/blank elapsed time, or a nonzero elapsed time with zero user+sys CPU time, means the allocator failed (crashed) on that benchmark
 alloc-test1 ff    03.82 747376 3.35 0.47 20 411944
 alloc-test1 fg    15:20.32 5632 920.21 0.02 2 1036
 alloc-test1 gd    00.00 5356 0.00 0.00 1 976

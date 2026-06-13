@@ -12,9 +12,12 @@ graphs shown in the [README](../README.md) and [BENCHMARKS](../BENCHMARKS.md) do
 - `images/` - the generated PNG graphs.
 - `plot.py` - regenerates the graphs from the result files. Requires `matplotlib`.
 
-Both result files are complete and unfiltered. The graphs omit allocators that are more than
-4x slower than rpmalloc on a given benchmark (and cap the summary at 4x) purely for
-readability; this filtering happens in `plot.py`, not in the data.
+Both result files are complete and unfiltered. For readability the graphs omit allocators
+that are more than 4x slower than rpmalloc on a given benchmark, and drop allocators that
+failed many benchmarks entirely; this filtering happens in `plot.py`, not in the data. In the
+`allt` data a benchmark an allocator crashed on is recorded with a zero or blank elapsed time,
+or with zero user+sys CPU time when it died before doing any work; `plot.py` treats both as
+failures rather than instant results.
 
 ```
 python3 plot.py
