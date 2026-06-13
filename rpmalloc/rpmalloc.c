@@ -66,6 +66,9 @@
 #include <windows.h>
 #include <fibersapi.h>
 static DWORD fls_key;
+//! VirtualAlloc2 (Windows 10+), resolved dynamically; null on older systems
+typedef PVOID(WINAPI* virtualalloc2_fn)(HANDLE, PVOID, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER*, ULONG);
+static virtualalloc2_fn os_virtualalloc2;
 #endif
 #if PLATFORM_POSIX
 #include <sys/mman.h>
@@ -434,6 +437,11 @@ struct page_t {
 	uint32_t has_aligned_block : 1;
 	//! Fast combination flag for either huge, fully allocated or has aligned blocks
 	uint32_t generic_free : 1;
+	//! Set if the span maps reserve-only (pages commit on demand, may be decommitted),
+	//  captured at map time so it survives a config change across a finalize/initialize
+	uint32_t commit_on_demand : 1;
+	//! log2 of the committed prefix (the page size at the span's map time)
+	uint32_t commit_prefix_shift : 6;
 	//! Local free list count
 	uint32_t local_free_count;
 	//! Local free list
@@ -771,12 +779,27 @@ os_mmap(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
 #else
 	DWORD do_commit = MEM_COMMIT;
 #endif
-	void* ptr =
-	    VirtualAlloc(0, map_size, (os_huge_pages ? MEM_LARGE_PAGES : 0) | MEM_RESERVE | do_commit, PAGE_READWRITE);
-	if (!ptr && os_huge_pages) {
-		// Large page allocations can fail due to physical memory fragmentation
-		// or exhausted large page quota, fall back to regular pages
-		ptr = VirtualAlloc(0, map_size, MEM_RESERVE | do_commit, PAGE_READWRITE);
+	const DWORD base_flags = MEM_RESERVE | do_commit;
+	const DWORD large_flag = (os_huge_pages ? MEM_LARGE_PAGES : 0);
+	void* ptr = 0;
+	if (alignment && os_virtualalloc2) {
+		// Map an aligned region directly so no alignment padding is retained per mapping
+		MEM_ADDRESS_REQUIREMENTS reqs;
+		memset(&reqs, 0, sizeof(reqs));
+		reqs.Alignment = alignment;
+		MEM_EXTENDED_PARAMETER param;
+		memset(&param, 0, sizeof(param));
+		param.Type = MemExtendedParameterAddressRequirements;
+		param.Pointer = &reqs;
+		map_size = size;
+		ptr = os_virtualalloc2(0, 0, map_size, large_flag | base_flags, PAGE_READWRITE, &param, 1);
+		if (!ptr && large_flag)
+			ptr = os_virtualalloc2(0, 0, map_size, base_flags, PAGE_READWRITE, &param, 1);
+	} else {
+		// Pre Windows 10: over-allocate and offset for alignment below
+		ptr = VirtualAlloc(0, map_size, large_flag | base_flags, PAGE_READWRITE);
+		if (!ptr && large_flag)
+			ptr = VirtualAlloc(0, map_size, base_flags, PAGE_READWRITE);
 	}
 #else
 	int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED;
@@ -879,12 +902,22 @@ os_mmap(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
 	return ptr;
 }
 
+//! Whether newly mapped regions are reserve-only (pages committed on demand). Mirrors the
+//  commit choice os_mmap makes; the single definition spans/heaps capture at map time.
+static inline int
+os_commit_on_demand(void) {
+#if ENABLE_DECOMMIT
+	return global_config.disable_decommit ? 0 : 1;
+#else
+	return 0;
+#endif
+}
+
 static int
 os_mcommit(void* address, size_t size) {
 #if ENABLE_DECOMMIT
-	if (global_config.disable_decommit) {
-		return 0;
-	}
+	// Gated by callers on the per-span commit_on_demand flag; spans committed in full at
+	// map time (incl. huge/large pages, which cannot be partially committed) never reach here
 #if PLATFORM_WINDOWS
 	if (!VirtualAlloc(address, size, MEM_COMMIT, PAGE_READWRITE)) {
 		if (global_memory_interface->map_fail_callback && global_memory_interface->map_fail_callback(size))
@@ -920,6 +953,8 @@ os_mcommit(void* address, size_t size) {
 static int
 os_mdecommit(void* address, size_t size) {
 #if ENABLE_DECOMMIT
+	// Unlike os_mcommit, honor the live flag so the Linux fallback below can stop all
+	// further decommits by setting disable_decommit mid-run
 	if (global_config.disable_decommit)
 		return 1;
 #if PLATFORM_WINDOWS
@@ -1076,14 +1111,17 @@ static inline void
 page_decommit_memory_pages(page_t* page) {
 	if (page->is_decommitted)
 		return;
-	// Only the range beyond the first configured page can be decommitted - skip page
-	// types that are not larger than the configured page size (which is always the
-	// case for the smaller page types when huge pages are enabled)
-	size_t page_size = page_get_size(page);
-	if (page_size <= global_config.page_size)
+	// Only reserve-only spans support decommit
+	if (!page->commit_on_demand)
 		return;
-	void* extra_page = pointer_offset(page, global_config.page_size);
-	size_t extra_page_size = page_size - global_config.page_size;
+	// Keep the prefix (holding the page header) committed and decommit the rest. The prefix
+	// is the span's fixed map-time page size, so commit and decommit always use the same one.
+	size_t commit_prefix = (size_t)1 << page->commit_prefix_shift;
+	size_t page_size = page_get_size(page);
+	if (page_size <= commit_prefix)
+		return;
+	void* extra_page = pointer_offset(page, commit_prefix);
+	size_t extra_page_size = page_size - commit_prefix;
 	if (global_memory_interface->memory_decommit(extra_page, extra_page_size) != 0)
 		return;
 #if RPMALLOC_HEAP_STATISTICS && ENABLE_DECOMMIT
@@ -1097,8 +1135,9 @@ static inline int
 page_commit_memory_pages(page_t* page) {
 	if (!page->is_decommitted)
 		return 0;
-	void* extra_page = pointer_offset(page, global_config.page_size);
-	size_t extra_page_size = page_get_size(page) - global_config.page_size;
+	size_t commit_prefix = (size_t)1 << page->commit_prefix_shift;
+	void* extra_page = pointer_offset(page, commit_prefix);
+	size_t extra_page_size = page_get_size(page) - commit_prefix;
 	if (global_memory_interface->memory_commit(extra_page, extra_page_size) != 0)
 		return 1;
 	page->is_decommitted = 0;
@@ -1112,7 +1151,7 @@ page_commit_memory_pages(page_t* page) {
 	// will be zeroed out by OS - take advantage in zalloc/calloc calls and make sure
 	// blocks in first page is zeroed out
 	void* first_page = pointer_offset(page, PAGE_HEADER_SIZE);
-	memset(first_page, 0, global_config.page_size - PAGE_HEADER_SIZE);
+	memset(first_page, 0, commit_prefix - PAGE_HEADER_SIZE);
 	page->is_zero = 1;
 #endif
 #endif
@@ -1351,8 +1390,9 @@ span_allocate_page(span_t* span) {
 	page_t* page = pointer_offset(span, span->page_size * span->page_initialized);
 
 #if ENABLE_DECOMMIT
-	// The first page is always committed on initial span map of memory
-	if (span->page_initialized) {
+	// Reserve-only spans commit later pages on demand; fully committed spans are already
+	// committed from the map and must not be committed per page
+	if (span->page_initialized && span->page.commit_on_demand) {
 		if (global_memory_interface->memory_commit(page, span->page_size) != 0)
 			return 0;
 #if RPMALLOC_HEAP_STATISTICS
@@ -1363,6 +1403,8 @@ span_allocate_page(span_t* span) {
 	++span->page_initialized;
 
 	page->page_type = span->page_type;
+	page->commit_on_demand = span->page.commit_on_demand;
+	page->commit_prefix_shift = span->page.commit_prefix_shift;
 	page->is_zero = 1;
 	page->heap = heap;
 	rpmalloc_assert(page_is_thread_heap(page), "Page owner thread mismatch");
@@ -1687,7 +1729,7 @@ heap_allocate_new(void) {
 	size_t mapped_size = 0;
 	block_t* block = global_memory_interface->memory_map(heap_size, 0, &offset, &mapped_size);
 #if ENABLE_DECOMMIT
-	if (global_memory_interface->memory_commit(block, heap_size) != 0) {
+	if (os_commit_on_demand() && (global_memory_interface->memory_commit(block, heap_size) != 0)) {
 		global_memory_interface->memory_unmap(block, offset, mapped_size);
 		return 0;
 	}
@@ -1825,12 +1867,22 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 			page_size = LARGE_PAGE_SIZE;
 			page_address_mask = LARGE_PAGE_MASK;
 		}
+		// Commit the first page for reserve-only spans (fully committed spans commit nothing
+		// here); record the commit model on the span only after its header is committed
+		int commit_on_demand = os_commit_on_demand();
 #if ENABLE_DECOMMIT
-		if (global_memory_interface->memory_commit(span, page_size) != 0) {
-			global_memory_interface->memory_unmap(span, offset, mapped_size);
-			return 0;
+		if (commit_on_demand) {
+			if (global_memory_interface->memory_commit(span, page_size) != 0) {
+				global_memory_interface->memory_unmap(span, offset, mapped_size);
+				return 0;
+			}
 		}
 #endif
+		span->page.commit_on_demand = (uint32_t)commit_on_demand;
+		uint32_t commit_prefix_shift = 0;
+		while (((size_t)1 << commit_prefix_shift) < global_config.page_size)
+			++commit_prefix_shift;
+		span->page.commit_prefix_shift = commit_prefix_shift;
 #if RPMALLOC_HEAP_STATISTICS
 #if ENABLE_DECOMMIT
 		heap->stats.committed_size += page_size;
@@ -1967,7 +2019,8 @@ heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
 	if (block) {
 		span_t* span = block;
 #if ENABLE_DECOMMIT
-		if (!from_cache && (global_memory_interface->memory_commit(span, alloc_size) != 0)) {
+		if (!from_cache && os_commit_on_demand() &&
+		    (global_memory_interface->memory_commit(span, alloc_size) != 0)) {
 			global_memory_interface->memory_unmap(block, offset, mapped_size);
 			return 0;
 		}
@@ -1983,6 +2036,9 @@ heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
 		span->heap = heap;
 		span->page_type = PAGE_HUGE;
 		span->page_address_mask = LARGE_PAGE_MASK;
+		// Huge blocks never use the per-page commit path; set explicitly so a reused cached
+		// mapping carries no stale value
+		span->page.commit_on_demand = 0;
 		if (!from_cache) {
 			span->page_size = (uint32_t)global_config.page_size;
 			span->page_count = (uint32_t)(alloc_size / global_config.page_size);
@@ -2419,6 +2475,12 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 	memset(&system_info, 0, sizeof(system_info));
 	GetSystemInfo(&system_info);
 	os_map_granularity = system_info.dwAllocationGranularity;
+	os_virtualalloc2 = 0;
+	{
+		HMODULE kernelbase = GetModuleHandleW(L"kernelbase.dll");
+		if (kernelbase)
+			os_virtualalloc2 = (virtualalloc2_fn)(void (*)(void))GetProcAddress(kernelbase, "VirtualAlloc2");
+	}
 #else
 	os_map_granularity = (size_t)sysconf(_SC_PAGESIZE);
 #endif
@@ -2456,6 +2518,9 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 			}
 			CloseHandle(token);
 		}
+		// Disable huge pages if the system large page size is not a power of two that fits the builtin geometry
+		if (os_huge_pages && ((large_page_minimum & (large_page_minimum - 1)) || (large_page_minimum > LARGE_PAGE_SIZE)))
+			os_huge_pages = 0;
 		if (os_huge_pages) {
 			if (large_page_minimum > os_page_size)
 				os_page_size = large_page_minimum;

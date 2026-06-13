@@ -8,6 +8,16 @@ import subprocess
 import toolchain
 import vslocate
 
+def version_key(versionstr):
+  #Sort key for dotted numeric version strings (e.g. '14.38.33130') without any external dependency
+  parts = []
+  for part in versionstr.split('.'):
+    try:
+      parts.append(int(part))
+    except ValueError:
+      parts.append(-1)
+  return parts
+
 class MSVCToolchain(toolchain.Toolchain):
 
   def initialize(self, project, archs, configs, includepaths, dependlibs, libpaths, variables, subninja):
@@ -134,8 +144,7 @@ class MSVCToolchain(toolchain.Toolchain):
         if int(major_version) >= 15:
           tools_basepath = os.path.join(installpath, 'VC', 'Tools', 'MSVC')
           tools_list = [item for item in os.listdir(tools_basepath) if os.path.isdir(os.path.join(tools_basepath, item))]
-          from packaging.version import Version
-          tools_list.sort(key=Version)
+          tools_list.sort(key=version_key)
           self.toolchain = os.path.join(tools_basepath, tools_list[-1])
           self.toolchain_version = major_version + ".0"
           break
@@ -164,8 +173,7 @@ class MSVCToolchain(toolchain.Toolchain):
             if not toolchain == '':
               tools_basepath = os.path.join(toolchain, 'VC', 'Tools', 'MSVC')
               tools_list = [item for item in os.listdir(tools_basepath) if os.path.isdir(os.path.join(tools_basepath, item))]
-              from distutils.version import StrictVersion
-              tools_list.sort(key=StrictVersion)
+              tools_list.sort(key=version_key)
               toolchain = os.path.join(tools_basepath, tools_list[-1])
               self.toolchain = toolchain
               self.toolchain_version = version
