@@ -40,6 +40,9 @@
 #if __has_warning("-Wimplicit-void-ptr-cast")
 #pragma clang diagnostic ignored "-Wimplicit-void-ptr-cast"
 #endif
+#if __has_warning("-Wallocator-wrappers")
+#pragma clang diagnostic ignored "-Wallocator-wrappers"
+#endif
 #elif defined(__GNUC__)
 #pragma GCC diagnostic ignored "-Wunused-macros"
 #pragma GCC diagnostic ignored "-Wunused-function"
