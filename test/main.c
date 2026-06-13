@@ -12,6 +12,9 @@
 #if __has_warning("-Wunsafe-buffer-usage")
 #pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
 #endif
+#if __has_warning("-Wimplicit-void-ptr-cast")
+#pragma clang diagnostic ignored "-Wimplicit-void-ptr-cast"
+#endif
 #endif
 #if defined(__GNUC__)
 #pragma GCC diagnostic ignored "-Wunused-result"
@@ -1136,6 +1139,102 @@ test_large_pages(void) {
 }
 
 static int
+test_huge_pages_alloc(void) {
+	// Exercise all page types (small, medium, large) and huge blocks
+	const size_t size[] = {16,         1000,            4000,            25 * 1024,
+	                       150 * 1024, 2 * 1024 * 1024, 7 * 1024 * 1024, 26 * 1024 * 1024};
+	const size_t size_count = sizeof(size) / sizeof(size[0]);
+	const size_t alloc_count = 8;
+	void* addr[sizeof(size) / sizeof(size[0])][8];
+	for (size_t isize = 0; isize < size_count; ++isize) {
+		for (size_t ialloc = 0; ialloc < alloc_count; ++ialloc) {
+			void* ptr = rpmalloc(size[isize]);
+			if (!ptr)
+				return test_fail("Allocation failed");
+			memset(ptr, 0xab, size[isize]);
+			addr[isize][ialloc] = ptr;
+		}
+	}
+	for (size_t isize = 0; isize < size_count; ++isize) {
+		for (size_t ialloc = 0; ialloc < alloc_count; ++ialloc) {
+			const unsigned char* ptr = addr[isize][ialloc];
+			if ((ptr[0] != 0xab) || (ptr[size[isize] - 1] != 0xab))
+				return test_fail("Data not preserved in allocation");
+			rpfree(addr[isize][ialloc]);
+		}
+	}
+	// Verify zeroed allocations survive the free page commit/decommit cycles
+	for (size_t isize = 0; isize < size_count; ++isize) {
+		void* ptr = rpcalloc(1, size[isize]);
+		if (!ptr)
+			return test_fail("Allocation failed");
+		const unsigned char* bytes = ptr;
+		for (size_t ibyte = 0; ibyte < size[isize]; ++ibyte) {
+			if (bytes[ibyte] != 0)
+				return test_fail("Zeroed allocation not zeroed");
+		}
+		rpfree(ptr);
+	}
+	return 0;
+}
+
+static int
+test_huge_pages(void) {
+	rpmalloc_config_t config = {0};
+	config.enable_huge_pages = 1;
+
+	rpmalloc_initialize_config(0, &config);
+
+	const rpmalloc_config_t* effective_config = rpmalloc_config();
+	if (!effective_config->enable_huge_pages) {
+		rpmalloc_finalize();
+		printf("Huge pages test skipped (huge pages not supported)\n");
+		return 0;
+	}
+	if (effective_config->page_size < (2 * 1024 * 1024)) {
+		rpmalloc_finalize();
+		return test_fail("Page size not raised to huge page size");
+	}
+
+	int ret = test_huge_pages_alloc();
+
+	rpmalloc_finalize();
+
+	if (ret == 0)
+		printf("Huge pages test passed\n");
+
+	return ret;
+}
+
+static int
+test_transparent_huge_pages(void) {
+	rpmalloc_config_t config = {0};
+	config.enable_thp = 1;
+
+	rpmalloc_initialize_config(0, &config);
+
+	const rpmalloc_config_t* effective_config = rpmalloc_config();
+	int thp_in_use = effective_config->enable_thp;
+	if (thp_in_use && effective_config->enable_huge_pages) {
+		rpmalloc_finalize();
+		return test_fail("Transparent huge pages should not enable explicit huge pages");
+	}
+
+	int ret = test_huge_pages_alloc();
+
+	rpmalloc_finalize();
+
+	if (ret == 0) {
+		if (thp_in_use)
+			printf("Transparent huge pages test passed\n");
+		else
+			printf("Transparent huge pages test skipped (not supported)\n");
+	}
+
+	return ret;
+}
+
+static int
 test_named_pages(void) {
 	rpmalloc_config_t config = {0};
 	char page_name[64] = {0};
@@ -1203,6 +1302,10 @@ test_run(int argc, char** argv) {
 	if (test_threadspam())
 		return -1;
 	if (test_large_pages())
+		return -1;
+	if (test_huge_pages())
+		return -1;
+	if (test_transparent_huge_pages())
 		return -1;
 	if (test_first_class_heaps())
 		return -1;

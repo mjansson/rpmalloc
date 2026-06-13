@@ -85,6 +85,12 @@ typedef struct rpmalloc_global_statistics_t {
 	size_t active;
 	//! Peak amount of virtual memory active and committed (only if ENABLE_STATISTICS=1)
 	size_t active_peak;
+	//! Current amount of memory allocated in huge block allocations, i.e blocks above the
+	//! largest size class (only if ENABLE_STATISTICS=1)
+	size_t huge_alloc;
+	//! Peak amount of memory allocated in huge block allocations, i.e blocks above the
+	//! largest size class (only if ENABLE_STATISTICS=1)
+	size_t huge_alloc_peak;
 	//! Current heap count (only if ENABLE_STATISTICS=1)
 	size_t heap_count;
 } rpmalloc_global_statistics_t;
@@ -180,6 +186,14 @@ typedef struct rpmalloc_config_t {
 	//  For Windows, see https://docs.microsoft.com/en-us/windows/desktop/memory/large-page-support
 	//  For Linux, see https://www.kernel.org/doc/Documentation/vm/hugetlbpage.txt
 	int enable_huge_pages;
+	//! Enable use of transparent huge pages, advising the kernel to back large memory
+	//  mappings with huge pages without requiring a preallocated huge page pool. Unlike
+	//  enable_huge_pages this does not affect page size or accounting, and unused memory
+	//  ranges can still be decommitted. Ignored if enable_huge_pages is in effect or if
+	//  the platform has no transparent huge page support (currently implemented for
+	//  Linux and Android only). After initialization the config value reflects if
+	//  transparent huge pages are actually used.
+	int enable_thp;
 	//! Disable decommitting unused pages when allocator determines the memory pressure
 	//  is low and there is enough active pages cached. If set to 1, keep all pages committed.
 	int disable_decommit;
