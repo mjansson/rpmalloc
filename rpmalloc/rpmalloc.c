@@ -289,7 +289,47 @@ statistics_sub_saturating(atomic_size_t* counter, size_t value) {
 	    !atomic_compare_exchange_weak_explicit(counter, &current, next, memory_order_relaxed, memory_order_relaxed));
 }
 
+//! Per size class allocation counters, updated only by the owning thread (cross-thread frees are
+//  deferred and accounted when the owner processes them), so plain integers suffice
+typedef struct heap_size_use_t {
+	int32_t alloc_current;
+	int32_t alloc_peak;
+	int32_t alloc_total;
+	int32_t free_total;
+} heap_size_use_t;
+
+//! A successful allocation of the given size class on the owning heap
+#define _rpmalloc_stat_inc_alloc(heap, class_idx)                       \
+	do {                                                                \
+		heap_size_use_t* _su = (heap)->size_use + (class_idx);          \
+		if (++_su->alloc_current > _su->alloc_peak)                     \
+			_su->alloc_peak = _su->alloc_current;                       \
+		++_su->alloc_total;                                             \
+	} while (0)
+//! Account for a number of freed blocks of the given size class on the owning heap
+#define _rpmalloc_stat_add_free(heap, class_idx, count)                 \
+	do {                                                                \
+		heap_size_use_t* _su = (heap)->size_use + (class_idx);          \
+		_su->alloc_current -= (int32_t)(count);                         \
+		_su->free_total += (int32_t)(count);                            \
+	} while (0)
+//! A raw memory map call for a span of the given page type on the owning heap
+#define _rpmalloc_stat_inc_span_map(heap, page_type) \
+	do {                                             \
+		++(heap)->span_map_calls[page_type];         \
+	} while (0)
+
 #else
+
+#define _rpmalloc_stat_inc_alloc(heap, class_idx) \
+	do {                                          \
+	} while (0)
+#define _rpmalloc_stat_add_free(heap, class_idx, count) \
+	do {                                                \
+	} while (0)
+#define _rpmalloc_stat_inc_span_map(heap, page_type) \
+	do {                                             \
+	} while (0)
 
 #endif
 
@@ -523,6 +563,12 @@ struct heap_t {
 	size_t mapped_size;
 #if RPMALLOC_HEAP_STATISTICS
 	struct rpmalloc_heap_statistics_t stats;
+#endif
+#if ENABLE_STATISTICS
+	//! Per size class allocation counters (current span_use count is computed live on demand)
+	heap_size_use_t size_use[SIZE_CLASS_COUNT];
+	//! Per page type raw span map call counters
+	uint32_t span_map_calls[5];
 #endif
 };
 
@@ -1245,6 +1291,7 @@ page_put_local_free_block(page_t* page, block_t* block) {
 	block->next = page->local_free;
 	page->local_free = block;
 	++page->local_free_count;
+	_rpmalloc_stat_add_free(page->heap, page->size_class, 1);
 	if (UNEXPECTED(--page->block_used == 0)) {
 		page_available_to_free(page);
 	} else if (UNEXPECTED(page->is_full != 0)) {
@@ -1265,6 +1312,7 @@ page_adopt_thread_free_block_list(page_t* page) {
 		page->local_free_count = page_block_from_thread_free_list(page, thread_free, &page->local_free);
 		rpmalloc_assert(page->local_free_count <= page->block_used, "Page thread free list count internal failure");
 		page->block_used -= page->local_free_count;
+		_rpmalloc_stat_add_free(page->heap, page->size_class, page->local_free_count);
 	}
 }
 
@@ -1685,6 +1733,7 @@ block_deallocate(block_t* block) {
 			block->next = page->local_free;
 			page->local_free = block;
 			++page->local_free_count;
+			_rpmalloc_stat_add_free(page->heap, page->size_class, 1);
 			if (UNEXPECTED(--page->block_used == 0))
 				page_available_to_free(page);
 		} else {
@@ -1824,9 +1873,6 @@ heap_allocate_new(int first_class) {
 	}
 	global_heap_creating = 0;
 	heap_lock_release();
-#if ENABLE_STATISTICS
-	atomic_fetch_add_explicit(&global_statistics.heap_count, heap_count, memory_order_relaxed);
-#endif
 	return heap;
 }
 
@@ -1854,12 +1900,21 @@ heap_allocate(int first_class) {
 		global_heap_used = heap;
 		heap_lock_release();
 		heap->owner_thread = current_thread_id;
+#if ENABLE_STATISTICS
+		// Per-thread statistics start fresh for the new owner; a reused heap is not reinitialized
+		memset(heap->size_use, 0, sizeof(heap->size_use));
+		memset(heap->span_map_calls, 0, sizeof(heap->span_map_calls));
+		atomic_fetch_add_explicit(&global_statistics.heap_count, 1, memory_order_relaxed);
+#endif
 	}
 	return heap;
 }
 
 static inline void
 heap_release(heap_t* heap) {
+#if ENABLE_STATISTICS
+	statistics_sub_saturating(&global_statistics.heap_count, 1);
+#endif
 	heap_lock_acquire();
 	if (heap->prev)
 		heap->prev->next = heap->next;
@@ -1932,6 +1987,7 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 	heap->stats.mapped_size += mapped_size;
 #endif
 	if (EXPECTED(span != 0)) {
+		_rpmalloc_stat_inc_span_map(heap, page_type);
 		uint32_t page_count = 0;
 		uint32_t page_size = 0;
 		uintptr_t page_address_mask = 0;
@@ -2103,6 +2159,8 @@ heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
 		block = global_memory_interface->memory_map(alloc_size, SPAN_SIZE, &offset, &mapped_size);
 	if (block) {
 		span_t* span = block;
+		if (!from_cache)
+			_rpmalloc_stat_inc_span_map(heap, PAGE_HUGE);
 #if ENABLE_DECOMMIT
 		if (!from_cache && os_commit_on_demand() &&
 		    (global_memory_interface->memory_commit(span, alloc_size) != 0)) {
@@ -2169,6 +2227,7 @@ heap_allocate_block_generic(heap_t* heap, size_t size, unsigned int zero) {
 #if RPMALLOC_HEAP_STATISTICS
 		heap->stats.allocated_size += global_size_class[size_class].block_size;
 #endif
+		_rpmalloc_stat_inc_alloc(heap, size_class);
 
 		block_t* block = heap_pop_local_free(heap, size_class);
 		if (EXPECTED(block != 0)) {
@@ -2197,11 +2256,13 @@ heap_allocate_block(heap_t* heap, size_t size, unsigned int zero) {
 #if RPMALLOC_HEAP_STATISTICS
 			heap->stats.allocated_size += global_size_class[size_class].block_size;
 #endif
+			_rpmalloc_stat_inc_alloc(heap, size_class);
 			return block;
 		}
 #if RPMALLOC_HEAP_STATISTICS
 		heap->stats.allocated_size += global_size_class[size_class].block_size;
 #endif
+		_rpmalloc_stat_inc_alloc(heap, size_class);
 		// The size class is already known - refill directly, skipping the
 		// generic path size class recomputation and dead local free list pop
 		return heap_allocate_block_small_to_large(heap, size_class, zero);
@@ -2807,6 +2868,49 @@ rpmalloc_thread_collect(void) {
 }
 
 void
+rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats) {
+	memset(stats, 0, sizeof(rpmalloc_thread_statistics_t));
+#if ENABLE_STATISTICS
+	heap_t* heap = get_thread_heap();
+	if (!heap || (heap->id == 0))
+		return;
+
+	// Size class cache: free blocks held at heap level and in partially used pages, computed live
+	for (uint32_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
+		size_t block_size = global_size_class[iclass].block_size;
+		size_t free_count = 0;
+		for (block_t* block = heap->local_free[iclass]; block; block = block->next)
+			++free_count;
+		for (page_t* page = heap->page_available[iclass]; page; page = page->next)
+			free_count += page->local_free_count;
+		stats->sizecache += free_count * block_size;
+
+		stats->size_use[iclass].alloc_current = (size_t)heap->size_use[iclass].alloc_current;
+		stats->size_use[iclass].alloc_peak = (size_t)heap->size_use[iclass].alloc_peak;
+		stats->size_use[iclass].alloc_total = (size_t)heap->size_use[iclass].alloc_total;
+		stats->size_use[iclass].free_total = (size_t)heap->size_use[iclass].free_total;
+	}
+
+	// Span cache: free but still committed pages retained per page type
+	static const size_t page_type_size[4] = {SMALL_PAGE_SIZE, MEDIUM_SMALL_PAGE_SIZE, MEDIUM_LARGE_PAGE_SIZE,
+	                                          LARGE_PAGE_SIZE};
+	for (uint32_t itype = 0; itype < 4; ++itype)
+		stats->spancache += (size_t)heap->page_free_commit_count[itype] * page_type_size[itype];
+
+	// Per page type span use: current spans in use computed live (partial plus full), map calls counted
+	for (uint32_t itype = 0; itype < 5; ++itype) {
+		size_t current = 0;
+		if ((itype < 4) && heap->span_partial[itype])
+			++current;
+		for (span_t* span = heap->span_used[itype]; span; span = span->next)
+			++current;
+		stats->span_use[itype].current = current;
+		stats->span_use[itype].map_calls = (size_t)heap->span_map_calls[itype];
+	}
+#endif
+}
+
+void
 rpmalloc_dump_statistics(void* file) {
 #if ENABLE_STATISTICS
 	fprintf(file, "Mapped pages:        %llu\n",
@@ -2825,8 +2929,42 @@ rpmalloc_dump_statistics(void* file) {
 	        (unsigned long long)atomic_load_explicit(&global_statistics.huge_alloc, memory_order_relaxed));
 	fprintf(file, "Huge bytes (peak):   %llu\n",
 	        (unsigned long long)atomic_load_explicit(&global_statistics.huge_alloc_peak, memory_order_relaxed));
-	fprintf(file, "Heaps created:       %llu\n",
+	fprintf(file, "Heaps in use:        %llu\n",
 	        (unsigned long long)atomic_load_explicit(&global_statistics.heap_count, memory_order_relaxed));
+
+	// Aggregate per size class and per page type counters across all in-use heaps. This walks live
+	// heaps without stopping the world, so the values are a best-effort snapshot.
+	heap_size_use_t size_use[SIZE_CLASS_COUNT];
+	memset(size_use, 0, sizeof(size_use));
+	uint64_t span_map_calls[5];
+	memset(span_map_calls, 0, sizeof(span_map_calls));
+	heap_lock_acquire();
+	for (heap_t* heap = global_heap_used; heap; heap = heap->next) {
+		for (uint32_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
+			size_use[iclass].alloc_current += heap->size_use[iclass].alloc_current;
+			size_use[iclass].alloc_peak += heap->size_use[iclass].alloc_peak;
+			size_use[iclass].alloc_total += heap->size_use[iclass].alloc_total;
+			size_use[iclass].free_total += heap->size_use[iclass].free_total;
+		}
+		for (uint32_t itype = 0; itype < 5; ++itype)
+			span_map_calls[itype] += heap->span_map_calls[itype];
+	}
+	heap_lock_release();
+
+	fprintf(file, "SizeClass  CurAlloc PeakAlloc  TotAlloc   TotFree BlockSize\n");
+	for (uint32_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
+		if (!size_use[iclass].alloc_total)
+			continue;
+		fprintf(file, "%9u %9d %9d %9d %9d %9u\n", iclass, size_use[iclass].alloc_current,
+		        size_use[iclass].alloc_peak, size_use[iclass].alloc_total, size_use[iclass].free_total,
+		        global_size_class[iclass].block_size);
+	}
+	fprintf(file, "PageType  MapCalls\n");
+	for (uint32_t itype = 0; itype < 5; ++itype) {
+		if (!span_map_calls[itype])
+			continue;
+		fprintf(file, "%8u %9llu\n", itype, (unsigned long long)span_map_calls[itype]);
+	}
 #else
 	(void)sizeof(file);
 #endif
