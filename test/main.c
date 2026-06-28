@@ -36,6 +36,10 @@
 #include <unistd.h>
 #endif
 
+#if !defined(_WIN32)
+#include <sys/mman.h>
+#endif
+
 #define pointer_offset(ptr, ofs) (void*)((char*)(ptr) + (ptrdiff_t)(ofs))
 #define pointer_diff(first, second) (ptrdiff_t)((const char*)(first) - (const char*)(second))
 
@@ -1055,6 +1059,7 @@ test_first_class_heaps(void) {
 	unsigned int i;
 	size_t num_alloc_threads;
 	allocator_thread_arg_t arg[32];
+	thread_arg targ[32];
 
 	rpmalloc_config_t config = {0};
 	//config.unmap_on_finalize = 1;
@@ -1093,13 +1098,14 @@ test_first_class_heaps(void) {
 #endif
 		arg[i].init_fini_each_loop = 1;
 
-		thread_arg targ;
-		targ.fn = heap_allocator_thread;
+		// targ must outlive the thread, which reads it asynchronously until join below, so it
+		// cannot be a per-iteration stack local
+		targ[i].fn = heap_allocator_thread;
 		if ((i % 2) != 0)
-			targ.fn = allocator_thread;
-		targ.arg = &arg[i];
+			targ[i].fn = allocator_thread;
+		targ[i].arg = &arg[i];
 
-		thread[i] = thread_run(&targ);
+		thread[i] = thread_run(&targ[i]);
 	}
 
 	thread_sleep(1000);
@@ -1269,6 +1275,197 @@ test_named_pages(void) {
 	return 0;
 }
 
+static int
+test_finalize_unmap(void) {
+	// Exercises heap packing together with unmap_on_finalize, which the other tests leave disabled
+	// (they let the OS reclaim memory at exit). Threads repeatedly create and destroy heaps, drawing
+	// from the pristine and reuse pools, and first-class heaps draw pristine heaps from the same
+	// shared blocks. rpmalloc_finalize then unmaps every shared block exactly once via its owner.
+	// Runs with the default page size and with a forced larger page size so many heaps are carved
+	// per block.
+	size_t page_size[2];
+	page_size[0] = 0;
+	page_size[1] = 256 * 1024;
+
+	for (unsigned int icfg = 0; icfg < 2; ++icfg) {
+		rpmalloc_config_t config = {0};
+		config.page_size = page_size[icfg];
+		config.unmap_on_finalize = 1;
+		rpmalloc_initialize_config(0, &config);
+
+		allocator_thread_arg_t arg = {0};
+		arg.loops = 30;
+		arg.passes = 8;
+		arg.datasize[0] = 19;
+		arg.datasize[1] = 249;
+		arg.datasize[2] = 797;
+		arg.datasize[3] = 3;
+		arg.datasize[4] = 7949;
+		arg.datasize[5] = 34;
+		arg.datasize[6] = 389;
+		arg.num_datasize = 7;
+
+		size_t num_threads = hardware_threads;
+		if (num_threads < 2)
+			num_threads = 2;
+		if (num_threads > 16)
+			num_threads = 16;
+
+		thread_arg targ;
+		targ.fn = initfini_thread;
+		targ.arg = &arg;
+
+		uintptr_t thread[16];
+		for (size_t i = 0; i < num_threads; ++i)
+			thread[i] = thread_run(&targ);
+
+#if RPMALLOC_FIRST_CLASS_HEAPS
+		// First-class heaps must come back pristine; here they reuse never-used heaps carved from
+		// the shared blocks (mapped for the worker heaps or for earlier first-class heaps).
+		rpmalloc_heap_t* heap[64];
+		for (unsigned int i = 0; i < 64; ++i) {
+			heap[i] = rpmalloc_heap_acquire();
+			void* p = rpmalloc_heap_alloc(heap[i], 1000 + i * 137);
+			if (!p)
+				return test_fail("First class allocation failed in finalize unmap test");
+			rpmalloc_heap_free(heap[i], p);
+		}
+		for (unsigned int i = 0; i < 64; ++i)
+			rpmalloc_heap_release(heap[i]);
+#endif
+
+		int failed = 0;
+		for (size_t i = 0; i < num_threads; ++i) {
+			if (thread_join(thread[i]) != 0)
+				failed = 1;
+		}
+
+		rpmalloc_finalize();
+
+		if (failed)
+			return test_fail("Thread failed in finalize unmap test");
+	}
+
+	printf("Finalize unmap (heap packing) tests passed\n");
+	return 0;
+}
+
+#if !defined(_WIN32) && RPMALLOC_FIRST_CLASS_HEAPS
+
+// Counting memory interface used by test_heap_packing. Heap control blocks are the only mappings
+// requested with alignment 0 (spans and huge blocks use span-size alignment), so counting those
+// maps tells us exactly how many heap blocks were mapped. The test drives this single-threaded, so
+// a plain counter is sufficient.
+static size_t test_pack_block_maps;
+
+static void*
+test_pack_map(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
+	size_t map_size = size + alignment;
+	void* ptr = mmap(0, map_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+	if (ptr == MAP_FAILED)
+		return 0;
+	*offset = 0;
+	if (alignment) {
+		uintptr_t unalign = (uintptr_t)ptr & (uintptr_t)(alignment - 1);
+		size_t padding = unalign ? (alignment - unalign) : 0;
+		if (padding)
+			munmap(ptr, padding);
+		ptr = pointer_offset(ptr, padding);
+		if (alignment - padding)
+			munmap(pointer_offset(ptr, size), alignment - padding);
+		map_size = size;
+	} else {
+		++test_pack_block_maps;
+	}
+	*mapped_size = map_size;
+	return ptr;
+}
+
+static void
+test_pack_unmap(void* address, size_t offset, size_t mapped_size) {
+	munmap(pointer_offset(address, -(ptrdiff_t)offset), mapped_size);
+}
+
+static int
+test_pack_commit(void* address, size_t size) {
+	(void)address;
+	(void)size;
+	return 0;
+}
+
+static int
+test_pack_decommit(void* address, size_t size) {
+	(void)address;
+	(void)size;
+	return 0;
+}
+
+#endif
+
+static int
+test_heap_packing(void) {
+	// Regression guard for the heap packing guarantees: many heaps are carved from a single mapped
+	// block, and first-class heaps reuse the pristine carved heaps instead of mapping a fresh block
+	// each time. Driven single-threaded through a counting memory interface so it is deterministic.
+#if defined(_WIN32) || !RPMALLOC_FIRST_CLASS_HEAPS
+	printf("Heap packing test skipped\n");
+	return 0;
+#else
+	rpmalloc_interface_t iface = {0};
+	iface.memory_map = test_pack_map;
+	iface.memory_unmap = test_pack_unmap;
+	iface.memory_commit = test_pack_commit;
+	iface.memory_decommit = test_pack_decommit;
+
+	rpmalloc_config_t config = {0};
+	config.page_size = 256 * 1024;  // large page so many heaps pack into one block
+	config.unmap_on_finalize = 1;
+
+	test_pack_block_maps = 0;
+	rpmalloc_initialize_config(&iface, &config);
+
+	// Initializing the main thread heap maps one block and carves its pristine extras from it
+	if (test_pack_block_maps < 1)
+		return test_fail("No heap block was mapped at initialize");
+
+	// Acquire first-class heaps one at a time. They must draw pristine carved heaps from the existing
+	// block with no new mapping until the block's pristine heaps run out, at which point exactly one
+	// new block is mapped. No acquire may map more than one block.
+	rpmalloc_heap_t* heap[1024];
+	unsigned int reused_before_remap = 0;
+	unsigned int acquired = 0;
+	while (acquired < 1024) {
+		size_t before = test_pack_block_maps;
+		heap[acquired] = rpmalloc_heap_acquire();
+		if (!heap[acquired])
+			return test_fail("First class heap acquire failed");
+		size_t after = test_pack_block_maps;
+		++acquired;
+		if (after == before) {
+			++reused_before_remap;
+		} else if (after == before + 1) {
+			break;  // pristine pool drained, one new block mapped
+		} else {
+			return test_fail("More than one heap block mapped for a single acquire");
+		}
+	}
+
+	// Packing and first-class reuse: those acquires were served from the existing block with no new
+	// mapping (the loop above errors out otherwise). With a 256KiB page and a heap control block of
+	// at most 4KiB a block holds at least 64 heaps; require a comfortably lower bound so the test is
+	// robust to heap_t size changes.
+	if (reused_before_remap < 16)
+		return test_fail("Heap block packed too few heaps, or first class did not reuse pristine heaps");
+
+	for (unsigned int i = 0; i < acquired; ++i)
+		rpmalloc_heap_release(heap[i]);
+	rpmalloc_finalize();
+
+	printf("Heap packing tests passed (%u first class heaps reused from one block)\n", reused_before_remap);
+	return 0;
+#endif
+}
+
 extern int
 test_malloc(int print_log);
 
@@ -1310,6 +1507,10 @@ test_run(int argc, char** argv) {
 	if (test_first_class_heaps())
 		return -1;
 	if (test_named_pages())
+		return -1;
+	if (test_finalize_unmap())
+		return -1;
+	if (test_heap_packing())
 		return -1;
 	printf("All tests passed\n");
 	return 0;

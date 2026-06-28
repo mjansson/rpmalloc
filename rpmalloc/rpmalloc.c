@@ -172,6 +172,12 @@ madvise(caddr_t, size_t, int);
 #define PAGE_HEADER_SIZE 128
 #define SPAN_HEADER_SIZE PAGE_HEADER_SIZE
 
+//! Alignment of each heap control structure within a shared mapping. Keeps adjacent
+//  heaps on separate cache lines so cross-thread writes to one heap (thread_free) do
+//  not falsely share with a neighbour heap owned by another thread. Sized for a 128 byte
+//  cache line (Apple Silicon, x86 destructive interference) to cover 64 byte lines too.
+#define HEAP_ALIGNMENT 128
+
 #define SMALL_GRANULARITY 16
 
 #define SMALL_BLOCK_SIZE_LIMIT (4 * 1024)
@@ -534,10 +540,19 @@ _Static_assert(sizeof(heap_t) <= 4096, "Invalid heap size");
 static RPMALLOC_CACHE_ALIGNED heap_t global_heap_fallback;
 //! Default heap
 static heap_t* global_heap_default = &global_heap_fallback;
-//! Available heaps
+//! Released heaps available for reuse. These have been used and may hold caches, so they are
+//  only handed to ordinary thread heaps, never to first-class heaps (which require pristine state)
 static heap_t* global_heap_queue;
+//! Pristine, never-used heaps carved from a shared block but not yet handed out. Safe for any
+//  request including first-class, which needs a heap with no prior allocations
+static heap_t* global_heap_pristine;
 //! In use heaps
 static heap_t* global_heap_used;
+//! Set while a thread is mapping and carving a new shared heap block, so concurrent thread
+//  starts wait for the carved heaps to reach a pool instead of each mapping their own block.
+//  A user memory interface callback must not allocate through rpmalloc on the creating thread:
+//  a nested heap creation would wait on this flag set by the same thread and deadlock
+static int global_heap_creating;
 //! Lock for heap queue
 static atomic_uintptr_t global_heap_lock;
 //! Heap ID counter
@@ -1723,29 +1738,104 @@ heap_initialize(void* block) {
 	return heap;
 }
 
+// A heap control structure is much smaller than the mapping page size (and far smaller than a
+// huge page), so a single page-aligned mapping is carved into as many heaps as fit, the first
+// returned to the caller and the extras queued for reuse. This avoids mapping (and, under huge
+// pages, committing) a whole page per heap. Only the first heap records the mapping offset and
+// size; it owns the shared mapping and is the one heap that unmaps it at finalize.
+//
+// Block creation is serialized through global_heap_creating: when no heap is available, one thread
+// maps and carves a block while concurrent thread starts wait for the carved heaps to be published,
+// so a startup burst maps a single block instead of one block per thread. Ordinary requests reuse a
+// released heap first, then a pristine carved one. First-class requests need a heap with no prior
+// allocations, so they take only pristine heaps (a carved extra, or a freshly mapped master), never
+// a released one, but still wait so they do not map concurrently with another creation.
 static heap_t*
-heap_allocate_new(void) {
+heap_allocate_new(int first_class) {
 	if (!global_config.page_size)
 		rpmalloc_initialize(0);
-	size_t heap_size = get_page_aligned_size(sizeof(heap_t));
+
+	heap_lock_acquire();
+	while (1) {
+		if (!first_class && global_heap_queue) {
+			heap_t* heap = global_heap_queue;
+			global_heap_queue = heap->next;
+			heap_lock_release();
+			return heap;
+		}
+		if (global_heap_pristine) {
+			heap_t* heap = global_heap_pristine;
+			global_heap_pristine = heap->next;
+			heap_lock_release();
+			return heap;
+		}
+		if (!global_heap_creating)
+			break;
+		heap_lock_release();
+		wait_spin();
+		heap_lock_acquire();
+	}
+	global_heap_creating = 1;
+	heap_lock_release();
+
+	size_t aligned_heap_size = HEAP_ALIGNMENT * ((sizeof(heap_t) + (HEAP_ALIGNMENT - 1)) / HEAP_ALIGNMENT);
+	size_t block_size = get_page_aligned_size(aligned_heap_size);
 	size_t offset = 0;
 	size_t mapped_size = 0;
-	block_t* block = global_memory_interface->memory_map(heap_size, 0, &offset, &mapped_size);
+	block_t* block = global_memory_interface->memory_map(block_size, 0, &offset, &mapped_size);
 #if ENABLE_DECOMMIT
-	if (os_commit_on_demand() && (global_memory_interface->memory_commit(block, heap_size) != 0)) {
+	if (block && os_commit_on_demand() && (global_memory_interface->memory_commit(block, block_size) != 0)) {
 		global_memory_interface->memory_unmap(block, offset, mapped_size);
-		return 0;
+		block = 0;
 	}
 #endif
+	if (!block) {
+		heap_lock_acquire();
+		global_heap_creating = 0;
+		heap_lock_release();
+		return 0;
+	}
+
 	heap_t* heap = heap_initialize((void*)block);
 	heap->offset = (uint32_t)offset;
 	heap->mapped_size = mapped_size;
+
+	// Carve the remaining heaps into a local chain, then splice it onto the pristine pool in one
+	// step so the lock is not held across the per-heap initialization. heap_initialize zeroes each
+	// structure, leaving mapped_size == 0 so the extras are not treated as mapping owners. They are
+	// pristine until handed out, so first-class requests may reuse them.
+	size_t heap_count = mapped_size / aligned_heap_size;
+	heap_t* chain_head = 0;
+	heap_t* chain_tail = 0;
+	heap_t* extra_heap = (heap_t*)pointer_offset(heap, aligned_heap_size);
+	for (size_t iheap = 1; iheap < heap_count; ++iheap) {
+		heap_initialize((void*)extra_heap);
+		if (!chain_tail)
+			chain_tail = extra_heap;
+		extra_heap->next = chain_head;
+		chain_head = extra_heap;
+		extra_heap = (heap_t*)pointer_offset(extra_heap, aligned_heap_size);
+	}
+
+	heap_lock_acquire();
+	if (chain_tail) {
+		chain_tail->next = global_heap_pristine;
+		global_heap_pristine = chain_head;
+	}
+	global_heap_creating = 0;
+	heap_lock_release();
 #if ENABLE_STATISTICS
-	atomic_fetch_add_explicit(&global_statistics.heap_count, 1, memory_order_relaxed);
+	atomic_fetch_add_explicit(&global_statistics.heap_count, heap_count, memory_order_relaxed);
 #endif
 	return heap;
 }
 
+// Unmaps the shared block owned by this heap. INVARIANT: heap blocks are only ever unmapped here,
+// at global finalize, never while the allocator is running. Several heaps share a block, and a heap
+// may be borrowed by an unrelated owner's thread or by a first-class heap that outlives the thread
+// whose request mapped the block (see heap_allocate_new). Unmapping a block mid-run would leave
+// those borrowed heaps pointing at freed memory, so any future block reclamation must guarantee no
+// heap carved from the block is still live.
 static void
 heap_unmap(heap_t* heap) {
 	global_memory_interface->memory_unmap(heap, heap->offset, heap->mapped_size);
@@ -1753,15 +1843,7 @@ heap_unmap(heap_t* heap) {
 
 static heap_t*
 heap_allocate(int first_class) {
-	heap_t* heap = 0;
-	if (!first_class) {
-		heap_lock_acquire();
-		heap = global_heap_queue;
-		global_heap_queue = heap ? heap->next : 0;
-		heap_lock_release();
-	}
-	if (!heap)
-		heap = heap_allocate_new();
+	heap_t* heap = heap_allocate_new(first_class);
 	if (heap) {
 		uintptr_t current_thread_id = get_thread_id();
 		heap_lock_acquire();
@@ -2645,12 +2727,30 @@ rpmalloc_finalize(void) {
 #endif
 
 	if (global_config.unmap_on_finalize) {
-		heap_t* heap = global_heap_queue;
+		// Heaps can share a mapping (heap_allocate_new); only the owner carries mapped_size != 0.
+		// Resources are freed while every heap is still mapped, then owners are unmapped in a
+		// separate pass so a heap is never dereferenced after its shared mapping is gone.
+		heap_t* owners = 0;
+		heap_t* heap = global_heap_pristine;
+		global_heap_pristine = 0;
+		while (heap) {
+			heap_t* heap_next = heap->next;
+			heap_free_all(heap);
+			if (heap->mapped_size) {
+				heap->next = owners;
+				owners = heap;
+			}
+			heap = heap_next;
+		}
+		heap = global_heap_queue;
 		global_heap_queue = 0;
 		while (heap) {
 			heap_t* heap_next = heap->next;
 			heap_free_all(heap);
-			heap_unmap(heap);
+			if (heap->mapped_size) {
+				heap->next = owners;
+				owners = heap;
+			}
 			heap = heap_next;
 		}
 		heap = global_heap_used;
@@ -2658,8 +2758,16 @@ rpmalloc_finalize(void) {
 		while (heap) {
 			heap_t* heap_next = heap->next;
 			heap_free_all(heap);
-			heap_unmap(heap);
+			if (heap->mapped_size) {
+				heap->next = owners;
+				owners = heap;
+			}
 			heap = heap_next;
+		}
+		while (owners) {
+			heap_t* owner_next = owners->next;
+			heap_unmap(owners);
+			owners = owner_next;
 		}
 #if ENABLE_STATISTICS
 		memset(&global_statistics, 0, sizeof(global_statistics));
@@ -2674,6 +2782,7 @@ rpmalloc_finalize(void) {
 	pthread_key = 0;
 #endif
 
+	global_heap_creating = 0;
 	global_main_thread_id = 0;
 	global_rpmalloc_initialized = 0;
 }
@@ -2744,10 +2853,10 @@ rpmalloc_global_statistics(rpmalloc_global_statistics_t* stats) {
 
 rpmalloc_heap_t*
 rpmalloc_heap_acquire(void) {
-	// Must be a pristine heap from newly mapped memory pages, or else memory blocks
-	// could already be allocated from the heap which would (wrongly) be released when
-	// heap is cleared with rpmalloc_heap_free_all(). Also heaps guaranteed to be
-	// pristine from the dedicated orphan list can be used.
+	// Must be a pristine heap, or else memory blocks could already be allocated from the heap
+	// which would (wrongly) be released when heap is cleared with rpmalloc_heap_free_all().
+	// heap_allocate(1) returns either a never-used heap carved from a shared block (whether that
+	// block was mapped for an ordinary heap or a prior first-class heap) or a freshly mapped one.
 	heap_t* heap = heap_allocate(1);
 	rpmalloc_assume(heap != 0);
 	heap->owner_thread = 0;
