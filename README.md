@@ -16,7 +16,7 @@ The code should be easily portable to any platform with atomic operations and an
 This library is put in the public domain; you can redistribute it and/or modify it without any restrictions. Or, if you choose, you can use it under the MIT license.
 
 # Performance
-We believe rpmalloc is faster than most popular memory allocators like tcmalloc, hoard, ptmalloc3 and others without causing extra allocated memory overhead in the thread caches compared to these allocators. We also believe the implementation to be easier to read and modify compared to these allocators, as it is a single source file of ~2800 lines of C code. All allocations have a natural 16-byte alignment.
+We believe rpmalloc is faster than most popular memory allocators like tcmalloc, hoard, ptmalloc3 and others without causing extra allocated memory overhead in the thread caches compared to these allocators. We also believe the implementation to be easier to read and modify compared to these allocators, as it is a single source file of ~3300 lines of C code. All allocations have a natural 16-byte alignment.
 
 The chart below shows throughput on the `rptest` benchmark, allocating randomly sized blocks in the `[16, 8000]` bytes range with a linear falloff distribution and cross-thread frees, as the number of threads scales from 1 to 16. Higher is better.
 
@@ -39,7 +39,7 @@ The easiest way to use the library is simply adding __rpmalloc.[h|c]__ to your p
 
 __rpmalloc_initialize__ : Call at process start to initialize the allocator, optionally passing a custom memory interface with functions to map, commit, decommit and unmap memory pages (pass null to use the default OS backed implementation)
 
-__rpmalloc_initialize_config__ : Optional entry point to call at process start to initialize the allocator with a custom memory interface and/or a configuration of memory page size, huge page or transparent huge page usage, decommit behaviour and page naming
+__rpmalloc_initialize_config__ : Optional entry point to call at process start to initialize the allocator with a custom memory interface and/or a configuration of memory page size, huge page or transparent huge page usage, decommit behaviour, page naming and unmap-on-finalize behaviour
 
 __rpmalloc_finalize__: Call at process exit to finalize the allocator
 
@@ -65,6 +65,8 @@ The latest stable release is available in the master branch. For latest developm
 # Configuration options
 Detailed statistics are available if __ENABLE_STATISTICS__ is defined to 1 (default is 0, or disabled), either on compile command line or by setting the value in `rpmalloc.c`. This will cause a slight overhead in runtime to collect statistics for memory page and huge block operations.
 
+Detection of allocations still outstanding at `rpmalloc_finalize` is enabled if __ENABLE_LEAK_DETECTION__ is defined to 1. It requires __ENABLE_STATISTICS__ for the allocation counters and follows it by default, except when building with __ENABLE_OVERRIDE__ where it defaults to 0: with the standard library override rpmalloc is the backing store for the C runtime's own allocations (such as per-thread TLS), which are still live at finalize and indistinguishable from application leaks. When __ENABLE_ASSERTS__ is also enabled a detected leak triggers an assert.
+
 Integer safety checks on all calls are enabled if __ENABLE_VALIDATE_ARGS__ is defined to 1 (default is 0, or disabled), either on compile command line or by setting the value in `rpmalloc.c`. If enabled, size arguments to the global entry points are verified not to cause integer overflows in calculations.
 
 Asserts are enabled if __ENABLE_ASSERTS__ is defined to 1 (default is 0, or disabled), either on compile command line or by setting the value in `rpmalloc.c`.
@@ -74,7 +76,7 @@ To include __malloc.c__ in compilation and provide overrides of standard library
 To enable support for first class heaps, define __RPMALLOC_FIRST_CLASS_HEAPS__ to 1 (default is 0, or disabled).
 
 # Huge pages
-The allocator has support for huge/large pages on Windows, Linux and MacOS. To enable it, pass a non-zero value in the config value `enable_huge_pages` when initializing the allocator with `rpmalloc_initialize_config`. If the system does not support huge pages it will be automatically disabled. You can query the status by looking at `enable_huge_pages` in the config returned from a call to `rpmalloc_config` after initialization is done. Explicit huge pages require system configuration (a preallocated huge page pool on Linux, the `SeLockMemoryPrivilege` on Windows). On Linux, if a huge page backed mapping cannot be served from the huge page pool the allocator falls back to a normal mapping promoted to transparent huge pages. On Windows, large pages cannot be decommitted, so unused memory ranges are kept committed until unmapped when huge pages are enabled - on Linux unused memory ranges are decommitted if the kernel supports it (5.18 or later for huge page backed mappings).
+The allocator has support for huge/large pages on Windows, Linux and MacOS. To enable it, pass a non-zero value in the config value `enable_huge_pages` when initializing the allocator with `rpmalloc_initialize_config`. Explicit huge pages require system configuration (a preallocated huge page pool on Linux, the `SeLockMemoryPrivilege` on Windows). At initialization rpmalloc checks whether huge pages are actually available (on Linux by probing a real huge page mapping, not just reading the configured huge page size). If huge pages were requested but are not available on the system, `rpmalloc_initialize`/`rpmalloc_initialize_config` returns a non-zero value and leaves the allocator uninitialized (the effective `enable_huge_pages` is cleared), so you can detect this and re-initialize without huge pages if desired. On Linux, if an individual huge page backed mapping cannot later be served from the pool the allocator falls back to a normal mapping promoted to transparent huge pages. On Windows, large pages cannot be decommitted, so unused memory ranges are kept committed until unmapped when huge pages are enabled - on Linux unused memory ranges are decommitted if the kernel supports it (5.18 or later for huge page backed mappings).
 
 On Linux and Android the allocator can alternatively use transparent huge pages without requiring any system configuration or preallocated huge page pool. Pass a non-zero value in the config value `enable_thp` and the allocator will advise the kernel to back the memory mappings with transparent huge pages using `madvise(MADV_HUGEPAGE)`. Unlike `enable_huge_pages` this does not affect page size or commit/decommit behaviour. The two modes are mutually exclusive, with `enable_huge_pages` taking precedence.
 
