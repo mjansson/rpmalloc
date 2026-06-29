@@ -156,7 +156,11 @@ madvise(caddr_t, size_t, int);
 #define ENABLE_DYNAMIC_LINK 0
 #endif
 #ifndef ENABLE_OVERRIDE
-//! Enable standard library malloc/free/new/delete overrides
+//! Enable standard library malloc/free/new/delete overrides. When enabled, rpmalloc becomes the
+//  backing store for the entire process, including the C runtime's own allocations (for example
+//  per-thread TLS allocated by the loader). As a consequence the unmap_on_finalize config option
+//  is ignored (see rpmalloc_initialize): returning all mappings to the OS at finalize while the
+//  process keeps running would unmap memory the runtime still holds.
 #define ENABLE_OVERRIDE 1
 #endif
 #ifndef ENABLE_STATISTICS
@@ -2668,6 +2672,14 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 		global_memory_interface->memory_decommit = os_mdecommit;
 		global_memory_interface->memory_unmap = os_munmap;
 	}
+
+#if ENABLE_OVERRIDE
+	// With the standard library override, rpmalloc backs the C runtime's own allocations (for
+	// example per-thread TLS allocated by the loader). Unmapping everything at finalize while the
+	// process keeps running would pull that memory out from under the runtime, so the option
+	// cannot be honored here; clear it (also reflected back through the effective config).
+	global_config.unmap_on_finalize = 0;
+#endif
 
 #if PLATFORM_WINDOWS
 	SYSTEM_INFO system_info;
