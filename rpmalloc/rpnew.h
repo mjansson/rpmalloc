@@ -1,3 +1,8 @@
+/* rpnew.h  -  Memory allocator  -  2017 Mattias Jansson
+ *
+ * SPDX-FileCopyrightText: 2017 Mattias Jansson
+ * SPDX-License-Identifier: Unlicense OR MIT
+ */
 
 #ifdef __cplusplus
 

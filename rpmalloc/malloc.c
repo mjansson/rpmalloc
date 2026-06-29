@@ -1,11 +1,15 @@
-/* malloc.c  -  Memory allocator  -  Public Domain  -  2016 Mattias Jansson
+/* malloc.c  -  Memory allocator  -  2016 Mattias Jansson
+ *
+ * SPDX-FileCopyrightText: 2016 Mattias Jansson
+ * SPDX-License-Identifier: Unlicense OR MIT
  *
  * This library provides a cross-platform lock free thread caching malloc implementation in C11.
  * The latest source code is always available at
  *
  * https://github.com/mjansson/rpmalloc
  *
- * This library is put in the public domain; you can redistribute it and/or modify it without any restrictions.
+ * This library is put in the public domain; you can redistribute it and/or modify it without any
+ * restrictions. Or, if you choose, you can use it under the MIT license.
  *
  */
 
