@@ -92,6 +92,7 @@ test_alloc(void) {
 	testptr = rpmalloc(small_granularity + 1);
 	if (rpmalloc_usable_size(testptr) != (small_granularity * 2))
 		return test_fail("Bad base alloc usable size");
+	rpfree(testptr);
 	testptr = rpmalloc(small_granularity * 2);
 	if (rpmalloc_usable_size(testptr) != (small_granularity * 2))
 		return test_fail("Bad base alloc usable size");

@@ -162,6 +162,14 @@ madvise(caddr_t, size_t, int);
 //! Enable statistics
 #define ENABLE_STATISTICS 0
 #endif
+#ifndef ENABLE_LEAK_DETECTION
+//! Enable detection of allocations still outstanding at rpmalloc_finalize. Requires ENABLE_STATISTICS
+//  for the allocation counters, and follows it by default
+#define ENABLE_LEAK_DETECTION ENABLE_STATISTICS
+#endif
+#if ENABLE_LEAK_DETECTION && !ENABLE_STATISTICS
+#error ENABLE_LEAK_DETECTION requires ENABLE_STATISTICS
+#endif
 
 ////////////
 ///
@@ -2129,8 +2137,12 @@ heap_pop_local_free(heap_t* heap, uint32_t size_class) {
 static NOINLINE RPMALLOC_ALLOCATOR void*
 heap_allocate_block_small_to_large(heap_t* heap, uint32_t size_class, unsigned int zero) {
 	page_t* page = heap_get_page(heap, size_class);
-	if (EXPECTED(page != 0))
+	if (EXPECTED(page != 0)) {
+		// Count on the page owner, which may differ from heap when an uninitialized thread is routed
+		// to its real heap, so the allocation and its later free are accounted on the same heap
+		_rpmalloc_stat_inc_alloc(page->heap, size_class);
 		return page_allocate_block(page, zero);
+	}
 	return 0;
 }
 
@@ -2226,11 +2238,12 @@ heap_allocate_block_generic(heap_t* heap, size_t size, unsigned int zero) {
 #if RPMALLOC_HEAP_STATISTICS
 		heap->stats.allocated_size += global_size_class[size_class].block_size;
 #endif
-		_rpmalloc_stat_inc_alloc(heap, size_class);
 
 		block_t* block = heap_pop_local_free(heap, size_class);
 		if (EXPECTED(block != 0)) {
-			// Fast track with small block available in heap level local free list
+			// Fast track with small block available in heap level local free list; a hit means this
+			// heap owns the block
+			_rpmalloc_stat_inc_alloc(heap, size_class);
 			if (zero)
 				memset(block, 0, global_size_class[size_class].block_size);
 			return block;
@@ -2261,9 +2274,9 @@ heap_allocate_block(heap_t* heap, size_t size, unsigned int zero) {
 #if RPMALLOC_HEAP_STATISTICS
 		heap->stats.allocated_size += global_size_class[size_class].block_size;
 #endif
-		_rpmalloc_stat_inc_alloc(heap, size_class);
 		// The size class is already known - refill directly, skipping the
 		// generic path size class recomputation and dead local free list pop
+		// (small_to_large counts the allocation on the owning heap)
 		return heap_allocate_block_small_to_large(heap, size_class, zero);
 	}
 	return heap_allocate_block_generic(heap, size, zero);
@@ -2402,6 +2415,11 @@ heap_free_all(heap_t* heap) {
 		span_t* span = heap->span_used[itype];
 		while (span) {
 			span_t* span_next = span->next;
+#if ENABLE_STATISTICS
+			if (itype == PAGE_HUGE)
+				statistics_sub_saturating(&global_statistics.huge_alloc,
+				                          (size_t)span->page_count * span->page_size);
+#endif
 			global_memory_interface->memory_unmap(span, span->offset, span->mapped_size);
 			span = span_next;
 		}
@@ -2411,7 +2429,11 @@ heap_free_all(heap_t* heap) {
 	memset(heap->page_available, 0, sizeof(heap->page_available));
 
 #if ENABLE_STATISTICS
-	// TODO: Fix
+	// Every block in this heap has been released, so reverse the per size class allocation counters
+	for (uint32_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
+		heap->size_use[iclass].free_total += heap->size_use[iclass].alloc_current;
+		heap->size_use[iclass].alloc_current = 0;
+	}
 #endif
 }
 
@@ -2776,6 +2798,65 @@ rpmalloc_config(void) {
 	return &global_config;
 }
 
+#if ENABLE_LEAK_DETECTION
+//! Number of size class blocks still allocated across every heap. A non-zero value once all threads
+//! have finalized means the application has not freed all its allocations (leak or double free).
+static long long
+statistics_outstanding_blocks(void) {
+	heap_t* lists[3] = {global_heap_used, global_heap_queue, global_heap_pristine};
+	long long outstanding = 0;
+	for (int ilist = 0; ilist < 3; ++ilist) {
+		for (heap_t* heap = lists[ilist]; heap; heap = heap->next) {
+			for (uint32_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass)
+				outstanding += heap->size_use[iclass].alloc_current;
+		}
+	}
+	return outstanding;
+}
+
+//! Number of cross-thread freed blocks parked in a span's per page deferred lists, counting every
+//! initialized page (a full page is not reachable from page_available but can still hold deferred
+//! frees, since adoption is skipped while a page has a local free list). Page count is in the token
+//! high bits.
+static long long
+span_deferred_block_count(span_t* span) {
+	long long deferred = 0;
+	for (uint32_t ipage = 0; ipage < span->page_initialized; ++ipage) {
+		page_t* page = (page_t*)pointer_offset(span, (size_t)span->page_size * ipage);
+		uint64_t token = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
+		deferred += (long long)(uint32_t)(token >> 32ULL);
+	}
+	return deferred;
+}
+
+//! Number of blocks freed cross-thread but not yet applied to the owning heap's alloc_current,
+//! waiting in the deferred free lists. These are accounted in alloc_current until processed, so
+//! subtracting them from the outstanding count yields the blocks the application has truly leaked.
+static long long
+statistics_pending_deferred_blocks(void) {
+	heap_t* lists[3] = {global_heap_used, global_heap_queue, global_heap_pristine};
+	long long deferred = 0;
+	for (int ilist = 0; ilist < 3; ++ilist) {
+		for (heap_t* heap = lists[ilist]; heap; heap = heap->next) {
+			// Page types small through large carry the per heap full page deferred list and the per
+			// page deferred lists of every span. Huge blocks are never deferred per block.
+			for (uint32_t itype = 0; itype < 4; ++itype) {
+				block_t* block = (block_t*)atomic_load_explicit(&heap->thread_free[itype], memory_order_relaxed);
+				while (block) {
+					++deferred;
+					block = block->next;
+				}
+				if (heap->span_partial[itype])
+					deferred += span_deferred_block_count(heap->span_partial[itype]);
+				for (span_t* span = heap->span_used[itype]; span; span = span->next)
+					deferred += span_deferred_block_count(span);
+			}
+		}
+	}
+	return deferred;
+}
+#endif
+
 extern void
 rpmalloc_finalize(void) {
 	rpmalloc_thread_finalize();
@@ -2785,6 +2866,16 @@ rpmalloc_finalize(void) {
 	// (and potential re-initialize with a different page size)
 	huge_cache_flush();
 #endif
+
+#if ENABLE_LEAK_DETECTION && ENABLE_ASSERTS
+	// Leak detection: every thread has finalized, so blocks still allocated and not merely waiting
+	// in a deferred cross-thread free list are blocks the application never freed (or freed twice).
+	rpmalloc_assert(statistics_outstanding_blocks() <= statistics_pending_deferred_blocks(),
+	                "Memory leak detected");
+	rpmalloc_assert(atomic_load_explicit(&global_statistics.huge_alloc, memory_order_relaxed) == 0,
+	                "Memory leak detected");
+#endif
+
 
 	if (global_config.unmap_on_finalize) {
 		// Heaps can share a mapping (heap_allocate_new); only the owner carries mapped_size != 0.
@@ -2932,6 +3023,10 @@ rpmalloc_dump_statistics(void* file) {
 	        (unsigned long long)atomic_load_explicit(&global_statistics.huge_alloc_peak, memory_order_relaxed));
 	fprintf(file, "Heaps in use:        %llu\n",
 	        (unsigned long long)atomic_load_explicit(&global_statistics.heap_count, memory_order_relaxed));
+#if ENABLE_LEAK_DETECTION
+	fprintf(file, "Outstanding blocks:  %lld\n",
+	        statistics_outstanding_blocks() - statistics_pending_deferred_blocks());
+#endif
 
 	// Aggregate per size class and per page type counters across all in-use heaps. This walks live
 	// heaps without stopping the world, so the values are a best-effort snapshot.
