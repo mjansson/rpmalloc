@@ -96,35 +96,19 @@ typedef struct rpmalloc_global_statistics_t {
 } rpmalloc_global_statistics_t;
 
 typedef struct rpmalloc_thread_statistics_t {
-	//! Current number of bytes available in thread size class caches for small and medium sizes (<32KiB)
+	//! Current number of bytes available in thread size class caches (only if ENABLE_STATISTICS=1)
 	size_t sizecache;
-	//! Current number of bytes available in thread span caches for small and medium sizes (<32KiB)
+	//! Current number of bytes available in thread page caches (only if ENABLE_STATISTICS=1)
 	size_t spancache;
-	//! Total number of bytes transitioned from thread cache to global cache (only if ENABLE_STATISTICS=1)
-	size_t thread_to_global;
-	//! Total number of bytes transitioned from global cache to thread cache (only if ENABLE_STATISTICS=1)
-	size_t global_to_thread;
-	//! Per span count statistics (only if ENABLE_STATISTICS=1)
+	//! Per page type span statistics, indexed by page type (small, medium-small, medium-large,
+	//! large, huge)
 	struct {
-		//! Currently used number of spans
+		//! Currently mapped number of spans of this page type
 		size_t current;
-		//! High water mark of spans used
-		size_t peak;
-		//! Number of spans transitioned to global cache
-		size_t to_global;
-		//! Number of spans transitioned from global cache
-		size_t from_global;
-		//! Number of spans transitioned to thread cache
-		size_t to_cache;
-		//! Number of spans transitioned from thread cache
-		size_t from_cache;
-		//! Number of spans transitioned to reserved state
-		size_t to_reserved;
-		//! Number of spans transitioned from reserved state
-		size_t from_reserved;
-		//! Number of raw memory map calls (not hitting the reserve spans but resulting in actual OS mmap calls)
+		//! Number of raw memory map calls for this page type resulting in actual OS mmap calls
+		//! (only if ENABLE_STATISTICS=1)
 		size_t map_calls;
-	} span_use[64];
+	} span_use[5];
 	//! Per size class statistics (only if ENABLE_STATISTICS=1)
 	struct {
 		//! Current number of allocations
@@ -135,14 +119,6 @@ typedef struct rpmalloc_thread_statistics_t {
 		size_t alloc_total;
 		//! Total number of frees
 		size_t free_total;
-		//! Number of spans transitioned to cache
-		size_t spans_to_cache;
-		//! Number of spans transitioned from cache
-		size_t spans_from_cache;
-		//! Number of spans transitioned from reserved state
-		size_t spans_from_reserved;
-		//! Number of raw memory map calls (not hitting the reserve spans but resulting in actual OS mmap calls)
-		size_t map_calls;
 	} size_use[128];
 } rpmalloc_thread_statistics_t;
 

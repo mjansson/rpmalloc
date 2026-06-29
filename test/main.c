@@ -1466,6 +1466,90 @@ test_heap_packing(void) {
 #endif
 }
 
+static int
+test_thread_statistics(void) {
+	// Exercises rpmalloc_thread_statistics / rpmalloc_dump_statistics, which are otherwise never
+	// called by the suite. When ENABLE_STATISTICS is disabled the counters read back zero and the
+	// strict checks are skipped; the calls must still be safe.
+	rpmalloc_initialize(0);
+
+	rpmalloc_thread_statistics_t ts;
+	size_t base_current = 0, base_total = 0, base_free = 0;
+	rpmalloc_thread_statistics(&ts);
+	for (unsigned int i = 0; i < 128; ++i) {
+		base_current += ts.size_use[i].alloc_current;
+		base_total += ts.size_use[i].alloc_total;
+		base_free += ts.size_use[i].free_total;
+	}
+
+	enum { N = 100 };
+	void* ptr[N];
+	for (unsigned int i = 0; i < N; ++i) {
+		ptr[i] = rpmalloc(123);
+		if (!ptr[i])
+			return test_fail("Allocation failed in statistics test");
+	}
+
+	rpmalloc_thread_statistics(&ts);
+	size_t cur = 0, tot = 0, span_current = 0, span_maps = 0;
+	for (unsigned int i = 0; i < 128; ++i) {
+		cur += ts.size_use[i].alloc_current;
+		tot += ts.size_use[i].alloc_total;
+	}
+	for (unsigned int i = 0; i < 5; ++i) {
+		span_current += ts.span_use[i].current;
+		span_maps += ts.span_use[i].map_calls;
+	}
+
+	int stats_enabled = (tot > base_total);
+	if (stats_enabled) {
+		if ((cur - base_current) < N)
+			return test_fail("alloc_current did not reflect allocations");
+		if ((tot - base_total) < N)
+			return test_fail("alloc_total did not reflect allocations");
+		if (span_current < 1)
+			return test_fail("span current did not reflect mapped spans");
+		if (span_maps < 1)
+			return test_fail("span map_calls did not reflect mapped spans");
+		if (ts.sizecache == 0 && ts.spancache == 0) {
+			// At least the partially used page should hold free blocks
+			return test_fail("sizecache/spancache both zero after allocations");
+		}
+	}
+
+	for (unsigned int i = 0; i < N; ++i)
+		rpfree(ptr[i]);
+
+	rpmalloc_thread_statistics(&ts);
+	size_t cur2 = 0, free2 = 0;
+	for (unsigned int i = 0; i < 128; ++i) {
+		cur2 += ts.size_use[i].alloc_current;
+		free2 += ts.size_use[i].free_total;
+	}
+	if (stats_enabled) {
+		if (cur2 >= cur || (cur - cur2) < N)
+			return test_fail("alloc_current did not drop after free");
+		if ((free2 - base_free) < N)
+			return test_fail("free_total did not reflect frees");
+	}
+
+	// Dump must be safe to call (output discarded)
+	FILE* f = tmpfile();
+	if (f) {
+		rpmalloc_dump_statistics(f);
+		fclose(f);
+	}
+
+	rpmalloc_global_statistics_t gs;
+	rpmalloc_global_statistics(&gs);
+	if (stats_enabled && (gs.heap_count < 1))
+		return test_fail("heap_count should count in-use heaps");
+
+	rpmalloc_finalize();
+	printf("Thread statistics tests passed%s\n", stats_enabled ? "" : " (statistics disabled)");
+	return 0;
+}
+
 extern int
 test_malloc(int print_log);
 
@@ -1511,6 +1595,8 @@ test_run(int argc, char** argv) {
 	if (test_finalize_unmap())
 		return -1;
 	if (test_heap_packing())
+		return -1;
+	if (test_thread_statistics())
 		return -1;
 	printf("All tests passed\n");
 	return 0;
