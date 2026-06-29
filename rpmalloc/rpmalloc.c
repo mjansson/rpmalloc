@@ -158,9 +158,11 @@ madvise(caddr_t, size_t, int);
 #ifndef ENABLE_OVERRIDE
 //! Enable standard library malloc/free/new/delete overrides. When enabled, rpmalloc becomes the
 //  backing store for the entire process, including the C runtime's own allocations (for example
-//  per-thread TLS allocated by the loader). As a consequence the unmap_on_finalize config option
-//  is ignored (see rpmalloc_initialize): returning all mappings to the OS at finalize while the
-//  process keeps running would unmap memory the runtime still holds.
+//  per-thread TLS allocated by the loader). Two finalize-time features are therefore adjusted:
+//  the unmap_on_finalize config option is ignored (see rpmalloc_initialize), since returning all
+//  mappings to the OS while the process keeps running would unmap memory the runtime still holds;
+//  and ENABLE_LEAK_DETECTION defaults off, since the runtime's still-live allocations are
+//  indistinguishable from application leaks at finalize.
 #define ENABLE_OVERRIDE 1
 #endif
 #ifndef ENABLE_STATISTICS
@@ -169,8 +171,15 @@ madvise(caddr_t, size_t, int);
 #endif
 #ifndef ENABLE_LEAK_DETECTION
 //! Enable detection of allocations still outstanding at rpmalloc_finalize. Requires ENABLE_STATISTICS
-//  for the allocation counters, and follows it by default
+//  for the allocation counters, and follows it by default - except under ENABLE_OVERRIDE, where it
+//  defaults off: the override makes rpmalloc the backing store for the C runtime's own allocations
+//  (for example per-thread TLS allocated by the loader), which are still live at finalize and
+//  indistinguishable from application leaks, so the check would always report false positives.
+#if ENABLE_OVERRIDE
+#define ENABLE_LEAK_DETECTION 0
+#else
 #define ENABLE_LEAK_DETECTION ENABLE_STATISTICS
+#endif
 #endif
 #if ENABLE_LEAK_DETECTION && !ENABLE_STATISTICS
 #error ENABLE_LEAK_DETECTION requires ENABLE_STATISTICS
