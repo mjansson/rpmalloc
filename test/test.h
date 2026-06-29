@@ -1,3 +1,6 @@
+/* SPDX-FileCopyrightText: 2017 Mattias Jansson
+ * SPDX-License-Identifier: Unlicense OR MIT
+ */
 
 #pragma once
 
