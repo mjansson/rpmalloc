@@ -1190,13 +1190,17 @@ test_huge_pages(void) {
 	rpmalloc_config_t config = {0};
 	config.enable_huge_pages = 1;
 
-	rpmalloc_initialize_config(0, &config);
+	// Explicit huge pages now fail initialization when no huge pages are available on the
+	// system, rather than silently falling back to normal pages behind a huge page size.
+	if (rpmalloc_initialize_config(0, &config) != 0) {
+		printf("Huge pages test skipped (huge pages not supported)\n");
+		return 0;
+	}
 
 	const rpmalloc_config_t* effective_config = rpmalloc_config();
 	if (!effective_config->enable_huge_pages) {
 		rpmalloc_finalize();
-		printf("Huge pages test skipped (huge pages not supported)\n");
-		return 0;
+		return test_fail("Huge pages initialized but not enabled in effective config");
 	}
 	if (effective_config->page_size < (2 * 1024 * 1024)) {
 		rpmalloc_finalize();
