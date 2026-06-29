@@ -1901,9 +1901,8 @@ heap_allocate(int first_class) {
 		heap_lock_release();
 		heap->owner_thread = current_thread_id;
 #if ENABLE_STATISTICS
-		// Per-thread statistics start fresh for the new owner; a reused heap is not reinitialized
-		memset(heap->size_use, 0, sizeof(heap->size_use));
-		memset(heap->span_map_calls, 0, sizeof(heap->span_map_calls));
+		// Counters belong to the heap, not the thread, so alloc_current reflects the blocks live in
+		// the heap's pages regardless of which thread owns it.
 		atomic_fetch_add_explicit(&global_statistics.heap_count, 1, memory_order_relaxed);
 #endif
 	}
@@ -2875,14 +2874,16 @@ rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats) {
 	if (!heap || (heap->id == 0))
 		return;
 
-	// Size class cache: free blocks held at heap level and in partially used pages, computed live
+	// Size class cache: blocks available without mapping a new page. A page's block_used counts the
+	// blocks held on the heap free list, so those are counted from the heap list and each page adds
+	// its remaining blocks (page free list plus the not yet initialized tail).
 	for (uint32_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
 		size_t block_size = global_size_class[iclass].block_size;
 		size_t free_count = 0;
 		for (block_t* block = heap->local_free[iclass]; block; block = block->next)
 			++free_count;
 		for (page_t* page = heap->page_available[iclass]; page; page = page->next)
-			free_count += page->local_free_count;
+			free_count += (size_t)(page->block_count - page->block_used);
 		stats->sizecache += free_count * block_size;
 
 		stats->size_use[iclass].alloc_current = (size_t)heap->size_use[iclass].alloc_current;
