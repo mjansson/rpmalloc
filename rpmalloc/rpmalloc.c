@@ -77,6 +77,7 @@ static virtualalloc2_fn os_virtualalloc2;
 #include <sys/mman.h>
 #include <sched.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <pthread.h>
 static pthread_key_t pthread_key;
 #ifdef __FreeBSD__
@@ -155,7 +156,13 @@ madvise(caddr_t, size_t, int);
 #define ENABLE_DYNAMIC_LINK 0
 #endif
 #ifndef ENABLE_OVERRIDE
-//! Enable standard library malloc/free/new/delete overrides
+//! Enable standard library malloc/free/new/delete overrides. When enabled, rpmalloc becomes the
+//  backing store for the entire process, including the C runtime's own allocations (for example
+//  per-thread TLS allocated by the loader). Two finalize-time features are therefore adjusted:
+//  the unmap_on_finalize config option is ignored (see rpmalloc_initialize), since returning all
+//  mappings to the OS while the process keeps running would unmap memory the runtime still holds;
+//  and ENABLE_LEAK_DETECTION defaults off, since the runtime's still-live allocations are
+//  indistinguishable from application leaks at finalize.
 #define ENABLE_OVERRIDE 1
 #endif
 #ifndef ENABLE_STATISTICS
@@ -164,8 +171,15 @@ madvise(caddr_t, size_t, int);
 #endif
 #ifndef ENABLE_LEAK_DETECTION
 //! Enable detection of allocations still outstanding at rpmalloc_finalize. Requires ENABLE_STATISTICS
-//  for the allocation counters, and follows it by default
+//  for the allocation counters, and follows it by default - except under ENABLE_OVERRIDE, where it
+//  defaults off: the override makes rpmalloc the backing store for the C runtime's own allocations
+//  (for example per-thread TLS allocated by the loader), which are still live at finalize and
+//  indistinguishable from application leaks, so the check would always report false positives.
+#if ENABLE_OVERRIDE
+#define ENABLE_LEAK_DETECTION 0
+#else
 #define ENABLE_LEAK_DETECTION ENABLE_STATISTICS
+#endif
 #endif
 #if ENABLE_LEAK_DETECTION && !ENABLE_STATISTICS
 #error ENABLE_LEAK_DETECTION requires ENABLE_STATISTICS
@@ -904,9 +918,10 @@ os_mmap(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
 	if ((ptr == MAP_FAILED || !ptr) && os_huge_pages) {
 		ptr = mmap(0, map_size, PROT_READ | PROT_WRITE, flags, -1, 0);
 		if (ptr && (ptr != MAP_FAILED)) {
-			int prm = madvise(ptr, map_size, MADV_HUGEPAGE);
-			(void)prm;
-			rpmalloc_assert((prm == 0), "Failed to promote the page to transparent huge page");
+			// Best-effort promotion to transparent huge pages; ignore failures (for
+			// example when THP is disabled system-wide, where madvise returns EINVAL).
+			// The mapping is still valid, just backed by normal pages.
+			(void)madvise(ptr, map_size, MADV_HUGEPAGE);
 		}
 	} else if (os_thp && ptr && (ptr != MAP_FAILED)) {
 		// Transparent huge page mode, advise the kernel to back this mapping with
@@ -2600,6 +2615,32 @@ rpmalloc_thread_destructor(void* value) {
 		rpmalloc_thread_finalize();
 }
 
+#if defined(__linux__) || defined(__ANDROID__)
+//! Read a small (pseudo) file such as /proc/meminfo into a caller provided stack buffer
+//! using raw syscalls. This deliberately avoids stdio (fopen/fgets), which allocates an
+//! internal buffer through malloc - during rpmalloc_initialize that allocation would
+//! re-enter the allocator (when the malloc override is enabled) before the page size is
+//! established. Returns the number of bytes read (buffer is always null terminated), or 0.
+static size_t
+os_read_system_file(const char* path, char* buffer, size_t capacity) {
+	if (capacity < 2)
+		return 0;
+	int fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return 0;
+	size_t total = 0;
+	while ((total + 1) < capacity) {
+		ssize_t got = read(fd, buffer + total, (capacity - 1) - total);
+		if (got <= 0)
+			break;
+		total += (size_t)got;
+	}
+	close(fd);
+	buffer[total] = 0;
+	return total;
+}
+#endif
+
 extern int
 rpmalloc_initialize_config(rpmalloc_interface_t* memory_interface, rpmalloc_config_t* config) {
 	if (global_rpmalloc_initialized) {
@@ -2629,6 +2670,10 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 
 	global_rpmalloc_initialized = 1;
 
+	// Remember whether the caller explicitly requested huge pages, the detection below
+	// overwrites global_config.enable_huge_pages with what is actually available.
+	const int huge_pages_requested = global_config.enable_huge_pages;
+
 	global_memory_interface = memory_interface ? memory_interface : &global_memory_interface_default;
 	if (!global_memory_interface->memory_map || !global_memory_interface->memory_unmap) {
 		global_memory_interface->memory_map = os_mmap;
@@ -2636,6 +2681,14 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 		global_memory_interface->memory_decommit = os_mdecommit;
 		global_memory_interface->memory_unmap = os_munmap;
 	}
+
+#if ENABLE_OVERRIDE
+	// With the standard library override, rpmalloc backs the C runtime's own allocations (for
+	// example per-thread TLS allocated by the loader). Unmapping everything at finalize while the
+	// process keeps running would pull that memory out from under the runtime, so the option
+	// cannot be honored here; clear it (also reflected back through the effective config).
+	global_config.unmap_on_finalize = 0;
+#endif
 
 #if PLATFORM_WINDOWS
 	SYSTEM_INFO system_info;
@@ -2660,6 +2713,13 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 	os_huge_pages = 0;
 	os_thp = 0;
 	os_huge_page_shift = 0;
+
+	// Establish a valid (normal) page size up front so the allocator never observes a
+	// zero page size during the rest of initialization. Huge page detection below may
+	// raise it to the huge page size once availability has been confirmed.
+	if (!memory_interface || (global_config.page_size < os_page_size))
+		global_config.page_size = os_page_size;
+
 	if (global_config.enable_huge_pages) {
 #if PLATFORM_WINDOWS
 		HANDLE token = 0;
@@ -2696,15 +2756,11 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 		}
 #elif defined(__linux__)
 		size_t huge_page_size = 0;
-		FILE* meminfo = fopen("/proc/meminfo", "r");
-		if (meminfo) {
-			char line[128];
-			while (!huge_page_size && fgets(line, sizeof(line) - 1, meminfo)) {
-				line[sizeof(line) - 1] = 0;
-				if (strstr(line, "Hugepagesize:"))
-					huge_page_size = (size_t)strtol(line + 13, 0, 10) * 1024;
-			}
-			fclose(meminfo);
+		char meminfo[4096];
+		if (os_read_system_file("/proc/meminfo", meminfo, sizeof(meminfo))) {
+			const char* line = strstr(meminfo, "Hugepagesize:");
+			if (line)
+				huge_page_size = (size_t)strtol(line + 13, 0, 10) * 1024;
 		}
 		// Sanity check the detected default huge page size, the builtin page geometry
 		// cannot use huge pages larger than the largest builtin page size (e.g. 1GiB
@@ -2714,11 +2770,31 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 			huge_page_size = 0;
 		if (huge_page_size > LARGE_PAGE_SIZE)
 			huge_page_size = 2 * 1024 * 1024;
+#if defined(MAP_HUGETLB)
 		if (huge_page_size) {
-			os_huge_pages = 1;
-			os_page_size = huge_page_size;
-			os_map_granularity = huge_page_size;
+			// Hugepagesize in /proc/meminfo only reports the configured huge page size, not
+			// whether any huge pages are actually available (the static pool can be empty,
+			// HugePages_Total == 0). Probe by mapping a single huge page with the same flags
+			// used for real mappings and only enable huge pages if the request can actually
+			// be satisfied (static pool or overcommit). This also covers the case where the
+			// page size is reported but the kernel rejects that specific MAP_HUGE_* size.
+			size_t huge_shift = 0;
+			while (((size_t)1 << huge_shift) < huge_page_size)
+				++huge_shift;
+			int probe_flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB;
+#if defined(MAP_HUGE_SHIFT)
+			probe_flags |= (int)(huge_shift << MAP_HUGE_SHIFT);
+#endif
+			void* probe = mmap(0, huge_page_size, PROT_READ | PROT_WRITE, probe_flags, -1, 0);
+			if ((probe != MAP_FAILED) && probe) {
+				munmap(probe, huge_page_size);
+				os_huge_pages = 1;
+				os_huge_page_shift = huge_shift;
+				os_page_size = huge_page_size;
+				os_map_granularity = huge_page_size;
+			}
 		}
+#endif
 #elif defined(__FreeBSD__)
 		int rc;
 		size_t sz = sizeof(rc);
@@ -2742,6 +2818,16 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 #endif
 	}
 
+	if (huge_pages_requested && !os_huge_pages) {
+		// Explicit huge pages were requested but are not available on this system. Fail
+		// initialization rather than silently backing the heap with normal pages behind a
+		// huge page size. Leave the allocator uninitialized (and the requested flag cleared)
+		// so the caller can detect this and re-initialize without huge pages if desired.
+		global_config.enable_huge_pages = 0;
+		global_rpmalloc_initialized = 0;
+		return -1;
+	}
+
 	global_config.enable_huge_pages = os_huge_pages;
 
 	if (os_huge_pages) {
@@ -2761,8 +2847,16 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 #if defined(__linux__) || defined(__ANDROID__)
 	// Transparent huge pages, advise mappings to be huge page backed without requiring
 	// a preallocated huge page pool and without affecting page size or decommit
-	if (global_config.enable_thp && !os_huge_pages && !global_config.disable_thp)
-		os_thp = 1;
+	if (global_config.enable_thp && !os_huge_pages && !global_config.disable_thp) {
+		// When THP is disabled system-wide (mode "never") madvise(MADV_HUGEPAGE) is a
+		// no-op, so report it as disabled rather than claiming THP is in use.
+		char thp_state[64];
+		int thp_never = 0;
+		if (os_read_system_file("/sys/kernel/mm/transparent_hugepage/enabled", thp_state, sizeof(thp_state)))
+			thp_never = (strstr(thp_state, "[never]") != 0);
+		if (!thp_never)
+			os_thp = 1;
+	}
 	if (global_config.disable_thp)
 		(void)prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0);
 #endif

@@ -40,6 +40,13 @@
 #include <sys/mman.h>
 #endif
 
+// Set to 1 for the test binary built against the rpmalloc library with ENABLE_OVERRIDE=1 (runs the
+// standard library override tests). The override-incompatible tests (unmap_on_finalize, which is a
+// no-op under the override) instead run in a separate binary built with ENABLE_OVERRIDE=0.
+#ifndef RPMALLOC_TEST_OVERRIDE
+#define RPMALLOC_TEST_OVERRIDE 0
+#endif
+
 #define pointer_offset(ptr, ofs) (void*)((char*)(ptr) + (ptrdiff_t)(ofs))
 #define pointer_diff(first, second) (ptrdiff_t)((const char*)(first) - (const char*)(second))
 
@@ -1190,13 +1197,17 @@ test_huge_pages(void) {
 	rpmalloc_config_t config = {0};
 	config.enable_huge_pages = 1;
 
-	rpmalloc_initialize_config(0, &config);
+	// Explicit huge pages now fail initialization when no huge pages are available on the
+	// system, rather than silently falling back to normal pages behind a huge page size.
+	if (rpmalloc_initialize_config(0, &config) != 0) {
+		printf("Huge pages test skipped (huge pages not supported)\n");
+		return 0;
+	}
 
 	const rpmalloc_config_t* effective_config = rpmalloc_config();
 	if (!effective_config->enable_huge_pages) {
 		rpmalloc_finalize();
-		printf("Huge pages test skipped (huge pages not supported)\n");
-		return 0;
+		return test_fail("Huge pages initialized but not enabled in effective config");
 	}
 	if (effective_config->page_size < (2 * 1024 * 1024)) {
 		rpmalloc_finalize();
@@ -1276,6 +1287,9 @@ test_named_pages(void) {
 	return 0;
 }
 
+#if !RPMALLOC_TEST_OVERRIDE
+// unmap_on_finalize is a no-op under the standard library override (see rpmalloc.h), so the tests
+// that exercise it are compiled only into the no-override test binary (RPMALLOC_TEST_OVERRIDE == 0).
 static int
 test_finalize_unmap(void) {
 	// Exercises heap packing together with unmap_on_finalize, which the other tests leave disabled
@@ -1466,6 +1480,7 @@ test_heap_packing(void) {
 	return 0;
 #endif
 }
+#endif /* !RPMALLOC_TEST_OVERRIDE */
 
 static int
 test_thread_statistics(void) {
@@ -1575,12 +1590,16 @@ test_run(int argc, char** argv) {
 		return -1;
 	if (test_threaded())
 		return -1;
+#if RPMALLOC_TEST_OVERRIDE
+	// Standard library override tests, only valid when rpmalloc is built with ENABLE_OVERRIDE
+	// (these are linked from main-override.cc and cross-check malloc/new against rpmalloc).
 	if (test_malloc(1))
 		return -1;
 	if (test_free(1))
 		return -1;
 	if (test_malloc_thread())
 		return -1;
+#endif
 	if (test_threadspam())
 		return -1;
 	if (test_large_pages())
@@ -1593,10 +1612,14 @@ test_run(int argc, char** argv) {
 		return -1;
 	if (test_named_pages())
 		return -1;
+#if !RPMALLOC_TEST_OVERRIDE
+	// unmap_on_finalize is a no-op under the standard library override (see rpmalloc.h), so these
+	// tests run only in the no-override binary where the option is actually honored.
 	if (test_finalize_unmap())
 		return -1;
 	if (test_heap_packing())
 		return -1;
+#endif
 	if (test_thread_statistics())
 		return -1;
 	printf("All tests passed\n");

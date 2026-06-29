@@ -180,6 +180,10 @@ typedef struct rpmalloc_config_t {
 	//! Unmap all memory on finalize if set to 1. Normally you can let the OS unmap all pages
 	//  when process exits, but if using rpmalloc in a dynamic library you might want to unmap
 	//  all pages when the dynamic library unloads to avoid process memory leaks and bloat.
+	//  NOTE: this is ignored when rpmalloc is built with ENABLE_OVERRIDE, because the standard
+	//  library override makes rpmalloc the backing store for the C runtime's own allocations
+	//  (for example per-thread TLS). Returning all mappings to the OS while the process keeps
+	//  running would unmap memory the runtime still uses. Only honored without the override.
 	int unmap_on_finalize;
 #if defined(__linux__) || defined(__ANDROID__)
 	///! Allows to disable the Transparent Huge Page feature on Linux on a process basis,
