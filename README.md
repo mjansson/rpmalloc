@@ -60,7 +60,7 @@ To compile as a static library run the configure python script which generates a
 
 By default the dynamic library can be used with `LD_PRELOAD`/`DYLD_INSERT_LIBRARIES` to inject in a preexisting binary, replacing any malloc/free family of function calls (when __ENABLE_OVERRIDE__ is defined to 1). This is only implemented for Linux and macOS targets. The list of libc entry points replaced may not be complete, use preloading as a convenience for testing the library on an existing binary, not a final solution.
 
-The latest stable release is available in the master branch. For latest development code, use the develop branch.
+The latest stable release is available in the main branch. For latest development code, use the develop branch.
 
 # Configuration options
 Detailed statistics are available if __ENABLE_STATISTICS__ is defined to 1 (default is 0, or disabled), either on compile command line or by setting the value in `rpmalloc.c`. This will cause a slight overhead in runtime to collect statistics for memory page and huge block operations.
@@ -97,7 +97,7 @@ The returned memory address from the memory map function MUST be aligned to the 
 
 Memory mapping requests are always done in multiples of the memory page size. You can specify a custom page size when initializing rpmalloc with __rpmalloc_initialize_config__, or pass 0 to let rpmalloc determine the system memory page size using OS APIs. The page size MUST be a power of two.
 
-On macOS and iOS mmap requests are tagged with tag 240 for easy identification with the vmmap tool.
+On macOS mmap requests are tagged with tag 240 for easy identification with the vmmap tool.
 
 # Memory fragmentation
 There is no memory fragmentation by the allocator in the sense that it will not leave unallocated and unusable "holes" in the memory pages by calls to allocate and free blocks of different sizes. This is due to the fact that the memory pages allocated for each size class is split up in perfectly aligned blocks which are not reused for a request of a different size. The block freed by a call to `rpfree` will always be immediately available for an allocation request within the same size class.

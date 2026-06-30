@@ -2615,6 +2615,11 @@ rpmalloc_usable_size(void* ptr) {
 	return (ptr ? block_usable_size(ptr) : 0);
 }
 
+// Dummy empty function for forcing linker symbol inclusion (see rpmalloc.h)
+extern void
+rpmalloc_linker_reference(void) {
+}
+
 ////////////
 ///
 /// Initialization and finalization
