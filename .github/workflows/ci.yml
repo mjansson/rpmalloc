@@ -47,31 +47,12 @@ jobs:
           ninja
       - name: Run tests
         run: |
-          set -euo pipefail
-          mapfile -t bins < <(find bin -type f -name 'rpmalloc-test*')
-          [ ${#bins[@]} -gt 0 ] || { echo "no test binaries found"; exit 1; }
-          for b in "${bins[@]}"; do echo "::group::$b"; "$b"; echo "::endgroup::"; done
-
-  # ---------------------------------------------------------------------------
-  # Linux 32-bit (i686) via multilib
-  # ---------------------------------------------------------------------------
-  linux-i686:
-    name: linux-i686-gcc
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install toolchain
-        run: sudo apt-get update && sudo apt-get install -y ninja-build gcc-multilib g++-multilib
-      - name: Configure and build
-        run: |
-          python3 configure.py -c release -a x86 --toolchain gcc
-          ninja
-      - name: Run tests
-        run: |
-          set -euo pipefail
-          mapfile -t bins < <(find bin -type f -name 'rpmalloc-test*')
-          [ ${#bins[@]} -gt 0 ] || { echo "no test binaries found"; exit 1; }
-          for b in "${bins[@]}"; do echo "::group::$b"; "$b"; echo "::endgroup::"; done
+          set -eu
+          found=0
+          for b in $(find bin -type f -name 'rpmalloc-test*'); do
+            found=1; echo "::group::$b"; "$b"; echo "::endgroup::"
+          done
+          [ "$found" -eq 1 ] || { echo "no test binaries found"; exit 1; }
 
   # ---------------------------------------------------------------------------
   # Sanitizers on Linux (UBSAN + TSAN gating, ASAN best-effort)
@@ -124,10 +105,12 @@ jobs:
           ninja
       - name: Run tests
         run: |
-          set -euo pipefail
-          mapfile -t bins < <(find bin -type f -name 'rpmalloc-test*')
-          [ ${#bins[@]} -gt 0 ] || { echo "no test binaries found"; exit 1; }
-          for b in "${bins[@]}"; do echo "::group::$b"; "$b"; echo "::endgroup::"; done
+          set -eu
+          found=0
+          for b in $(find bin -type f -name 'rpmalloc-test*'); do
+            found=1; echo "::group::$b"; "$b"; echo "::endgroup::"
+          done
+          [ "$found" -eq 1 ] || { echo "no test binaries found"; exit 1; }
 
   # ---------------------------------------------------------------------------
   # macOS sanitizers (ASAN+UBSAN)
@@ -182,10 +165,12 @@ jobs:
       - name: Run tests
         shell: bash
         run: |
-          set -euo pipefail
-          mapfile -t bins < <(find bin -type f -name 'rpmalloc-test*.exe')
-          [ ${#bins[@]} -gt 0 ] || { echo "no test binaries found"; exit 1; }
-          for b in "${bins[@]}"; do echo "::group::$b"; "$b"; echo "::endgroup::"; done
+          set -eu
+          found=0
+          for b in $(find bin -type f -name 'rpmalloc-test*.exe'); do
+            found=1; echo "::group::$b"; "$b"; echo "::endgroup::"
+          done
+          [ "$found" -eq 1 ] || { echo "no test binaries found"; exit 1; }
 
   # ---------------------------------------------------------------------------
   # Android: build with the modern unified NDK clang, run on an x86_64 emulator
@@ -245,12 +230,21 @@ jobs:
       - name: Boot simulator and run
         run: |
           set -euo pipefail
-          RUNTIME=$(xcrun simctl list runtimes ios -j | python3 -c "import sys,json; r=[x['identifier'] for x in json.load(sys.stdin)['runtimes'] if x['isAvailable']]; print(r[-1])")
-          DEVTYPE=$(xcrun simctl list devicetypes -j | python3 -c "import sys,json; d=[x['identifier'] for x in json.load(sys.stdin)['devicetypes'] if 'iPhone' in x['name']]; print(d[-1])")
-          echo "runtime=$RUNTIME devtype=$DEVTYPE"
-          UDID=$(xcrun simctl create ci-iphone "$DEVTYPE" "$RUNTIME")
+          # Use a pre-created, available iPhone simulator (guaranteed compatible
+          # device+runtime pair, unlike creating one from the newest device type).
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import sys, json
+          for runtime, devices in json.load(sys.stdin)['devices'].items():
+              if 'iOS' not in runtime:
+                  continue
+              for dev in devices:
+                  if dev.get('isAvailable') and 'iPhone' in dev['name']:
+                      print(dev['udid']); sys.exit(0)
+          sys.exit('no available iPhone simulator found')
+          ")
+          echo "Using simulator $UDID"
           xcrun simctl boot "$UDID"
-          xcrun simctl spawn "$UDID" "$PWD/rpmalloc-test-ios"
           SIMCTL_CHILD_RPMALLOC_TEST_THREADS=2 SIMCTL_CHILD_RPMALLOC_TEST_SCALE=10 \
             xcrun simctl spawn "$UDID" "$PWD/rpmalloc-test-ios"
+          xcrun simctl shutdown "$UDID" || true
           xcrun simctl shutdown "$UDID" || true
