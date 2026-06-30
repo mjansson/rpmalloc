@@ -224,8 +224,9 @@ test_alloc(void) {
 	if (rpmalloc_usable_size(pointer_offset(testptr, 16)) != (usable_size - 16))
 		return test_fail("Bad offset usable size");
 	rpfree(testptr);
-	int is_64bit = (sizeof(size_t) > 4);
-	if (is_64bit) {
+	// Large (>4 GiB) allocation test, only meaningful and representable on 64-bit size_t.
+#if SIZE_MAX > 0xFFFFFFFFu
+	{
 		testptr = rpmalloc(7525631000);
 		memset(testptr, 0x13, 1024);
 		testptr = rprealloc(testptr, 3151000);
@@ -240,6 +241,7 @@ test_alloc(void) {
 			return test_fail("Bad offset usable size");
 		rpfree(testptr);
 	}
+#endif
 
 	for (iloop = 0; iloop < 64; ++iloop) {
 		for (ipass = 0; ipass < 18142; ++ipass) {
@@ -1666,7 +1668,9 @@ test_run(int argc, char** argv) {
 #include <sched.h>
 #endif
 
-#if !defined(NO_MAIN)
+// RPMALLOC_TEST_FORCE_MAIN lets CI build a runnable console entry on platforms that otherwise
+// suppress it (e.g. the iOS simulator, where the test is launched via `simctl spawn`).
+#if !defined(NO_MAIN) || defined(RPMALLOC_TEST_FORCE_MAIN)
 
 int
 main(int argc, char** argv) {

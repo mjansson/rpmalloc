@@ -51,6 +51,9 @@ class ClangToolchain(toolchain.Toolchain):
                    '-fno-math-errno','-ffinite-math-only', '-funsafe-math-optimizations',
                    '-fno-trapping-math', '-ffast-math']
     self.cwarnflags = ['-W', '-Werror', '-pedantic', '-Wall', '-Weverything',
+                       # Tolerate warning options that only exist in some clang versions (e.g.
+                       # -Wno-pre-c11-compat, -Wno-unsafe-buffer-usage) instead of erroring out.
+                       '-Wno-unknown-warning-option',
                        '-Wno-c++98-compat', '-Wno-padded', '-Wno-documentation-unknown-command', '-Wno-declaration-after-statement',
                        '-Wno-implicit-fallthrough', '-Wno-static-in-inline', '-Wno-reserved-id-macro', '-Wno-disabled-macro-expansion',
                        '-Wno-unsafe-buffer-usage']
