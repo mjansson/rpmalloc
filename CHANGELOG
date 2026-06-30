@@ -4,9 +4,9 @@ Major redesign of the allocator core. The most significant changes in design fro
 
 Three level memory hierarchy. Memory is now organized as span -> page -> block instead of
 span -> block. Each span is a fixed 256MiB aligned region partitioned into fixed size pages, and
-each page is partitioned into equally sized blocks of a single size class. The fixed span and page
-alignment lets free locate the owning span and page headers by masking the block address, without
-a radix tree or table lookup.
+each page is partitioned into equally sized blocks of a single size class. As before, the fixed
+span and page alignment lets free locate the owning span and page headers in constant time by
+masking the block address.
 
 Four page types by block size. Blocks up to 2MiB are served from one of four page types: small
 (blocks up to 4KiB, 64KiB pages), medium-small (up to 32KiB, 1MiB pages), medium-large (up to
