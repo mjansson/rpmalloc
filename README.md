@@ -51,7 +51,7 @@ __rpmalloc_config__: Get the current runtime configuration of the allocator
 
 Then simply use the __rpmalloc__/__rpfree__ and the other malloc style replacement functions. Remember all allocations are 16-byte aligned, so no need to call the explicit rpmemalign/rpaligned_alloc/rpposix_memalign functions unless you need greater alignment, they are simply wrappers to make it easier to replace in existing code.
 
-If you wish to override the standard library malloc family of functions and have automatic initialization/finalization of process and threads, define __ENABLE_OVERRIDE__ to non-zero (default is 1) which will include the `malloc.c` file in compilation of __rpmalloc.c__, and then rebuild the library or your project where you added the rpmalloc source. If you compile rpmalloc as a separate library you must make the linker use the override symbols from the library by referencing at least one symbol. The easiest way is to simply include `rpmalloc.h` in at least one source file and call `rpmalloc_linker_reference` somewhere - it's a dummy empty function. For C++ overrides you have to `#include <rpnew.h>` in at least one source file. The list of libc entry points replaced may not be complete, use libc/stdc++ replacement only as a convenience for testing the library on an existing code base, not a final solution.
+If you wish to override the standard library malloc family of functions and have automatic initialization/finalization of process and threads, define __ENABLE_OVERRIDE__ to non-zero (default is 1) which will include the `malloc.c` file in compilation of __rpmalloc.c__, and then rebuild the library or your project where you added the rpmalloc source. If you compile rpmalloc as a separate static library and use only the overridden libc entry points (you call plain `malloc`/`free` but never any `rp*` function directly), the linker may not pull the rpmalloc object out of the archive, and the overrides will silently not take effect. To force its inclusion you must reference at least one symbol from the library: the easiest way is to include `rpmalloc.h` in at least one source file and call `rpmalloc_linker_reference` somewhere - it's a dummy empty function provided for exactly this purpose. This is not needed if you call `rpmalloc`/`rpfree` (or any other `rp*` function) directly, link the dynamic library, or use `LD_PRELOAD`/`DYLD_INSERT_LIBRARIES`. For C++ overrides you have to `#include <rpnew.h>` in at least one source file. The list of libc entry points replaced may not be complete, use libc/stdc++ replacement only as a convenience for testing the library on an existing code base, not a final solution.
 
 For explicit first class heaps, see the __rpmalloc_heap_*__ API under [first class heaps](#first-class-heaps) section, requiring __RPMALLOC_FIRST_CLASS_HEAPS__ to be defined to 1 - default is 0, as it imposes a very slight performance hit in deallocation path from an extra conditinal instruction.
 
@@ -60,7 +60,7 @@ To compile as a static library run the configure python script which generates a
 
 By default the dynamic library can be used with `LD_PRELOAD`/`DYLD_INSERT_LIBRARIES` to inject in a preexisting binary, replacing any malloc/free family of function calls (when __ENABLE_OVERRIDE__ is defined to 1). This is only implemented for Linux and macOS targets. The list of libc entry points replaced may not be complete, use preloading as a convenience for testing the library on an existing binary, not a final solution.
 
-The latest stable release is available in the master branch. For latest development code, use the develop branch.
+The latest stable release is available in the main branch. For latest development code, use the develop branch.
 
 # Configuration options
 Detailed statistics are available if __ENABLE_STATISTICS__ is defined to 1 (default is 0, or disabled), either on compile command line or by setting the value in `rpmalloc.c`. This will cause a slight overhead in runtime to collect statistics for memory page and huge block operations.
@@ -97,7 +97,7 @@ The returned memory address from the memory map function MUST be aligned to the 
 
 Memory mapping requests are always done in multiples of the memory page size. You can specify a custom page size when initializing rpmalloc with __rpmalloc_initialize_config__, or pass 0 to let rpmalloc determine the system memory page size using OS APIs. The page size MUST be a power of two.
 
-On macOS and iOS mmap requests are tagged with tag 240 for easy identification with the vmmap tool.
+On macOS mmap requests are tagged with tag 240 for easy identification with the vmmap tool.
 
 # Memory fragmentation
 There is no memory fragmentation by the allocator in the sense that it will not leave unallocated and unusable "holes" in the memory pages by calls to allocate and free blocks of different sizes. This is due to the fact that the memory pages allocated for each size class is split up in perfectly aligned blocks which are not reused for a request of a different size. The block freed by a call to `rpfree` will always be immediately available for an allocation request within the same size class.

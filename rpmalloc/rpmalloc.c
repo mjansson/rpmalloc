@@ -1724,7 +1724,6 @@ span_deallocate_block(span_t* span, page_t* page, void* block) {
 	}
 
 	if (page->has_aligned_block) {
-		// Realign pointer to block start
 		block = page_block_realign(page, block);
 	}
 
@@ -2615,6 +2614,10 @@ rpmalloc_usable_size(void* ptr) {
 	return (ptr ? block_usable_size(ptr) : 0);
 }
 
+extern void
+rpmalloc_linker_reference(void) {
+}
+
 ////////////
 ///
 /// Initialization and finalization
@@ -2729,6 +2732,9 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 	os_huge_pages = 0;
 	os_thp = 0;
 	os_huge_page_shift = 0;
+
+	rpmalloc_assert(!(global_config.page_size & (global_config.page_size - 1)),
+	                "Configured page size must be a power of two");
 
 	// Establish a valid (normal) page size up front so the allocator never observes a
 	// zero page size during the rest of initialization. Huge page detection below may
@@ -3350,7 +3356,6 @@ rpmalloc_heap_thread_set_current(rpmalloc_heap_t* heap) {
 
 rpmalloc_heap_t*
 rpmalloc_get_heap_for_ptr(void* ptr) {
-	// Grab the span, and then the heap from the span
 	span_t* span = (span_t*)((uintptr_t)ptr & SPAN_MASK);
 	if (span)
 		return span_get_page_from_block(span, ptr)->heap;

@@ -1,3 +1,52 @@
+2.0.0-rc1
+
+Major redesign of the allocator core. The most significant changes in design from the 1.4 series:
+
+Three level memory hierarchy. Memory is now organized as span -> page -> block instead of
+span -> block. Each span is a fixed 256MiB aligned region partitioned into fixed size pages, and
+each page is partitioned into equally sized blocks of a single size class. As before, the fixed
+span and page alignment lets free locate the owning span and page headers in constant time by
+masking the block address.
+
+Four page types by block size. Blocks up to 2MiB are served from one of four page types: small
+(blocks up to 4KiB, 64KiB pages), medium-small (up to 32KiB, 1MiB pages), medium-large (up to
+256KiB, 4MiB pages) and large (up to 2MiB, 16MiB pages). Blocks larger than 2MiB are mapped and
+unmapped directly as huge allocations. The smallest classes keep a 16 byte granularity and larger
+classes use a variable interval bounded to a fixed overhead ratio.
+
+Reserve-then-commit memory model. The allocator reserves span address space up front and commits
+and decommits physical memory on demand per page, returning unused ranges to the OS where
+supported. The custom memory interface gains commit and decommit callbacks alongside map and unmap
+(memory_map now also takes an alignment and reports the mapped size). This replaces the previous
+per-thread and global span cache subsystem, which has been removed.
+
+Per-page thread ownership and deferred cross-thread free. Each span is owned by a single heap and
+each page is owned exclusively by the allocating thread, so the hot allocation and free paths are
+lock free. Blocks freed by a non-owning thread are pushed to a per-page atomic deferred free list
+and reclaimed by the owner.
+
+Heap packing. Multiple heaps are packed into a single mapping and pristine heaps are reused,
+reducing per-thread setup cost and memory overhead.
+
+Other notable changes:
+
+Thread and per-heap allocation statistics, and finalize-time leak detection gated on
+ENABLE_LEAK_DETECTION (built on ENABLE_STATISTICS).
+
+Huge and transparent huge page support on Windows, Linux and macOS, with runtime probing of huge
+page availability and hardening of initialization against re-entrancy.
+
+New architecture support for LoongArch and arm64ec, plus assorted Windows and Visual Studio fixes.
+
+Licensing is now SPDX/REUSE compliant (Unlicense OR MIT). Added RPMALLOC_VERSION defines to
+rpmalloc.h, a multi-platform GitHub Actions CI (Linux, macOS and Windows on x64 and arm64, plus
+Android and iOS), and a long-running multithreaded stress test (test/stress.c).
+
+Note: the custom memory-mapping interface is not source compatible with 1.4. Code that supplies a
+custom memory_map/memory_unmap implementation must be updated to the new map/commit/decommit/unmap
+signatures.
+
+
 1.4.5
 
 Fix for issue where span cache was not properly freed on heap free all
