@@ -59,11 +59,16 @@ echo "Compiling $output with $compiler (${sanitizer}) ..."
 
 export RPMALLOC_STRESS_SECONDS="$seconds"
 [ -n "$threads" ] && export RPMALLOC_STRESS_THREADS="$threads"
+# Under TSAN the huge/large bands are dominated by shadow-memory overhead and throttle the
+# run to a crawl; cap the size by default so it makes real progress (override as needed).
+if [ "$sanitizer" = tsan ] && [ -z "${RPMALLOC_STRESS_MAX_SIZE:-}" ]; then
+	export RPMALLOC_STRESS_MAX_SIZE=262144
+fi
 # ASan trips an internal stacktrace CHECK with the test's custom thread stacks
 # unless the alternate signal stack is disabled.
 export ASAN_OPTIONS="${ASAN_OPTIONS:-use_sigaltstack=0:detect_leaks=1}"
 export UBSAN_OPTIONS="${UBSAN_OPTIONS:-print_stacktrace=1:halt_on_error=1}"
-export TSAN_OPTIONS="${TSAN_OPTIONS:-halt_on_error=1}"
+export TSAN_OPTIONS="${TSAN_OPTIONS:-halt_on_error=1 suppressions=$repo_root/test/tsan-suppressions.txt}"
 
 echo "Running ./$output for ${seconds}s${threads:+ with $threads threads} ..."
 exec "./$output"

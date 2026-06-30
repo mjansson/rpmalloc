@@ -26,6 +26,9 @@
  * Tunables (environment variables):
  *   RPMALLOC_STRESS_SECONDS  wall-clock run time (default 30)
  *   RPMALLOC_STRESS_THREADS  worker thread count (default: hardware concurrency)
+ *   RPMALLOC_STRESS_MAX_SIZE cap on allocation size in bytes (default: unlimited). Useful
+ *                            under ThreadSanitizer, where the huge band crawls; stress.sh
+ *                            defaults this to 262144 for tsan runs.
  *
  * Suggested run durations (RPMALLOC_STRESS_SECONDS):
  *   30      quick smoke test (default)
@@ -86,6 +89,9 @@ static atomic_ullong total_bytes;
 
 static size_t worker_count;
 static int run_seconds;
+//! Optional cap on allocation size (0 = unlimited). Useful under ThreadSanitizer, where the
+//  huge/large bands are dominated by shadow-memory overhead and throttle the run to a crawl.
+static size_t max_alloc_size;
 
 static uint64_t
 monotonic_ms(void) {
@@ -117,8 +123,13 @@ pick_size(uint32_t* random_state) {
 	// medium-small 150, medium-large 70, large 29, huge 1.
 	uint32_t roll = random_next(random_state) % 1000u;
 	size_t band = roll < 400 ? 0 : roll < 750 ? 1 : roll < 900 ? 2 : roll < 970 ? 3 : roll < 999 ? 4 : 5;
+	// Drop to a lower band if this one exceeds the configured size cap.
+	while (max_alloc_size && band > 0 && size_band[band][0] > max_alloc_size)
+		--band;
 	size_t min_size = size_band[band][0];
 	size_t max_size = size_band[band][1];
+	if (max_alloc_size && max_size > max_alloc_size)
+		max_size = max_alloc_size < min_size ? min_size : max_alloc_size;
 	return min_size + (size_t)(random_next(random_state) % (uint32_t)(max_size - min_size + 1));
 }
 
@@ -279,7 +290,17 @@ main(int argc, char** argv) {
 	if (worker_count < 2)
 		worker_count = 2;
 
-	printf("rpmalloc stress: %zu threads, %d seconds\n", worker_count, run_seconds);
+	const char* env_max_size = getenv("RPMALLOC_STRESS_MAX_SIZE");
+	if (env_max_size) {
+		long long parsed_max = atoll(env_max_size);
+		if (parsed_max > 0)
+			max_alloc_size = (size_t)parsed_max;
+	}
+
+	printf("rpmalloc stress: %zu threads, %d seconds", worker_count, run_seconds);
+	if (max_alloc_size)
+		printf(", max alloc %zu bytes", max_alloc_size);
+	printf("\n");
 	fflush(stdout);
 
 	if (rpmalloc_initialize(0)) {
