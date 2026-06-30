@@ -368,13 +368,21 @@ static inline size_t
 rpmalloc_clz(uintptr_t x) {
 #if ARCH_64BIT
 #if defined(_MSC_VER) && !defined(__clang__)
+#if defined(_M_ARM64)
+	return (size_t)_CountLeadingZeros64(x);  // __lzcnt64 is x86-only
+#else
 	return (size_t)__lzcnt64(x);
+#endif
 #else
 	return (size_t)__builtin_clzll(x);
 #endif
 #else
 #if defined(_MSC_VER) && !defined(__clang__)
+#if defined(_M_ARM64) || defined(_M_ARM)
+	return (size_t)_CountLeadingZeros((unsigned long)x);  // __lzcnt32 is x86-only
+#else
 	return (size_t)__lzcnt32(x);
+#endif
 #else
 	return (size_t)__builtin_clzl(x);
 #endif
@@ -507,7 +515,12 @@ struct page_t {
 	uint32_t is_zero : 1;
 	//! Flag set if memory pages have been decommitted
 	uint32_t is_decommitted : 1;
-	//! Flag set if containing aligned blocks
+	//! Flag set if containing aligned blocks.
+	//  Note: has_aligned_block and is_full are read on the cross-thread free path while the
+	//  owner thread writes this packed flag word. The owner is the sole writer and the word is
+	//  naturally aligned (hardware-atomic access), and the read flags are monotonic/tolerant,
+	//  so the read/write race is benign. ThreadSanitizer still reports it; see
+	//  test/tsan-suppressions.txt.
 	uint32_t has_aligned_block : 1;
 	//! Fast combination flag for either huge, fully allocated or has aligned blocks
 	uint32_t generic_free : 1;

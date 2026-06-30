@@ -3,6 +3,7 @@
 """Ninja toolchain abstraction for Microsoft compiler suite"""
 
 import os
+import platform
 import subprocess
 
 import toolchain
@@ -24,6 +25,9 @@ class MSVCToolchain(toolchain.Toolchain):
     #Local variable defaults
     self.sdkpath = ''
     self.toolchain = ''
+    # Host-side compiler binary directory (bin/HostX64, bin/HostARM64, ...); refined in
+    # build_toolchain from the host architecture.
+    self.host_tools_dir = 'HostX64'
     self.includepaths = []
     self.libpaths = libpaths
     self.ccompiler = 'cl'
@@ -137,6 +141,23 @@ class MSVCToolchain(toolchain.Toolchain):
     writer.newline()
 
   def build_toolchain(self):
+    # Determine the host compiler binary directory (HostX64 / HostARM64 / HostX86). Prefer the
+    # value vcvars exports, falling back to the running interpreter's architecture.
+    host_arch = (os.getenv('VSCMD_ARG_HOST_ARCH', '') or platform.machine()).lower()
+    if host_arch in ('arm64', 'aarch64'):
+      self.host_tools_dir = 'HostARM64'
+    elif host_arch in ('x86', 'i386', 'i686'):
+      self.host_tools_dir = 'HostX86'
+    else:
+      self.host_tools_dir = 'HostX64'
+
+    # Inside a VS Developer Command Prompt (set up by vcvars / msvc-dev-cmd) the toolchain is
+    # described directly by VCToolsInstallDir; honor it so detection works on any host arch.
+    if self.toolchain == '':
+      env_tools = os.getenv('VCToolsInstallDir', '')
+      if env_tools != '' and os.path.isdir(env_tools):
+        self.toolchain = env_tools
+
     if self.toolchain == '':
       installed_versions = vslocate.get_vs_installations()
       for versionstr, installpath in installed_versions:
@@ -183,6 +204,21 @@ class MSVCToolchain(toolchain.Toolchain):
     if self.toolchain == '':
       raise Exception("Unable to locate any installed Visual Studio toolchain")
     self.includepaths += [os.path.join(self.toolchain, 'include')]
+    # Honor the Windows SDK described by the Developer Command Prompt environment if present.
+    if self.sdkpath == '':
+      env_sdk = os.getenv('WindowsSdkDir', '')
+      env_sdkver = os.getenv('WindowsSDKVersion', '').strip().strip('\\/')
+      if env_sdk != '' and env_sdkver != '' and os.path.isdir(env_sdk):
+        self.sdkpath = env_sdk
+        self.sdkversion = 'v10.0'
+        self.sdkversionpath = env_sdkver
+        sdk_include = os.path.join('include', env_sdkver)
+        self.includepaths += [
+          os.path.join(self.sdkpath, sdk_include, 'shared'),
+          os.path.join(self.sdkpath, sdk_include, 'um'),
+          os.path.join(self.sdkpath, sdk_include, 'winrt'),
+          os.path.join(self.sdkpath, sdk_include, 'ucrt')
+        ]
     if self.sdkpath == '':
       versions = ['v10.0', 'v8.1']
       keys = [
@@ -248,9 +284,11 @@ class MSVCToolchain(toolchain.Toolchain):
 
   def make_arch_toolchain_path(self, arch):
     if arch == 'x86-64':
-      return os.path.join(self.toolchain, 'bin', 'HostX64', 'x64\\')
+      return os.path.join(self.toolchain, 'bin', self.host_tools_dir, 'x64\\')
     elif arch == 'x86':
-      return os.path.join(self.toolchain, 'bin', 'HostX64', 'x86\\')
+      return os.path.join(self.toolchain, 'bin', self.host_tools_dir, 'x86\\')
+    elif arch == 'arm64':
+      return os.path.join(self.toolchain, 'bin', self.host_tools_dir, 'arm64\\')
     return os.path.join(self.toolchain, 'bin\\')
 
   def make_carchflags(self, arch, targettype):
@@ -285,6 +323,8 @@ class MSVCToolchain(toolchain.Toolchain):
       flags += ['/MACHINE:X86']
     elif arch == 'x86-64':
       flags += ['/MACHINE:X64']
+    elif arch == 'arm64':
+      flags += ['/MACHINE:ARM64']
     return flags
 
   def make_arconfigflags(self, config, targettype):
@@ -299,6 +339,8 @@ class MSVCToolchain(toolchain.Toolchain):
       flags += ['/MACHINE:X86']
     elif arch == 'x86-64':
       flags += ['/MACHINE:X64']
+    elif arch == 'arm64':
+      flags += ['/MACHINE:ARM64']
     return flags
 
   def make_linkconfigflags(self, config, targettype):
@@ -334,6 +376,11 @@ class MSVCToolchain(toolchain.Toolchain):
         if self.sdkversion == 'v10.0':
           libpaths += [os.path.join(self.sdkpath, 'lib', self.sdkversionpath, 'um', 'x86')]
           libpaths += [os.path.join(self.sdkpath, 'lib', self.sdkversionpath, 'ucrt', 'x86')]
+      elif arch == 'arm64':
+        libpaths += [os.path.join(self.toolchain, 'lib', 'arm64')]
+        if self.sdkversion == 'v10.0':
+          libpaths += [os.path.join(self.sdkpath, 'lib', self.sdkversionpath, 'um', 'arm64')]
+          libpaths += [os.path.join(self.sdkpath, 'lib', self.sdkversionpath, 'ucrt', 'arm64')]
       else:
         libpaths += [os.path.join( self.toolchain, 'lib', 'x64')]
         if self.sdkversion == 'v8.1':

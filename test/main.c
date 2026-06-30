@@ -54,6 +54,18 @@
 #define pointer_diff(first, second) (ptrdiff_t)((const char*)(first) - (const char*)(second))
 
 static size_t hardware_threads;
+
+// Test load scaling, controllable via environment so the suite can run on constrained
+// runners (e.g. Android emulators / iOS simulators) without overwhelming them:
+//   RPMALLOC_TEST_THREADS  caps the worker thread count used by the threaded tests
+//   RPMALLOC_TEST_SCALE    scales per-thread loops/passes, as a percentage (1-100)
+static unsigned int test_loop_scale = 100;
+
+static unsigned int
+test_scale(unsigned int value) {
+	unsigned int scaled = (unsigned int)(((uint64_t)value * (uint64_t)test_loop_scale) / 100u);
+	return scaled ? scaled : 1u;
+}
 static int test_failed;
 
 static void
@@ -212,8 +224,9 @@ test_alloc(void) {
 	if (rpmalloc_usable_size(pointer_offset(testptr, 16)) != (usable_size - 16))
 		return test_fail("Bad offset usable size");
 	rpfree(testptr);
-	int is_64bit = (sizeof(size_t) > 4);
-	if (is_64bit) {
+	// Large (>4 GiB) allocation test, only meaningful and representable on 64-bit size_t.
+#if SIZE_MAX > 0xFFFFFFFFu
+	{
 		testptr = rpmalloc(7525631000);
 		memset(testptr, 0x13, 1024);
 		testptr = rprealloc(testptr, 3151000);
@@ -228,6 +241,7 @@ test_alloc(void) {
 			return test_fail("Bad offset usable size");
 		rpfree(testptr);
 	}
+#endif
 
 	for (iloop = 0; iloop < 64; ++iloop) {
 		for (ipass = 0; ipass < 18142; ++ipass) {
@@ -873,11 +887,11 @@ test_thread_implementation(void) {
 	arg.datasize[15] = 234;
 	arg.num_datasize = 16;
 #if defined(__LLP64__) || defined(__LP64__) || defined(_WIN64)
-	arg.loops = 100;
-	arg.passes = 4000;
+	arg.loops = test_scale(100);
+	arg.passes = test_scale(4000);
 #else
-	arg.loops = 30;
-	arg.passes = 1000;
+	arg.loops = test_scale(30);
+	arg.passes = test_scale(1000);
 #endif
 	arg.init_fini_each_loop = 0;
 
@@ -937,11 +951,11 @@ test_crossthread(void) {
 	for (unsigned int ithread = 0; ithread < num_alloc_threads; ++ithread) {
 		unsigned int iadd = (ithread * (16 + ithread) + ithread) % 128;
 #if defined(__LLP64__) || defined(__LP64__) || defined(_WIN64)
-		arg[ithread].loops = 50;
-		arg[ithread].passes = 1024;
+		arg[ithread].loops = test_scale(50);
+		arg[ithread].passes = test_scale(1024);
 #else
-		arg[ithread].loops = 20;
-		arg[ithread].passes = 200;
+		arg[ithread].loops = test_scale(20);
+		arg[ithread].passes = test_scale(200);
 #endif
 		arg[ithread].pointers = rpmalloc(sizeof(void*) * arg[ithread].loops * arg[ithread].passes);
 		memset(arg[ithread].pointers, 0, sizeof(void*) * arg[ithread].loops * arg[ithread].passes);
@@ -1017,8 +1031,8 @@ test_threadspam(void) {
 		num_alloc_threads = 16;
 #endif
 
-	arg.loops = 500;
-	arg.passes = 10;
+	arg.loops = test_scale(500);
+	arg.passes = test_scale(10);
 	arg.datasize[0] = 19;
 	arg.datasize[1] = 249;
 	arg.datasize[2] = 797;
@@ -1101,11 +1115,11 @@ test_first_class_heaps(void) {
 		arg[i].datasize[15] = 234;
 		arg[i].num_datasize = 16;
 #if defined(__LLP64__) || defined(__LP64__) || defined(_WIN64)
-		arg[i].loops = 100;
-		arg[i].passes = 4000;
+		arg[i].loops = test_scale(100);
+		arg[i].passes = test_scale(4000);
 #else
-		arg[i].loops = 50;
-		arg[i].passes = 1000;
+		arg[i].loops = test_scale(50);
+		arg[i].passes = test_scale(1000);
 #endif
 		arg[i].init_fini_each_loop = 1;
 
@@ -1312,8 +1326,8 @@ test_finalize_unmap(void) {
 		rpmalloc_initialize_config(0, &config);
 
 		allocator_thread_arg_t arg = {0};
-		arg.loops = 30;
-		arg.passes = 8;
+		arg.loops = test_scale(30);
+		arg.passes = test_scale(8);
 		arg.datasize[0] = 19;
 		arg.datasize[1] = 249;
 		arg.datasize[2] = 797;
@@ -1583,6 +1597,21 @@ test_run(int argc, char** argv) {
 	(void)sizeof(argc);
 	(void)sizeof(argv);
 	test_initialize();
+
+	{
+		const char* env_threads = getenv("RPMALLOC_TEST_THREADS");
+		if (env_threads) {
+			long value = atol(env_threads);
+			if (value > 0 && (size_t)value < hardware_threads)
+				hardware_threads = (size_t)value;
+		}
+		const char* env_scale = getenv("RPMALLOC_TEST_SCALE");
+		if (env_scale) {
+			long value = atol(env_scale);
+			if (value > 0 && value <= 100)
+				test_loop_scale = (unsigned int)value;
+		}
+	}
 	if (test_alloc())
 		return -1;
 	if (test_realloc())
@@ -1639,7 +1668,9 @@ test_run(int argc, char** argv) {
 #include <sched.h>
 #endif
 
-#if !defined(NO_MAIN)
+// RPMALLOC_TEST_FORCE_MAIN lets CI build a runnable console entry on platforms that otherwise
+// suppress it (e.g. the iOS simulator, where the test is launched via `simctl spawn`).
+#if !defined(NO_MAIN) || defined(RPMALLOC_TEST_FORCE_MAIN)
 
 int
 main(int argc, char** argv) {

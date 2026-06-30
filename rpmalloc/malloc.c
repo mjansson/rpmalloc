@@ -135,7 +135,7 @@ rpreallocarr(void* ptrp, size_t count, size_t size) {
 	}
 	size_t total;
 #if defined(__GNUC__) || defined(__clang__)
-	if (__builtin_umull_overflow(count, size, &total)) {
+	if (__builtin_mul_overflow(count, size, &total)) {
 		errno = EOVERFLOW;
 		return EOVERFLOW;
 	}

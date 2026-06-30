@@ -1,0 +1,12 @@
+# Known-benign data races in rpmalloc, intentionally suppressed so the TSAN
+# stress harness can surface *real* races instead of halting on these.
+#
+# The page_t flag fields (has_aligned_block, is_full, ...) are packed bitfields
+# sharing one 32-bit word. The owner thread is the only writer; cross-thread
+# frees only read has_aligned_block / is_full. On all supported architectures
+# the naturally-aligned word access is atomic in hardware, the read flags are
+# monotonic/tolerant, so a stale read is harmless. TSAN still reports the
+# non-atomic write/read as a data race. See struct page_t in rpmalloc.c.
+race:heap_allocate_block_aligned
+race:span_deallocate_block
+race:page_put_thread_free_block
