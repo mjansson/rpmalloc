@@ -2615,7 +2615,6 @@ rpmalloc_usable_size(void* ptr) {
 	return (ptr ? block_usable_size(ptr) : 0);
 }
 
-// Dummy empty function for forcing linker symbol inclusion (see rpmalloc.h)
 extern void
 rpmalloc_linker_reference(void) {
 }
@@ -2734,6 +2733,9 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 	os_huge_pages = 0;
 	os_thp = 0;
 	os_huge_page_shift = 0;
+
+	rpmalloc_assert(!(global_config.page_size & (global_config.page_size - 1)),
+	                "Configured page size must be a power of two");
 
 	// Establish a valid (normal) page size up front so the allocator never observes a
 	// zero page size during the rest of initialization. Huge page detection below may
