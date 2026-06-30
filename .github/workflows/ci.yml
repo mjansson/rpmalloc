@@ -55,30 +55,32 @@ jobs:
           [ "$found" -eq 1 ] || { echo "no test binaries found"; exit 1; }
 
   # ---------------------------------------------------------------------------
-  # Sanitizers on Linux (UBSAN + TSAN gating, ASAN best-effort)
+  # Sanitizers on Linux x64 + arm64.
+  #   UBSAN (gating): the main test suite.
+  #   ASAN  (gating): the stress harness (ASAN-clean). The main suite trips an ASAN-internal
+  #                   stacktrace CHECK in glibc threading on Linux - not an rpmalloc bug; the
+  #                   same suite passes under ASAN on macOS. The harness is capped in size so
+  #                   ASAN shadow overhead on the huge band does not throttle the run.
+  #   TSAN  (smoke, allowed-fail): TSAN serializes badly on rpmalloc's atomic-dense / cross-
+  #                   thread free hot paths, so throughput is unusably low. Use test/stress.sh
+  #                   for real TSAN runs.
   # ---------------------------------------------------------------------------
   linux-sanitizers:
-    name: linux-${{ matrix.san }}
+    name: linux-${{ matrix.arch }}-${{ matrix.san }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { san: ubsan, flags: "-fsanitize=undefined -fno-sanitize-recover=all", gating: true,  threads: "", scale: "50" }
-          - { san: asan,  flags: "-fsanitize=address,undefined",                   gating: false, threads: "", scale: "50" }
-          # TSAN throughput on rpmalloc's atomic-dense, cross-thread-free hot paths is extremely
-          # low (it serializes in the TSAN runtime). Run only a small smoke - few threads, low
-          # scale, suppressing the known-benign page-flag race - and allow it to fail/time out
-          # rather than block CI. Use the manual test/stress.sh for real TSAN runs.
-          - { san: tsan,  flags: "-fsanitize=thread -fno-sanitize-recover=all",    gating: false, threads: "2", scale: "5" }
-    runs-on: ubuntu-latest
+          - { os: ubuntu-latest,    arch: x64,   san: ubsan, flags: "-fsanitize=undefined -fno-sanitize-recover=all", gating: true,  src: "test/main.c",   run: "RPMALLOC_TEST_SCALE=50 ./san-bin" }
+          - { os: ubuntu-latest,    arch: x64,   san: asan,  flags: "-fsanitize=address,undefined",                   gating: true,  src: "test/stress.c", run: "RPMALLOC_STRESS_SECONDS=12 RPMALLOC_STRESS_THREADS=2 RPMALLOC_STRESS_MAX_SIZE=65536 ./san-bin" }
+          - { os: ubuntu-latest,    arch: x64,   san: tsan,  flags: "-fsanitize=thread -fno-sanitize-recover=all",    gating: false, src: "test/main.c",   run: "RPMALLOC_TEST_THREADS=2 RPMALLOC_TEST_SCALE=5 ./san-bin" }
+          - { os: ubuntu-24.04-arm, arch: arm64, san: ubsan, flags: "-fsanitize=undefined -fno-sanitize-recover=all", gating: true,  src: "test/main.c",   run: "RPMALLOC_TEST_SCALE=50 ./san-bin" }
+          - { os: ubuntu-24.04-arm, arch: arm64, san: asan,  flags: "-fsanitize=address,undefined",                   gating: true,  src: "test/stress.c", run: "RPMALLOC_STRESS_SECONDS=12 RPMALLOC_STRESS_THREADS=2 RPMALLOC_STRESS_MAX_SIZE=65536 ./san-bin" }
+    runs-on: ${{ matrix.os }}
     continue-on-error: ${{ !matrix.gating }}
     timeout-minutes: 15
     env:
-      RPMALLOC_TEST_SCALE: ${{ matrix.scale }}
-      RPMALLOC_TEST_THREADS: ${{ matrix.threads }}
-      # ASAN trips an internal stacktrace CHECK with the test's custom thread
-      # stacks unless the alternate signal stack is disabled.
-      ASAN_OPTIONS: "use_sigaltstack=0:detect_leaks=0"
+      ASAN_OPTIONS: "use_sigaltstack=0:detect_leaks=1"
       UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
       TSAN_OPTIONS: "suppressions=${{ github.workspace }}/test/tsan-suppressions.txt"
     steps:
@@ -86,9 +88,9 @@ jobs:
       - name: Build (${{ matrix.san }})
         run: |
           clang -g -O1 -fno-omit-frame-pointer ${{ matrix.flags }} \
-            -D_GNU_SOURCE $RP_DEFS $RP_INC $RP_SRC -lpthread -o rpmalloc-test-${{ matrix.san }}
+            -D_GNU_SOURCE $RP_DEFS $RP_INC rpmalloc/rpmalloc.c test/thread.c ${{ matrix.src }} -lpthread -o san-bin
       - name: Run (${{ matrix.san }})
-        run: ./rpmalloc-test-${{ matrix.san }}
+        run: ${{ matrix.run }}
 
   # ---------------------------------------------------------------------------
   # macOS native (Apple Silicon + Intel), build and run
