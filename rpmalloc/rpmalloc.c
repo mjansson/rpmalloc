@@ -368,13 +368,21 @@ static inline size_t
 rpmalloc_clz(uintptr_t x) {
 #if ARCH_64BIT
 #if defined(_MSC_VER) && !defined(__clang__)
+#if defined(_M_ARM64)
+	return (size_t)_CountLeadingZeros64(x);  // __lzcnt64 is x86-only
+#else
 	return (size_t)__lzcnt64(x);
+#endif
 #else
 	return (size_t)__builtin_clzll(x);
 #endif
 #else
 #if defined(_MSC_VER) && !defined(__clang__)
+#if defined(_M_ARM64) || defined(_M_ARM)
+	return (size_t)_CountLeadingZeros((unsigned long)x);  // __lzcnt32 is x86-only
+#else
 	return (size_t)__lzcnt32(x);
+#endif
 #else
 	return (size_t)__builtin_clzl(x);
 #endif
