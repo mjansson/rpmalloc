@@ -288,13 +288,15 @@ main(int argc, char** argv) {
 	}
 
 	uintptr_t* thread_handles = (uintptr_t*)malloc(sizeof(uintptr_t) * worker_count);
-	thread_arg worker_descriptor;
-	worker_descriptor.fn = worker;
+	// Each thread needs its own arg: thread_run hands the pointer straight to the new
+	// thread, which reads it asynchronously, so a single reused struct would race.
+	thread_arg* worker_descriptors = (thread_arg*)malloc(sizeof(thread_arg) * worker_count);
 
 	uint64_t start_ms = monotonic_ms();
 	for (size_t thread_index = 0; thread_index < worker_count; ++thread_index) {
-		worker_descriptor.arg = (void*)(uintptr_t)(thread_index + 1);
-		thread_handles[thread_index] = thread_run(&worker_descriptor);
+		worker_descriptors[thread_index].fn = worker;
+		worker_descriptors[thread_index].arg = (void*)(uintptr_t)(thread_index + 1);
+		thread_handles[thread_index] = thread_run(&worker_descriptors[thread_index]);
 	}
 
 	// Tick the clock down, reporting progress, then signal threads to stop.
@@ -309,6 +311,7 @@ main(int argc, char** argv) {
 	for (size_t thread_index = 0; thread_index < worker_count; ++thread_index)
 		thread_join(thread_handles[thread_index]);
 	free(thread_handles);
+	free(worker_descriptors);
 
 	// Drain any blocks still parked in the shared pool.
 	rpmalloc_thread_initialize();
