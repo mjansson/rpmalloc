@@ -38,7 +38,7 @@ jobs:
           - { os: ubuntu-24.04-arm,  arch: arm64,  toolchain: clang }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
       - name: Configure and build
@@ -81,7 +81,7 @@ jobs:
       ASAN_OPTIONS: "use_sigaltstack=0:detect_leaks=1"
       UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build (${{ matrix.san }})
         run: |
           clang -g -O1 -fno-omit-frame-pointer ${{ matrix.flags }} \
@@ -101,7 +101,7 @@ jobs:
           - { os: macos-14, arch: arm64 }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install ninja
         run: brew install ninja
       - name: Configure and build
@@ -127,7 +127,7 @@ jobs:
       RPMALLOC_TEST_SCALE: "50"
       ASAN_OPTIONS: "use_sigaltstack=0:detect_leaks=0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build (asan+ubsan)
         run: |
           clang -g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined \
@@ -152,7 +152,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.allow_failure }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
@@ -188,7 +188,7 @@ jobs:
       ANDROID_API: "29"
       ANDROID_ABI: x86_64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -225,7 +225,7 @@ jobs:
     name: ios-simulator
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build for iOS simulator
         run: |
           set -euo pipefail
