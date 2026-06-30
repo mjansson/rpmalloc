@@ -1,0 +1,252 @@
+name: CI
+
+on:
+  push:
+    branches: [develop, main, ci-multiplatform]
+  pull_request:
+    branches: [develop, main]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Shared compile settings for the direct (non-ninja) builds used by the
+# sanitizer, Android and iOS jobs. The C-only source set (no main-override.cc)
+# builds the library without the libc override, so it never collides with the
+# sanitizer/runtime allocators, and runs the full first-class-heap / statistics
+# test suite.
+env:
+  RP_SRC: rpmalloc/rpmalloc.c test/thread.c test/main.c
+  RP_INC: -Irpmalloc -Itest
+  RP_DEFS: -DENABLE_OVERRIDE=0 -DENABLE_ASSERTS=1 -DENABLE_STATISTICS=1 -DRPMALLOC_FIRST_CLASS_HEAPS=1
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Linux native (x86-64 and ARM64), gcc + clang, build and run the ninja suite
+  # ---------------------------------------------------------------------------
+  linux:
+    name: linux-${{ matrix.arch }}-${{ matrix.toolchain }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,     arch: x86-64, toolchain: gcc }
+          - { os: ubuntu-latest,     arch: x86-64, toolchain: clang }
+          - { os: ubuntu-24.04-arm,  arch: arm64,  toolchain: gcc }
+          - { os: ubuntu-24.04-arm,  arch: arm64,  toolchain: clang }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Configure and build
+        run: |
+          python3 configure.py -c release -a ${{ matrix.arch }} --toolchain ${{ matrix.toolchain }}
+          ninja
+      - name: Run tests
+        run: |
+          set -euo pipefail
+          mapfile -t bins < <(find bin -type f -name 'rpmalloc-test*')
+          [ ${#bins[@]} -gt 0 ] || { echo "no test binaries found"; exit 1; }
+          for b in "${bins[@]}"; do echo "::group::$b"; "$b"; echo "::endgroup::"; done
+
+  # ---------------------------------------------------------------------------
+  # Linux 32-bit (i686) via multilib
+  # ---------------------------------------------------------------------------
+  linux-i686:
+    name: linux-i686-gcc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y ninja-build gcc-multilib g++-multilib
+      - name: Configure and build
+        run: |
+          python3 configure.py -c release -a x86 --toolchain gcc
+          ninja
+      - name: Run tests
+        run: |
+          set -euo pipefail
+          mapfile -t bins < <(find bin -type f -name 'rpmalloc-test*')
+          [ ${#bins[@]} -gt 0 ] || { echo "no test binaries found"; exit 1; }
+          for b in "${bins[@]}"; do echo "::group::$b"; "$b"; echo "::endgroup::"; done
+
+  # ---------------------------------------------------------------------------
+  # Sanitizers on Linux (UBSAN + TSAN gating, ASAN best-effort)
+  # ---------------------------------------------------------------------------
+  linux-sanitizers:
+    name: linux-${{ matrix.san }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { san: ubsan, flags: "-fsanitize=undefined -fno-sanitize-recover=all", gating: true }
+          - { san: tsan,  flags: "-fsanitize=thread -fno-sanitize-recover=all",    gating: true }
+          - { san: asan,  flags: "-fsanitize=address,undefined",                   gating: false }
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ !matrix.gating }}
+    env:
+      RPMALLOC_TEST_SCALE: "50"
+      # ASAN trips an internal stacktrace CHECK with the test's custom thread
+      # stacks unless the alternate signal stack is disabled.
+      ASAN_OPTIONS: "use_sigaltstack=0:detect_leaks=0"
+      UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (${{ matrix.san }})
+        run: |
+          clang -g -O1 -fno-omit-frame-pointer ${{ matrix.flags }} \
+            -D_GNU_SOURCE $RP_DEFS $RP_INC $RP_SRC -lpthread -o rpmalloc-test-${{ matrix.san }}
+      - name: Run (${{ matrix.san }})
+        run: ./rpmalloc-test-${{ matrix.san }}
+
+  # ---------------------------------------------------------------------------
+  # macOS native (Apple Silicon + Intel), build and run
+  # ---------------------------------------------------------------------------
+  macos:
+    name: macos-${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, arch: arm64 }
+          - { os: macos-13, arch: x86-64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ninja
+        run: brew install ninja
+      - name: Configure and build
+        run: |
+          python3 configure.py -c release -a ${{ matrix.arch }} --toolchain clang
+          ninja
+      - name: Run tests
+        run: |
+          set -euo pipefail
+          mapfile -t bins < <(find bin -type f -name 'rpmalloc-test*')
+          [ ${#bins[@]} -gt 0 ] || { echo "no test binaries found"; exit 1; }
+          for b in "${bins[@]}"; do echo "::group::$b"; "$b"; echo "::endgroup::"; done
+
+  # ---------------------------------------------------------------------------
+  # macOS sanitizers (ASAN+UBSAN)
+  # ---------------------------------------------------------------------------
+  macos-sanitizers:
+    name: macos-asan-ubsan
+    runs-on: macos-14
+    env:
+      RPMALLOC_TEST_SCALE: "50"
+      ASAN_OPTIONS: "use_sigaltstack=0:detect_leaks=0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (asan+ubsan)
+        run: |
+          clang -g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined \
+            $RP_DEFS $RP_INC $RP_SRC -o rpmalloc-test-asan
+      - name: Run
+        run: ./rpmalloc-test-asan
+
+  # ---------------------------------------------------------------------------
+  # Windows native (x64 + ARM64) via MSVC
+  # ---------------------------------------------------------------------------
+  windows:
+    name: windows-${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, arch: x86-64, msvc_arch: x64 }
+          - { os: windows-11-arm, arch: arm64,  msvc_arch: arm64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Install ninja
+        run: python -m pip install ninja
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc_arch }}
+      - name: Configure and build
+        shell: bash
+        run: |
+          python configure.py -c release -a ${{ matrix.arch }} --toolchain msvc
+          ninja
+      - name: Run tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t bins < <(find bin -type f -name 'rpmalloc-test*.exe')
+          [ ${#bins[@]} -gt 0 ] || { echo "no test binaries found"; exit 1; }
+          for b in "${bins[@]}"; do echo "::group::$b"; "$b"; echo "::endgroup::"; done
+
+  # ---------------------------------------------------------------------------
+  # Android: build with the modern unified NDK clang, run on an x86_64 emulator
+  # with reduced scaling so the emulator is not overwhelmed.
+  # ---------------------------------------------------------------------------
+  android:
+    name: android-x86_64-emulator
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_API: "29"
+      ANDROID_ABI: x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Build Android test (NDK clang)
+        run: |
+          set -euo pipefail
+          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_ROOT}"
+          TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          "$TC/x86_64-linux-android${ANDROID_API}-clang" -O2 -D_GNU_SOURCE \
+            $RP_DEFS $RP_INC $RP_SRC -o rpmalloc-test-android
+          file rpmalloc-test-android
+      - name: Run on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          arch: x86_64
+          target: default
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          disable-animations: true
+          script: |
+            adb push rpmalloc-test-android /data/local/tmp/rpmalloc-test
+            adb shell chmod 755 /data/local/tmp/rpmalloc-test
+            adb shell "RPMALLOC_TEST_THREADS=2 RPMALLOC_TEST_SCALE=10 /data/local/tmp/rpmalloc-test; echo RP_EXIT=\$?" | tee out.txt
+            grep -q "RP_EXIT=0" out.txt
+
+  # ---------------------------------------------------------------------------
+  # iOS: build for the simulator SDK and run in a booted simulator with reduced
+  # scaling. simctl propagates SIMCTL_CHILD_* env vars to the spawned process.
+  # ---------------------------------------------------------------------------
+  ios:
+    name: ios-simulator
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build for iOS simulator
+        run: |
+          set -euo pipefail
+          xcrun -sdk iphonesimulator clang -arch arm64 -mios-simulator-version-min=15.0 -O2 \
+            $RP_DEFS $RP_INC $RP_SRC -o rpmalloc-test-ios
+          file rpmalloc-test-ios
+      - name: Boot simulator and run
+        run: |
+          set -euo pipefail
+          RUNTIME=$(xcrun simctl list runtimes ios -j | python3 -c "import sys,json; r=[x['identifier'] for x in json.load(sys.stdin)['runtimes'] if x['isAvailable']]; print(r[-1])")
+          DEVTYPE=$(xcrun simctl list devicetypes -j | python3 -c "import sys,json; d=[x['identifier'] for x in json.load(sys.stdin)['devicetypes'] if 'iPhone' in x['name']]; print(d[-1])")
+          echo "runtime=$RUNTIME devtype=$DEVTYPE"
+          UDID=$(xcrun simctl create ci-iphone "$DEVTYPE" "$RUNTIME")
+          xcrun simctl boot "$UDID"
+          xcrun simctl spawn "$UDID" "$PWD/rpmalloc-test-ios"
+          SIMCTL_CHILD_RPMALLOC_TEST_THREADS=2 SIMCTL_CHILD_RPMALLOC_TEST_SCALE=10 \
+            xcrun simctl spawn "$UDID" "$PWD/rpmalloc-test-ios"
+          xcrun simctl shutdown "$UDID" || true

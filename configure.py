@@ -27,3 +27,7 @@ if not generator.target.is_android() and not generator.target.is_ios():
 	# not link main-override.cc and leaves RPMALLOC_TEST_OVERRIDE at its default 0 so the override tests
 	# are skipped and the unmap tests run.
 	generator.bin(module = 'test', sources = ['thread.c', 'main.c'], binname = 'rpmalloc-test-nooverride', implicit_deps = [rpmalloc_test_nooverride_lib], libs = ['rpmalloc-test-nooverride'], includepaths = ['rpmalloc', 'test'], variables = {'defines': ['ENABLE_ASSERTS=1', 'ENABLE_STATISTICS=1', 'RPMALLOC_FIRST_CLASS_HEAPS=1']})
+
+	# Long-running multithreaded stress harness. Built here so it keeps compiling, but it is meant
+	# to be run manually (ideally under a sanitizer), not as part of CI - see test/stress.c.
+	generator.bin(module = 'test', sources = ['thread.c', 'stress.c'], binname = 'rpmalloc-stress', implicit_deps = [rpmalloc_test_nooverride_lib], libs = ['rpmalloc-test-nooverride'], includepaths = ['rpmalloc', 'test'], variables = {'defines': ['ENABLE_ASSERTS=1', 'ENABLE_STATISTICS=1', 'RPMALLOC_FIRST_CLASS_HEAPS=1']})
