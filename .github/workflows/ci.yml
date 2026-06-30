@@ -61,9 +61,8 @@ jobs:
   #                   stacktrace CHECK in glibc threading on Linux - not an rpmalloc bug; the
   #                   same suite passes under ASAN on macOS. The harness is capped in size so
   #                   ASAN shadow overhead on the huge band does not throttle the run.
-  #   TSAN  (smoke, allowed-fail): TSAN serializes badly on rpmalloc's atomic-dense / cross-
-  #                   thread free hot paths, so throughput is unusably low. Use test/stress.sh
-  #                   for real TSAN runs.
+  # TSAN is intentionally not run in CI: it serializes badly on rpmalloc's atomic-dense /
+  # cross-thread free hot paths, so throughput is unusable. Use test/stress.sh for TSAN runs.
   # ---------------------------------------------------------------------------
   linux-sanitizers:
     name: linux-${{ matrix.arch }}-${{ matrix.san }}
@@ -73,7 +72,6 @@ jobs:
         include:
           - { os: ubuntu-latest,    arch: x64,   san: ubsan, flags: "-fsanitize=undefined -fno-sanitize-recover=all", gating: true,  src: "test/main.c",   run: "RPMALLOC_TEST_SCALE=50 ./san-bin" }
           - { os: ubuntu-latest,    arch: x64,   san: asan,  flags: "-fsanitize=address,undefined",                   gating: true,  src: "test/stress.c", run: "RPMALLOC_STRESS_SECONDS=12 RPMALLOC_STRESS_THREADS=2 RPMALLOC_STRESS_MAX_SIZE=65536 ./san-bin" }
-          - { os: ubuntu-latest,    arch: x64,   san: tsan,  flags: "-fsanitize=thread -fno-sanitize-recover=all",    gating: false, src: "test/main.c",   run: "RPMALLOC_TEST_THREADS=2 RPMALLOC_TEST_SCALE=5 ./san-bin" }
           - { os: ubuntu-24.04-arm, arch: arm64, san: ubsan, flags: "-fsanitize=undefined -fno-sanitize-recover=all", gating: true,  src: "test/main.c",   run: "RPMALLOC_TEST_SCALE=50 ./san-bin" }
           - { os: ubuntu-24.04-arm, arch: arm64, san: asan,  flags: "-fsanitize=address,undefined",                   gating: true,  src: "test/stress.c", run: "RPMALLOC_STRESS_SECONDS=12 RPMALLOC_STRESS_THREADS=2 RPMALLOC_STRESS_MAX_SIZE=65536 ./san-bin" }
     runs-on: ${{ matrix.os }}
@@ -82,7 +80,6 @@ jobs:
     env:
       ASAN_OPTIONS: "use_sigaltstack=0:detect_leaks=1"
       UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
-      TSAN_OPTIONS: "suppressions=${{ github.workspace }}/test/tsan-suppressions.txt"
     steps:
       - uses: actions/checkout@v4
       - name: Build (${{ matrix.san }})
