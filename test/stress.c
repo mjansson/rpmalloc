@@ -92,6 +92,9 @@ static int run_seconds;
 //! Optional cap on allocation size (0 = unlimited). Useful under ThreadSanitizer, where the
 //  huge/large bands are dominated by shadow-memory overhead and throttle the run to a crawl.
 static size_t max_alloc_size;
+//! Whether to issue aligned allocations (default on). Set RPMALLOC_STRESS_ALIGN=0 to disable;
+//  useful to isolate the (benign) aligned-block page-flag race under ThreadSanitizer.
+static int use_aligned_alloc = 1;
 
 static uint64_t
 monotonic_ms(void) {
@@ -182,8 +185,8 @@ block_alloc(uint32_t* random_state) {
 	size_t size = pick_size(random_state);
 	uint32_t seed = random_next(random_state);
 	void* block;
-	// Occasionally request extra alignment.
-	if ((seed & 7u) == 0) {
+	// Occasionally request extra alignment (unless disabled for diagnostics).
+	if (use_aligned_alloc && (seed & 7u) == 0) {
 		size_t alignment = (size_t)1 << (4 + (seed % 5));  // 16..256
 		block = rpaligned_alloc(alignment, size);
 	} else {
@@ -296,6 +299,10 @@ main(int argc, char** argv) {
 		if (parsed_max > 0)
 			max_alloc_size = (size_t)parsed_max;
 	}
+
+	const char* env_align = getenv("RPMALLOC_STRESS_ALIGN");
+	if (env_align)
+		use_aligned_alloc = atoi(env_align) != 0;
 
 	printf("rpmalloc stress: %zu threads, %d seconds", worker_count, run_seconds);
 	if (max_alloc_size)
