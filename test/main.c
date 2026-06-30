@@ -96,7 +96,6 @@ test_alloc(void) {
 
 	rpmalloc_initialize(0);
 
-	// Query the small granularity
 	void* zero_alloc = rpmalloc(0);
 	size_t small_granularity = rpmalloc_usable_size(zero_alloc);
 	if (small_granularity != 16)

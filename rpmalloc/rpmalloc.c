@@ -1724,7 +1724,6 @@ span_deallocate_block(span_t* span, page_t* page, void* block) {
 	}
 
 	if (page->has_aligned_block) {
-		// Realign pointer to block start
 		block = page_block_realign(page, block);
 	}
 
@@ -3357,7 +3356,6 @@ rpmalloc_heap_thread_set_current(rpmalloc_heap_t* heap) {
 
 rpmalloc_heap_t*
 rpmalloc_get_heap_for_ptr(void* ptr) {
-	// Grab the span, and then the heap from the span
 	span_t* span = (span_t*)((uintptr_t)ptr & SPAN_MASK);
 	if (span)
 		return span_get_page_from_block(span, ptr)->heap;
