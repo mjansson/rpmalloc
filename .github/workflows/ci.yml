@@ -145,10 +145,7 @@ jobs:
       matrix:
         include:
           - { os: windows-latest, arch: x86-64, msvc_arch: x64,   allow_failure: false }
-          # windows-11-arm: build/ninja/msvc.py cannot yet locate the VS toolchain on an
-          # ARM64 host ("Unable to locate any installed Visual Studio toolchain"); allowed
-          # to fail until msvc.py learns the HostARM64 layout.
-          - { os: windows-11-arm, arch: arm64,  msvc_arch: arm64, allow_failure: true }
+          - { os: windows-11-arm, arch: arm64,  msvc_arch: arm64, allow_failure: false }
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.allow_failure }}
     steps:
