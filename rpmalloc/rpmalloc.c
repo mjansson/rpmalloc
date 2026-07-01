@@ -2024,6 +2024,8 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 	heap->stats.mapped_size += mapped_size;
 #endif
 	if (EXPECTED(span != 0)) {
+		rpmalloc_assert(!((uintptr_t)span & (SPAN_SIZE - 1)),
+		                "memory_map returned a block not aligned to the span size");
 		_rpmalloc_stat_inc_span_map(heap, page_type);
 		uint32_t page_count = 0;
 		uint32_t page_size = 0;
@@ -2200,6 +2202,8 @@ heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
 		block = global_memory_interface->memory_map(alloc_size, SPAN_SIZE, &offset, &mapped_size);
 	if (block) {
 		span_t* span = block;
+		rpmalloc_assert(!((uintptr_t)span & (SPAN_SIZE - 1)),
+		                "memory_map returned a block not aligned to the span size");
 		if (!from_cache)
 			_rpmalloc_stat_inc_span_map(heap, PAGE_HUGE);
 #if ENABLE_DECOMMIT
