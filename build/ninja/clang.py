@@ -50,7 +50,7 @@ class ClangToolchain(toolchain.Toolchain):
                    '-fstrict-aliasing', '-fvisibility=default', '-fno-stack-protector',
                    '-fno-math-errno','-ffinite-math-only', '-funsafe-math-optimizations',
                    '-fno-trapping-math', '-ffast-math']
-    self.cwarnflags = ['-W', '-Werror', '-pedantic', '-Wall', '-Weverything',
+    self.cwarnflags = ['-W', '-Werror', '-pedantic', '-Wall',
                        # Tolerate warning options that only exist in some clang versions (e.g.
                        # -Wno-pre-c11-compat, -Wno-unsafe-buffer-usage) instead of erroring out.
                        '-Wno-unknown-warning-option',
