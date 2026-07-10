@@ -1,3 +1,6 @@
+/* SPDX-FileCopyrightText: 2017 Mattias Jansson
+ * SPDX-License-Identifier: Unlicense OR MIT
+ */
 
 #include <thread.h>
 #include <errno.h>
@@ -12,6 +15,9 @@
 #endif
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wnonportable-system-include-path"
+#if __has_warning("-Wimplicit-void-ptr-cast")
+#pragma clang diagnostic ignored "-Wimplicit-void-ptr-cast"
+#endif
 #endif
 
 #ifdef _WIN32

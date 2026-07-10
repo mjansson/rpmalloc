@@ -231,3 +231,10 @@ coverallsreport.json
 codecov.json
 codecovreport.json
 benchmark-*.txt
+
+# Python
+__pycache__/
+*.pyc
+
+# Stress test helper output (test/stress.sh)
+/rpmalloc-stress-*

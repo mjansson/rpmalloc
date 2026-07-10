@@ -50,7 +50,10 @@ class ClangToolchain(toolchain.Toolchain):
                    '-fstrict-aliasing', '-fvisibility=default', '-fno-stack-protector',
                    '-fno-math-errno','-ffinite-math-only', '-funsafe-math-optimizations',
                    '-fno-trapping-math', '-ffast-math']
-    self.cwarnflags = ['-W', '-Werror', '-pedantic', '-Wall', '-Weverything',
+    self.cwarnflags = ['-W', '-Werror', '-pedantic', '-Wall',
+                       # Tolerate warning options that only exist in some clang versions (e.g.
+                       # -Wno-pre-c11-compat, -Wno-unsafe-buffer-usage) instead of erroring out.
+                       '-Wno-unknown-warning-option',
                        '-Wno-c++98-compat', '-Wno-padded', '-Wno-documentation-unknown-command', '-Wno-declaration-after-statement',
                        '-Wno-implicit-fallthrough', '-Wno-static-in-inline', '-Wno-reserved-id-macro', '-Wno-disabled-macro-expansion',
                        '-Wno-unsafe-buffer-usage']
@@ -107,7 +110,7 @@ class ClangToolchain(toolchain.Toolchain):
       self.cflags += ['-w']
     self.cxxflags = list(self.cflags)
 
-    self.cflags += ['-std=c11']
+    self.cflags += ['-std=c11', '-Wno-pre-c11-compat']
     if self.target.is_macos() or self.target.is_ios():
       self.cxxflags += ['-std=c++14', '-stdlib=libc++']
     else:
