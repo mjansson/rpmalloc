@@ -55,6 +55,33 @@ jobs:
           [ "$found" -eq 1 ] || { echo "no test binaries found"; exit 1; }
 
   # ---------------------------------------------------------------------------
+  # Alpine Linux (musl libc), gcc + clang, build and run the ninja suite in a
+  # container (checkout on the host; build in the container via docker).
+  # ---------------------------------------------------------------------------
+  alpine-musl:
+    name: alpine-musl-${{ matrix.toolchain }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build and run the ninja suite in Alpine (musl)
+        run: |
+          docker run --rm -v "$PWD":/work -w /work alpine:latest sh -euc '
+            apk add --no-cache build-base clang python3 samurai
+            ln -sf /usr/bin/samu /usr/local/bin/ninja
+            python3 configure.py -c release -a x86-64 --toolchain ${{ matrix.toolchain }}
+            ninja
+            found=0
+            for b in $(find bin -type f -name "rpmalloc-test*"); do
+              found=1; echo "::group::$b"; "$b"; echo "::endgroup::"
+            done
+            [ "$found" -eq 1 ] || { echo "no test binaries found"; exit 1; }
+          '
+
+  # ---------------------------------------------------------------------------
   # Sanitizers on Linux x64 + arm64.
   #   UBSAN (gating): the main test suite.
   #   ASAN  (gating): the stress harness (ASAN-clean). The main suite trips an ASAN-internal
