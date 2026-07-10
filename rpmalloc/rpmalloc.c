@@ -2373,7 +2373,7 @@ heap_reallocate_block(heap_t* heap, void* block, size_t size, size_t old_size, u
 			// Huge block
 			void* block_start = pointer_offset(span, SPAN_HEADER_SIZE);
 			if (!old_size)
-				old_size = ((size_t)span->page_size * (size_t)span->page_count) - SPAN_HEADER_SIZE;
+				old_size = ((size_t)span->page_size * (size_t)span->page_count) - (size_t)pointer_diff(block, span);
 			if ((size < old_size) && (size >= (old_size / 2)) && (size > LARGE_BLOCK_SIZE_LIMIT)) {
 				// Still fits in block, still huge and saves less than half the memory,
 				// never mind trying to save memory, but preserve data if alignment changed
