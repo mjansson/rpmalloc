@@ -1,4 +1,4 @@
-2.0.0-rc1
+2.0.0
 
 Major redesign of the allocator core. The most significant changes in design from the 1.4 series:
 
