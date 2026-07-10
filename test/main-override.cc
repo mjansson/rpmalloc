@@ -48,6 +48,16 @@ pvalloc(size_t size) {
 }
 #else
 #include <malloc.h>
+#if defined(__linux__) && !defined(__GLIBC__)
+// Non-glibc C libraries (e.g. musl) do not declare the deprecated pvalloc
+extern "C" void*
+rppvalloc(size_t size);
+
+static void*
+pvalloc(size_t size) {
+	return rppvalloc(size);
+}
+#endif
 #endif
 
 extern "C" int
