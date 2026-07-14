@@ -641,8 +641,16 @@ static int global_heap_creating;
 static atomic_uintptr_t global_heap_lock;
 //! Heap ID counter
 static atomic_uint global_heap_id = 1;
-//! Initialized flag
-static int global_rpmalloc_initialized;
+//! Global initialization state. rpmalloc_initialize can be called concurrently from multiple
+//! threads (the first allocation on any thread may trigger it), so it is driven as an atomic
+//! state machine: exactly one thread performs the global setup while the others wait for it to
+//! complete before allocating - they must never observe, or allocate against, a partially
+//! written global_config. Release/acquire ordering on the DONE transition publishes all of the
+//! global_config writes to threads that observe completion.
+#define RPMALLOC_INIT_UNINIT 0
+#define RPMALLOC_INIT_RUNNING 1
+#define RPMALLOC_INIT_DONE 2
+static atomic_int global_rpmalloc_init_state;
 //! Memory interface
 static rpmalloc_interface_t* global_memory_interface;
 //! Default memory interface
@@ -2666,7 +2674,7 @@ os_read_system_file(const char* path, char* buffer, size_t capacity) {
 
 extern int
 rpmalloc_initialize_config(rpmalloc_interface_t* memory_interface, rpmalloc_config_t* config) {
-	if (global_rpmalloc_initialized) {
+	if (atomic_load_explicit(&global_rpmalloc_init_state, memory_order_acquire) == RPMALLOC_INIT_DONE) {
 		rpmalloc_thread_initialize();
 		if (config)
 			*config = global_config;
@@ -2686,12 +2694,24 @@ rpmalloc_initialize_config(rpmalloc_interface_t* memory_interface, rpmalloc_conf
 
 extern int
 rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
-	if (global_rpmalloc_initialized) {
-		rpmalloc_thread_initialize();
-		return 0;
+	for (;;) {
+		int state = atomic_load_explicit(&global_rpmalloc_init_state, memory_order_acquire);
+		if (state == RPMALLOC_INIT_DONE) {
+			rpmalloc_thread_initialize();
+			return 0;
+		}
+		if (state == RPMALLOC_INIT_RUNNING) {
+			while (atomic_load_explicit(&global_rpmalloc_init_state, memory_order_acquire) ==
+			       RPMALLOC_INIT_RUNNING)
+				wait_spin();
+			continue;
+		}
+		int expected = RPMALLOC_INIT_UNINIT;
+		if (atomic_compare_exchange_strong_explicit(&global_rpmalloc_init_state, &expected,
+		                                            RPMALLOC_INIT_RUNNING, memory_order_acq_rel,
+		                                            memory_order_acquire))
+			break;
 	}
-
-	global_rpmalloc_initialized = 1;
 
 	// Remember whether the caller explicitly requested huge pages, the detection below
 	// overwrites global_config.enable_huge_pages with what is actually available.
@@ -2850,7 +2870,7 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 		// huge page size. Leave the allocator uninitialized (and the requested flag cleared)
 		// so the caller can detect this and re-initialize without huge pages if desired.
 		global_config.enable_huge_pages = 0;
-		global_rpmalloc_initialized = 0;
+		atomic_store_explicit(&global_rpmalloc_init_state, RPMALLOC_INIT_UNINIT, memory_order_release);
 		return -1;
 	}
 
@@ -2907,6 +2927,8 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 #endif
 
 	global_main_thread_id = get_thread_id();
+
+	atomic_store_explicit(&global_rpmalloc_init_state, RPMALLOC_INIT_DONE, memory_order_release);
 
 	rpmalloc_thread_initialize();
 
@@ -3055,7 +3077,7 @@ rpmalloc_finalize(void) {
 
 	global_heap_creating = 0;
 	global_main_thread_id = 0;
-	global_rpmalloc_initialized = 0;
+	atomic_store_explicit(&global_rpmalloc_init_state, RPMALLOC_INIT_UNINIT, memory_order_release);
 }
 
 extern void
