@@ -403,11 +403,7 @@ thread_yield(void) {
 
 #ifndef WAIT_SPIN_YIELD_THRESHOLD
 //! Number of cheap CPU-pause spins before wait_spin escalates to a real OS scheduler yield.
-//! The per-arch pause/yield below is only a hint, not a scheduler yield: under high
-//! thread:core contention (many more runnable threads than cores) a preempted lock holder
-//! can be starved by spinners, which livelocks/collapses throughput. Escalating to a real
-//! scheduler yield lets the holder get scheduled and make progress.
-#define WAIT_SPIN_YIELD_THRESHOLD 1000
+#define WAIT_SPIN_YIELD_THRESHOLD 100
 #endif
 
 static inline void
