@@ -1,10 +1,8 @@
 2.0.1
 
-Fixed a data race in concurrent lazy initialization. The first allocation on any thread lazily
-initializes the allocator, so simultaneous first allocations from several threads could race on the
-global initialization state and hand out a block backed by a partially written global configuration.
-Initialization is now driven as an atomic state machine where exactly one thread performs the global
-setup while the others wait for it to complete before allocating.
+Fixed a data race in concurrent lazy initialization where simultaneous first allocations from
+multiple threads could race on the global init state and return a block backed by a partially
+written configuration. Initialization is now serialized through an atomic state machine.
 
 
 2.0.0
