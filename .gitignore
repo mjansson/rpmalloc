@@ -238,3 +238,6 @@ __pycache__/
 
 # Stress test helper output (test/stress.sh)
 /rpmalloc-stress-*
+
+# Init race test helper output (test/init-race.sh)
+/rpmalloc-init-race-*
