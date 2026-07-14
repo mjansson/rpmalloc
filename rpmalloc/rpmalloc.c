@@ -389,8 +389,33 @@ rpmalloc_clz(uintptr_t x) {
 #endif
 }
 
+//! Yield the rest of this thread's scheduling quantum so another runnable thread (e.g. a lock
+//! holder that has been preempted) can run. This is a real scheduler yield, unlike the per-arch
+//! CPU pause/yield hint used by wait_spin below.
 static inline void
-wait_spin(void) {
+thread_yield(void) {
+#if PLATFORM_WINDOWS
+	SwitchToThread();
+#else
+	sched_yield();
+#endif
+}
+
+#ifndef WAIT_SPIN_YIELD_THRESHOLD
+//! Number of cheap CPU-pause spins before wait_spin escalates to a real OS scheduler yield.
+//! The per-arch pause/yield below is only a hint, not a scheduler yield: under high
+//! thread:core contention (many more runnable threads than cores) a preempted lock holder
+//! can be starved by spinners, which livelocks/collapses throughput. Escalating to a real
+//! scheduler yield lets the holder get scheduled and make progress.
+#define WAIT_SPIN_YIELD_THRESHOLD 1000
+#endif
+
+static inline void
+wait_spin(uint32_t* spin_count) {
+	if (++(*spin_count) >= WAIT_SPIN_YIELD_THRESHOLD) {
+		thread_yield();
+		return;
+	}
 #if defined(_MSC_VER)
 #if defined(_M_ARM64)
 	__yield();
@@ -1353,9 +1378,10 @@ page_adopt_thread_free_block_list(page_t* page) {
 	unsigned long long thread_free = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
 	if (thread_free != 0) {
 		// Other threads can only replace with another valid list head, this will never change to 0 in other threads
+		uint32_t spin = 0;
 		while (!atomic_compare_exchange_weak_explicit(&page->thread_free, &thread_free, 0, memory_order_acquire,
 		                                              memory_order_relaxed))
-			wait_spin();
+			wait_spin(&spin);
 		page->local_free_count = page_block_from_thread_free_list(page, thread_free, &page->local_free);
 		rpmalloc_assert(page->local_free_count <= page->block_used, "Page thread free list count internal failure");
 		page->block_used -= page->local_free_count;
@@ -1372,10 +1398,11 @@ page_put_thread_free_block(page_t* page, block_t* block) {
 		heap_t* heap = page->heap;
 		uintptr_t prev_head = atomic_load_explicit(&heap->thread_free[page->page_type], memory_order_relaxed);
 		block->next = (void*)prev_head;
+		uint32_t spin = 0;
 		while (!atomic_compare_exchange_weak_explicit(&heap->thread_free[page->page_type], &prev_head, (uintptr_t)block,
 		                                              memory_order_release, memory_order_relaxed)) {
 			block->next = (void*)prev_head;
-			wait_spin();
+			wait_spin(&spin);
 		}
 	} else {
 		unsigned long long prev_thread_free = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
@@ -1383,11 +1410,12 @@ page_put_thread_free_block(page_t* page, block_t* block) {
 		rpmalloc_assert(page_block(page, block_index) == block, "Block pointer is not aligned to start of block");
 		uint32_t list_size = page_block_from_thread_free_list(page, prev_thread_free, &block->next) + 1;
 		uint64_t thread_free = page_block_to_thread_free_list(page, block_index, list_size);
+		uint32_t spin = 0;
 		while (!atomic_compare_exchange_weak_explicit(&page->thread_free, &prev_thread_free, thread_free,
 		                                              memory_order_release, memory_order_relaxed)) {
 			list_size = page_block_from_thread_free_list(page, prev_thread_free, &block->next) + 1;
 			thread_free = page_block_to_thread_free_list(page, block_index, list_size);
-			wait_spin();
+			wait_spin(&spin);
 		}
 	}
 }
@@ -1590,10 +1618,11 @@ static huge_cache_t global_huge_cache;
 static inline void
 huge_cache_lock_acquire(void) {
 	uintptr_t lock = 0;
+	uint32_t spin = 0;
 	while (!atomic_compare_exchange_weak_explicit(&global_huge_cache.lock, &lock, 1, memory_order_acquire,
 	                                              memory_order_relaxed)) {
 		lock = 0;
-		wait_spin();
+		wait_spin(&spin);
 	}
 }
 
@@ -1812,9 +1841,10 @@ static inline void
 heap_lock_acquire(void) {
 	uintptr_t lock = 0;
 	uintptr_t this_lock = get_thread_id();
+	uint32_t spin = 0;
 	while (!atomic_compare_exchange_strong(&global_heap_lock, &lock, this_lock)) {
 		lock = 0;
-		wait_spin();
+		wait_spin(&spin);
 	}
 }
 
@@ -1851,6 +1881,7 @@ heap_allocate_new(int first_class) {
 		rpmalloc_initialize(0);
 
 	heap_lock_acquire();
+	uint32_t spin = 0;
 	while (1) {
 		if (!first_class && global_heap_queue) {
 			heap_t* heap = global_heap_queue;
@@ -1867,7 +1898,7 @@ heap_allocate_new(int first_class) {
 		if (!global_heap_creating)
 			break;
 		heap_lock_release();
-		wait_spin();
+		wait_spin(&spin);
 		heap_lock_acquire();
 	}
 	global_heap_creating = 1;
@@ -2105,9 +2136,10 @@ heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 	// Check if there is a free page from multithreaded deallocations
 	uintptr_t block_mt = atomic_load_explicit(&heap->thread_free[page_type], memory_order_relaxed);
 	if (UNEXPECTED(block_mt != 0)) {
+		uint32_t spin = 0;
 		while (!atomic_compare_exchange_weak_explicit(&heap->thread_free[page_type], &block_mt, 0, memory_order_acquire,
 		                                              memory_order_relaxed)) {
-			wait_spin();
+			wait_spin(&spin);
 		}
 		block_t* block = (void*)block_mt;
 		while (block) {
@@ -2703,7 +2735,7 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 		if (state == RPMALLOC_INIT_RUNNING) {
 			while (atomic_load_explicit(&global_rpmalloc_init_state, memory_order_acquire) ==
 			       RPMALLOC_INIT_RUNNING)
-				wait_spin();
+				thread_yield();
 			continue;
 		}
 		int expected = RPMALLOC_INIT_UNINIT;
