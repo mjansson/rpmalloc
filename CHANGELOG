@@ -1,3 +1,13 @@
+2.0.1
+
+Fixed a data race in concurrent lazy initialization where simultaneous first allocations from
+multiple threads could race on the global init state and return a block backed by a partially
+written configuration. Initialization is now serialized through an atomic state machine.
+
+Spin waits now escalate to an OS scheduler yield after a spin threshold, avoiding throughput
+collapse when a preempted lock holder is starved by spinners under high thread contention.
+
+
 2.0.0
 
 Major redesign of the allocator core. The most significant changes in design from the 1.4 series:
