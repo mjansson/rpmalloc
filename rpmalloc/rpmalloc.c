@@ -2385,6 +2385,76 @@ heap_allocate_block_aligned(heap_t* heap, size_t alignment, size_t size, unsigne
 	return block;
 }
 
+#if defined(__linux__) && defined(MREMAP_MAYMOVE) && defined(MREMAP_FIXED)
+#define ENABLE_HUGE_REMAP 1
+#else
+#define ENABLE_HUGE_REMAP 0
+#endif
+
+#if ENABLE_HUGE_REMAP
+//! Grow a huge block by moving its mapping into a new, larger span aligned reservation with mremap.
+//  The kernel moves the page table entries instead of copying the content, so growing a large buffer
+//  costs no memory copy and no page faults on the moved range. Returns the new block, or 0 if the
+//  block cannot be remapped (the caller then falls back to allocate, copy and free).
+static void*
+span_huge_remap(span_t* span, size_t size) {
+	// Only plain mappings from the default OS interface can be moved: huge page (hugetlb) mappings have
+	// stricter remap rules, and spans tracked in a first class heap span list cannot change address
+	if ((global_memory_interface->memory_map != os_mmap) || os_huge_pages || span->offset ||
+	    !span->heap->owner_thread)
+		return 0;
+	size_t alloc_size = get_page_aligned_size(size + SPAN_HEADER_SIZE);
+	size_t old_mapped_size = span->mapped_size;
+	if (alloc_size <= old_mapped_size)
+		return 0;
+	size_t offset = 0;
+	size_t mapped_size = 0;
+	void* target = os_mmap(alloc_size, SPAN_SIZE, &offset, &mapped_size);
+	if (!target)
+		return 0;
+	void* moved = mremap(span, old_mapped_size, mapped_size, MREMAP_MAYMOVE | MREMAP_FIXED, target);
+	if (moved != target) {
+		os_munmap(target, offset, mapped_size);
+		return 0;
+	}
+	span = target;
+#if ENABLE_DECOMMIT
+	if (os_commit_on_demand())
+		global_memory_interface->memory_commit(span, alloc_size);
+#endif
+	size_t old_committed = (size_t)span->page_count * span->page_size;
+#if ENABLE_STATISTICS
+	// The old mapping is gone without passing through os_munmap, account for it the same way
+	statistics_sub_saturating(&global_statistics.page_mapped, old_mapped_size / global_config.page_size);
+	statistics_sub_saturating(&global_statistics.page_active, old_mapped_size / global_config.page_size);
+	statistics_sub_saturating(&global_statistics.huge_alloc, old_committed);
+#endif
+	span->page_count = (uint32_t)(alloc_size / span->page_size);
+	span->mapped_size = mapped_size;
+	size_t new_committed = (size_t)span->page_count * span->page_size;
+#if ENABLE_STATISTICS
+	size_t huge_alloc_current =
+	    atomic_fetch_add_explicit(&global_statistics.huge_alloc, new_committed, memory_order_relaxed) +
+	    new_committed;
+	size_t huge_alloc_peak = atomic_load_explicit(&global_statistics.huge_alloc_peak, memory_order_relaxed);
+	while (huge_alloc_current > huge_alloc_peak) {
+		if (atomic_compare_exchange_weak_explicit(&global_statistics.huge_alloc_peak, &huge_alloc_peak,
+		                                          huge_alloc_current, memory_order_relaxed, memory_order_relaxed))
+			break;
+	}
+#endif
+#if RPMALLOC_HEAP_STATISTICS
+	span->heap->stats.mapped_size += mapped_size - old_mapped_size;
+	span->heap->stats.committed_size += new_committed - old_committed;
+	span->heap->stats.allocated_size += new_committed - old_committed;
+#else
+	(void)sizeof(old_committed);
+	(void)sizeof(new_committed);
+#endif
+	return pointer_offset(span, SPAN_HEADER_SIZE);
+}
+#endif
+
 static void*
 heap_reallocate_block(heap_t* heap, void* block, size_t size, size_t old_size, unsigned int flags) {
 	if (block) {
@@ -2429,6 +2499,16 @@ heap_reallocate_block(heap_t* heap, void* block, size_t size, size_t old_size, u
 	// and deallocate the old. Avoid hysteresis by overallocating if increase is small (below 37%)
 	size_t lower_bound = old_size + (old_size >> 2) + (old_size >> 3);
 	size_t new_size = (size > lower_bound) ? size : ((size > old_size) ? lower_bound : size);
+#if ENABLE_HUGE_REMAP
+	if (block && (new_size > old_size) && (new_size > LARGE_BLOCK_SIZE_LIMIT)) {
+		span_t* span = block_get_span(block);
+		if ((span->page_type == PAGE_HUGE) && (block == pointer_offset(span, SPAN_HEADER_SIZE))) {
+			void* moved_block = span_huge_remap(span, new_size);
+			if (moved_block)
+				return moved_block;
+		}
+	}
+#endif
 	void* old_block = block;
 	block = heap_allocate_block(heap, new_size, 0);
 	if (block && old_block) {
