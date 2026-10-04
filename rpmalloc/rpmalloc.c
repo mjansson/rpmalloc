@@ -1385,34 +1385,55 @@ page_adopt_thread_free_block_list(page_t* page) {
 	}
 }
 
+//! Contended retry path for pushing a block to the heap level thread free list of full pages
+static NOINLINE void
+heap_put_thread_free_block_retry(atomic_uintptr_t* list, block_t* block, uintptr_t prev_head) {
+	uint32_t spin = 0;
+	do {
+		block->next = (void*)prev_head;
+		wait_spin(&spin);
+	} while (!atomic_compare_exchange_weak_explicit(list, &prev_head, (uintptr_t)block, memory_order_release,
+	                                                memory_order_relaxed));
+}
+
+//! Contended retry path for pushing a block to the page thread free list
+static NOINLINE void
+page_put_thread_free_block_retry(page_t* page, block_t* block, uint32_t block_index,
+                                 unsigned long long prev_thread_free) {
+	uint32_t spin = 0;
+	uint64_t thread_free;
+	do {
+		uint32_t list_size = page_block_from_thread_free_list(page, prev_thread_free, &block->next) + 1;
+		thread_free = page_block_to_thread_free_list(page, block_index, list_size);
+		wait_spin(&spin);
+	} while (!atomic_compare_exchange_weak_explicit(&page->thread_free, &prev_thread_free, thread_free,
+	                                                memory_order_release, memory_order_relaxed));
+}
+
+//! Push a block to the deferred free list of another thread. The uncontended case is a single CAS,
+//  the spin and yield retry loops live in separate cold functions so this path needs no stack frame
+//  or callee saved registers
 static NOINLINE void
 page_put_thread_free_block(page_t* page, block_t* block) {
 	atomic_thread_fence(memory_order_acquire);
 	if (page->is_full) {
 		// Page is full, put the block in the heap thread free list instead, otherwise
 		// the heap will not pick up the free blocks until a thread local free happens
-		heap_t* heap = page->heap;
-		uintptr_t prev_head = atomic_load_explicit(&heap->thread_free[page->page_type], memory_order_relaxed);
+		atomic_uintptr_t* list = &page->heap->thread_free[page->page_type];
+		uintptr_t prev_head = atomic_load_explicit(list, memory_order_relaxed);
 		block->next = (void*)prev_head;
-		uint32_t spin = 0;
-		while (!atomic_compare_exchange_weak_explicit(&heap->thread_free[page->page_type], &prev_head, (uintptr_t)block,
-		                                              memory_order_release, memory_order_relaxed)) {
-			block->next = (void*)prev_head;
-			wait_spin(&spin);
-		}
+		if (UNEXPECTED(!atomic_compare_exchange_weak_explicit(list, &prev_head, (uintptr_t)block, memory_order_release,
+		                                                      memory_order_relaxed)))
+			heap_put_thread_free_block_retry(list, block, prev_head);
 	} else {
 		unsigned long long prev_thread_free = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
 		uint32_t block_index = page_block_index(page, block);
 		rpmalloc_assert(page_block(page, block_index) == block, "Block pointer is not aligned to start of block");
 		uint32_t list_size = page_block_from_thread_free_list(page, prev_thread_free, &block->next) + 1;
 		uint64_t thread_free = page_block_to_thread_free_list(page, block_index, list_size);
-		uint32_t spin = 0;
-		while (!atomic_compare_exchange_weak_explicit(&page->thread_free, &prev_thread_free, thread_free,
-		                                              memory_order_release, memory_order_relaxed)) {
-			list_size = page_block_from_thread_free_list(page, prev_thread_free, &block->next) + 1;
-			thread_free = page_block_to_thread_free_list(page, block_index, list_size);
-			wait_spin(&spin);
-		}
+		if (UNEXPECTED(!atomic_compare_exchange_weak_explicit(&page->thread_free, &prev_thread_free, thread_free,
+		                                                      memory_order_release, memory_order_relaxed)))
+			page_put_thread_free_block_retry(page, block, block_index, prev_thread_free);
 	}
 }
 
