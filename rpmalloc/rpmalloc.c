@@ -1296,6 +1296,11 @@ page_available_to_free(page_t* page) {
 	rpmalloc_assert(page->is_decommitted == 0, "Page decommitted flag internal failure");
 	heap_t* heap = page->heap;
 	if (heap->page_available[page->size_class] == page) {
+		// Keep the last available page of a size class in place. Retiring it would make the next
+		// allocation of the class take the generic path and reinitialize the page from scratch,
+		// which an alternating allocate/free pattern would then repeat on every pair
+		if (!page->next)
+			return;
 		heap->page_available[page->size_class] = page->next;
 	} else {
 		page->prev->next = page->next;
