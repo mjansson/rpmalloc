@@ -71,6 +71,7 @@
 #endif
 #include <windows.h>
 #include <fibersapi.h>
+#include <intsafe.h>
 static DWORD fls_key;
 //! VirtualAlloc2 (Windows 10+), resolved dynamically; null on older systems
 typedef PVOID(WINAPI* virtualalloc2_fn)(HANDLE, PVOID, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER*, ULONG);
@@ -278,6 +279,16 @@ madvise(caddr_t, size_t, int);
 #else
 #define rpmalloc_assume(cond) 0
 #endif
+
+//! Compute num * size into total, returning non-zero if the multiplication overflows
+static inline int
+size_mul_overflow(size_t num, size_t size, size_t* total) {
+#if PLATFORM_WINDOWS
+	return (SizeTMult(num, size, total) != S_OK);
+#else
+	return __builtin_umull_overflow(num, size, total);
+#endif
+}
 
 ////////////
 ///
@@ -2552,22 +2563,15 @@ rpfree(void* ptr) {
 extern inline RPMALLOC_ALLOCATOR void*
 rpcalloc(size_t num, size_t size) {
 	size_t total;
+	if (size_mul_overflow(num, size, &total)) {
+		errno = ENOMEM;
+		return 0;
+	}
 #if ENABLE_VALIDATE_ARGS
-#if PLATFORM_WINDOWS
-	int err = SizeTMult(num, size, &total);
-	if ((err != S_OK) || (total >= MAX_ALLOC_SIZE)) {
+	if (total >= MAX_ALLOC_SIZE) {
 		errno = EINVAL;
 		return 0;
 	}
-#else
-	int err = __builtin_umull_overflow(num, size, &total);
-	if (err || (total >= MAX_ALLOC_SIZE)) {
-		errno = EINVAL;
-		return 0;
-	}
-#endif
-#else
-	total = num * size;
 #endif
 	heap_t* heap = get_thread_heap();
 	return heap_allocate_block(heap, total, 1);
@@ -2612,22 +2616,15 @@ rpaligned_zalloc(size_t alignment, size_t size) {
 extern inline RPMALLOC_ALLOCATOR void*
 rpaligned_calloc(size_t alignment, size_t num, size_t size) {
 	size_t total;
+	if (size_mul_overflow(num, size, &total)) {
+		errno = ENOMEM;
+		return 0;
+	}
 #if ENABLE_VALIDATE_ARGS
-#if PLATFORM_WINDOWS
-	int err = SizeTMult(num, size, &total);
-	if ((err != S_OK) || (total >= MAX_ALLOC_SIZE)) {
+	if (total >= MAX_ALLOC_SIZE) {
 		errno = EINVAL;
 		return 0;
 	}
-#else
-	int err = __builtin_umull_overflow(num, size, &total);
-	if (err || (total >= MAX_ALLOC_SIZE)) {
-		errno = EINVAL;
-		return 0;
-	}
-#endif
-#else
-	total = num * size;
 #endif
 	heap_t* heap = get_thread_heap();
 	return heap_allocate_block_aligned(heap, alignment, total, 1);
@@ -3309,22 +3306,15 @@ rpmalloc_heap_aligned_zalloc(rpmalloc_heap_t* heap, size_t alignment, size_t siz
 RPMALLOC_ALLOCATOR void*
 rpmalloc_heap_calloc(rpmalloc_heap_t* heap, size_t num, size_t size) {
 	size_t total;
+	if (size_mul_overflow(num, size, &total)) {
+		errno = ENOMEM;
+		return 0;
+	}
 #if ENABLE_VALIDATE_ARGS
-#if PLATFORM_WINDOWS
-	int err = SizeTMult(num, size, &total);
-	if ((err != S_OK) || (total >= MAX_ALLOC_SIZE)) {
+	if (total >= MAX_ALLOC_SIZE) {
 		errno = EINVAL;
 		return 0;
 	}
-#else
-	int err = __builtin_umull_overflow(num, size, &total);
-	if (err || (total >= MAX_ALLOC_SIZE)) {
-		errno = EINVAL;
-		return 0;
-	}
-#endif
-#else
-	total = num * size;
 #endif
 	return heap_allocate_block(heap, total, 1);
 }
@@ -3332,22 +3322,15 @@ rpmalloc_heap_calloc(rpmalloc_heap_t* heap, size_t num, size_t size) {
 extern inline RPMALLOC_ALLOCATOR void*
 rpmalloc_heap_aligned_calloc(rpmalloc_heap_t* heap, size_t alignment, size_t num, size_t size) {
 	size_t total;
+	if (size_mul_overflow(num, size, &total)) {
+		errno = ENOMEM;
+		return 0;
+	}
 #if ENABLE_VALIDATE_ARGS
-#if PLATFORM_WINDOWS
-	int err = SizeTMult(num, size, &total);
-	if ((err != S_OK) || (total >= MAX_ALLOC_SIZE)) {
+	if (total >= MAX_ALLOC_SIZE) {
 		errno = EINVAL;
 		return 0;
 	}
-#else
-	int err = __builtin_umull_overflow(num, size, &total);
-	if (err || (total >= MAX_ALLOC_SIZE)) {
-		errno = EINVAL;
-		return 0;
-	}
-#endif
-#else
-	total = num * size;
 #endif
 	return heap_allocate_block_aligned(heap, alignment, total, 1);
 }

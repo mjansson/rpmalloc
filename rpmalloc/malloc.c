@@ -99,22 +99,15 @@ rppvalloc(size_t size) {
 extern inline void* RPMALLOC_CDECL
 rpreallocarray(void* ptr, size_t count, size_t size) {
 	size_t total;
+	if (size_mul_overflow(count, size, &total)) {
+		errno = ENOMEM;
+		return 0;
+	}
 #if ENABLE_VALIDATE_ARGS
-#ifdef _MSC_VER
-	int err = SizeTMult(count, size, &total);
-	if ((err != S_OK) || (total >= MAX_ALLOC_SIZE)) {
+	if (total >= MAX_ALLOC_SIZE) {
 		errno = EINVAL;
 		return 0;
 	}
-#else
-	int err = __builtin_umull_overflow(count, size, &total);
-	if (err || (total >= MAX_ALLOC_SIZE)) {
-		errno = EINVAL;
-		return 0;
-	}
-#endif
-#else
-	total = count * size;
 #endif
 	return rprealloc(ptr, total);
 }
