@@ -592,8 +592,16 @@ struct span_t {
 
 // Control structure for a heap, either a thread heap or a first class heap if enabled
 struct heap_t {
+	// The first HEAP_ALIGNMENT bytes hold the fields other threads access: owner_thread is read and
+	// thread_free is written by every cross-thread free into a full page. Keeping them apart from the
+	// owner's hot allocation state avoids invalidating the owner's local free lists on every remote
+	// free and the remote CAS line being pulled away by owner writes.
 	//! Owning thread ID
 	uintptr_t owner_thread;
+	//! Multithreaded free list
+	atomic_uintptr_t thread_free[4];
+	//! Padding to the end of the remotely accessed line
+	char remote_pad[HEAP_ALIGNMENT - (sizeof(uintptr_t) + (4 * sizeof(atomic_uintptr_t)))];
 	//! Heap local free list for small size classes
 	block_t* local_free[SIZE_CLASS_COUNT];
 	//! Available non-full pages for each size class
@@ -605,8 +613,6 @@ struct heap_t {
 	//! Time (monotonic ms) the free committed page count first went over the overflow threshold
 	//  for each page type, zero while below the threshold
 	uint64_t page_free_overflow_ms[4];
-	//! Multithreaded free list
-	atomic_uintptr_t thread_free[4];
 	//! Available partially initialized spans for each page type
 	span_t* span_partial[4];
 	//! Spans in full use for each page type
@@ -637,6 +643,7 @@ struct heap_t {
 _Static_assert(sizeof(page_t) <= PAGE_HEADER_SIZE, "Invalid page header size");
 _Static_assert(sizeof(span_t) <= SPAN_HEADER_SIZE, "Invalid span header size");
 _Static_assert(sizeof(heap_t) <= 4096, "Invalid heap size");
+_Static_assert(offsetof(heap_t, local_free) == HEAP_ALIGNMENT, "Remotely accessed heap fields must fill one line");
 
 ////////////
 ///
