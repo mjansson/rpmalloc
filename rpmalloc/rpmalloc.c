@@ -602,6 +602,9 @@ struct heap_t {
 	page_t* page_free[4];
 	//! Free but still committed page count for each page tyoe
 	uint32_t page_free_commit_count[4];
+	//! Time (monotonic ms) the free committed page count first went over the overflow threshold
+	//  for each page type, zero while below the threshold
+	uint64_t page_free_overflow_ms[4];
 	//! Multithreaded free list
 	atomic_uintptr_t thread_free[4];
 	//! Available partially initialized spans for each page type
@@ -708,6 +711,18 @@ static const size_class_t global_size_class[SIZE_CLASS_COUNT] = {
     LCLASS(24576),  LCLASS(28672),  LCLASS(32768),  LCLASS(40960),  LCLASS(49152),  LCLASS(57344),  LCLASS(65536),
     LCLASS(81920),  LCLASS(98304),  LCLASS(114688), LCLASS(131072)};
 
+#ifndef PAGE_DECOMMIT_DELAY_MS
+//! Time in milliseconds the free committed pages of a page type must stay above the overflow
+//  threshold before the excess is decommitted. Delaying the decommit keeps memory committed across
+//  allocate/free phases that would otherwise decommit and page fault the same pages every cycle.
+#define PAGE_DECOMMIT_DELAY_MS 250
+#endif
+#ifndef PAGE_DECOMMIT_LIMIT_FACTOR
+//! Multiple of the overflow threshold at which free pages are decommitted immediately regardless of
+//  the delay, bounding the committed memory a heap can hold in free pages
+#define PAGE_DECOMMIT_LIMIT_FACTOR 4
+#endif
+
 //! Threshold number of pages for when free pages are decommitted
 static uint32_t global_page_free_overflow[5] = {16, 8, 4, 2, 0};
 
@@ -752,8 +767,24 @@ static _Thread_local heap_t* global_thread_heap TLS_MODEL = &global_heap_fallbac
 static heap_t*
 heap_allocate(int first_class);
 
-static void
-heap_page_free_decommit(heap_t* heap, uint32_t page_type, uint32_t page_retain_count);
+static NOINLINE void
+heap_page_free_overflow(heap_t* heap, uint32_t page_type);
+
+//! Coarse monotonic time in milliseconds (no syscall on Linux/vDSO)
+static inline uint64_t
+monotonic_time_ms(void) {
+#if PLATFORM_WINDOWS
+	return (uint64_t)GetTickCount64();
+#else
+	struct timespec ts;
+#if defined(CLOCK_MONOTONIC_COARSE)
+	clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
+#else
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+#endif
+	return ((uint64_t)ts.tv_sec * 1000ULL) + ((uint64_t)ts.tv_nsec / 1000000ULL);
+#endif
+}
 
 //! Fast thread ID
 static inline uintptr_t
@@ -1307,7 +1338,7 @@ page_available_to_free(page_t* page) {
 	page->next = heap->page_free[page->page_type];
 	heap->page_free[page->page_type] = page;
 	if (++heap->page_free_commit_count[page->page_type] >= global_page_free_overflow[page->page_type])
-		heap_page_free_decommit(heap, page->page_type, global_page_free_retain[page->page_type]);
+		heap_page_free_overflow(heap, page->page_type);
 }
 
 static void
@@ -1336,7 +1367,7 @@ page_full_to_free_on_new_heap(page_t* page, heap_t* heap) {
 	page->next = heap->page_free[page->page_type];
 	heap->page_free[page->page_type] = page;
 	if (++heap->page_free_commit_count[page->page_type] >= global_page_free_overflow[page->page_type])
-		heap_page_free_decommit(heap, page->page_type, global_page_free_retain[page->page_type]);
+		heap_page_free_overflow(heap, page->page_type);
 }
 
 static void
@@ -1580,22 +1611,6 @@ span_allocate_page(span_t* span) {
 #endif
 
 #if HUGE_CACHE_SLOT_COUNT
-
-//! Coarse monotonic time in milliseconds (no syscall on Linux/vDSO)
-static inline uint64_t
-monotonic_time_ms(void) {
-#if PLATFORM_WINDOWS
-	return (uint64_t)GetTickCount64();
-#else
-	struct timespec ts;
-#if defined(CLOCK_MONOTONIC_COARSE)
-	clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
-#else
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-#endif
-	return ((uint64_t)ts.tv_sec * 1000ULL) + ((uint64_t)ts.tv_nsec / 1000000ULL);
-#endif
-}
 
 typedef struct huge_cache_t {
 	//! Cache lock
@@ -2018,6 +2033,28 @@ heap_page_free_decommit(heap_t* heap, uint32_t page_type, uint32_t page_retain_c
 	}
 }
 
+//! Called when the free committed page count of a page type is at or above the overflow threshold.
+//  The excess is decommitted only once the count has stayed above the threshold for the decommit
+//  delay (the count dropping below the threshold restarts the delay), or immediately if the count
+//  reaches the hard limit. Decommitting on the count alone made every allocate/free phase larger
+//  than the threshold decommit its pages and page fault them back in on the next phase.
+static NOINLINE void
+heap_page_free_overflow(heap_t* heap, uint32_t page_type) {
+	uint64_t limit = (uint64_t)global_page_free_overflow[page_type] * PAGE_DECOMMIT_LIMIT_FACTOR;
+	if (heap->page_free_commit_count[page_type] < limit) {
+		uint64_t now = monotonic_time_ms();
+		uint64_t since = heap->page_free_overflow_ms[page_type];
+		if (!since) {
+			heap->page_free_overflow_ms[page_type] = now ? now : 1;
+			return;
+		}
+		if ((now - since) < PAGE_DECOMMIT_DELAY_MS)
+			return;
+	}
+	heap->page_free_overflow_ms[page_type] = 0;
+	heap_page_free_decommit(heap, page_type, global_page_free_retain[page_type]);
+}
+
 static inline int
 heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page) {
 	page->size_class = size_class;
@@ -2153,7 +2190,8 @@ heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 		heap->page_free[page_type] = page->next;
 		if (page->is_decommitted == 0) {
 			rpmalloc_assert(heap->page_free_commit_count[page_type] > 0, "Free committed page count out of sync");
-			--heap->page_free_commit_count[page_type];
+			if (--heap->page_free_commit_count[page_type] < global_page_free_overflow[page_type])
+				heap->page_free_overflow_ms[page_type] = 0;
 		}
 		if (heap_make_free_page_available(heap, size_class, page) != 0)
 			return 0;
@@ -2479,6 +2517,7 @@ heap_free_all(heap_t* heap) {
 		heap->span_partial[itype] = 0;
 		heap->page_free[itype] = 0;
 		heap->page_free_commit_count[itype] = 0;
+		heap->page_free_overflow_ms[itype] = 0;
 		atomic_store_explicit(&heap->thread_free[itype], 0, memory_order_release);
 	}
 	for (int itype = 0; itype < 5; ++itype) {
@@ -3125,6 +3164,18 @@ rpmalloc_thread_finalize(void) {
 
 extern void
 rpmalloc_thread_collect(void) {
+	// Decommit the free pages held above the retain count right away instead of waiting for the
+	// decommit delay
+	heap_t* heap = get_thread_heap();
+	if (heap == global_heap_default)
+		return;
+	for (uint32_t itype = 0; itype < 4; ++itype) {
+		if (global_page_free_overflow[itype] == 0xFFFFFFFFU)
+			continue;
+		heap->page_free_overflow_ms[itype] = 0;
+		if (heap->page_free_commit_count[itype] > global_page_free_retain[itype])
+			heap_page_free_decommit(heap, itype, global_page_free_retain[itype]);
+	}
 }
 
 void

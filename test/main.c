@@ -1193,7 +1193,9 @@ test_huge_pages_alloc(void) {
 			rpfree(addr[isize][ialloc]);
 		}
 	}
-	// Verify zeroed allocations survive the free page commit/decommit cycles
+	// Verify zeroed allocations survive the free page commit/decommit cycles (decommit is deferred,
+	// force it so the recommit path is exercised)
+	rpmalloc_thread_collect();
 	for (size_t isize = 0; isize < size_count; ++isize) {
 		void* ptr = rpcalloc(1, size[isize]);
 		if (!ptr)
@@ -1582,6 +1584,55 @@ test_thread_statistics(void) {
 	return 0;
 }
 
+static int
+test_page_decommit(void) {
+	// Free pages above the overflow threshold are decommitted after a delay rather than immediately,
+	// rpmalloc_thread_collect forces the decommit. Verify the free pages have been decommitted once
+	// collect returns (when statistics are enabled; the snapshot is taken before the frees since a slow
+	// run can pass the delay and decommit during the frees) and that blocks served from recommitted
+	// pages are still zeroed by rpcalloc.
+	rpmalloc_initialize(0);
+	enum { BLOCKS = 48 * 16 };
+	const size_t size = 4000;  // 4KiB size class, 15 blocks per 64KiB small page, about 50 pages
+	static void* block[BLOCKS];
+	for (unsigned int i = 0; i < BLOCKS; ++i) {
+		block[i] = rpmalloc(size);
+		if (!block[i])
+			return test_fail("Allocation failed");
+		memset(block[i], 0xcd, size);
+	}
+
+	rpmalloc_global_statistics_t before;
+	rpmalloc_global_statistics(&before);
+	for (unsigned int i = 0; i < BLOCKS; ++i)
+		rpfree(block[i]);
+	rpmalloc_thread_collect();
+	rpmalloc_global_statistics_t after;
+	rpmalloc_global_statistics(&after);
+	const rpmalloc_config_t* config = rpmalloc_config();
+	int can_decommit = !config->disable_decommit && (config->page_size < (64 * 1024));
+	if (can_decommit && before.mapped && (after.decommitted <= before.decommitted))
+		return test_fail("Free pages not decommitted after thread collect");
+
+	for (unsigned int i = 0; i < BLOCKS; ++i) {
+		void* ptr = rpcalloc(1, size);
+		if (!ptr)
+			return test_fail("Allocation failed");
+		const unsigned char* bytes = ptr;
+		for (size_t ibyte = 0; ibyte < size; ++ibyte) {
+			if (bytes[ibyte] != 0)
+				return test_fail("Zeroed allocation not zeroed after decommit");
+		}
+		block[i] = ptr;
+	}
+	for (unsigned int i = 0; i < BLOCKS; ++i)
+		rpfree(block[i]);
+
+	rpmalloc_finalize();
+	printf("Page decommit tests passed\n");
+	return 0;
+}
+
 extern int
 test_malloc(int print_log);
 
@@ -1652,6 +1703,8 @@ test_run(int argc, char** argv) {
 		return -1;
 #endif
 	if (test_thread_statistics())
+		return -1;
+	if (test_page_decommit())
 		return -1;
 	printf("All tests passed\n");
 	return 0;
