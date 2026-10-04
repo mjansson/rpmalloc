@@ -1203,24 +1203,28 @@ page_block(page_t* page, uint32_t block_index) {
 	return pointer_offset(page, PAGE_HEADER_SIZE + (page->block_size * block_index));
 }
 
+//! Byte offset of a block from the start of its page. Pages are at most LARGE_PAGE_SIZE (16MiB), so
+//  the offset always fits in 32 bits.
 static inline uint32_t
-page_block_index(page_t* page, block_t* block) {
-	block_t* block_first = page_block_start(page);
-	return (uint32_t)pointer_diff(block, block_first) / page->block_size;
+page_block_offset(page_t* page, block_t* block) {
+	return (uint32_t)pointer_diff(block, page);
 }
 
+//! The thread free list token holds the list head as a byte offset from the page start in the low
+//  32 bits (a block index would cost a division on every cross-thread free and a multiplication
+//  on every decode) and the list count in the high 32 bits
 static inline uint32_t
 page_block_from_thread_free_list(page_t* page, uint64_t token, block_t** block) {
-	uint32_t block_index = (uint32_t)(token & 0xFFFFFFFFULL);
+	uint32_t block_offset = (uint32_t)(token & 0xFFFFFFFFULL);
 	uint32_t list_count = (uint32_t)((token >> 32ULL) & 0xFFFFFFFFULL);
-	*block = list_count ? page_block(page, block_index) : 0;
+	*block = list_count ? (block_t*)pointer_offset(page, block_offset) : 0;
 	return list_count;
 }
 
 static inline uint64_t
-page_block_to_thread_free_list(page_t* page, uint32_t block_index, uint32_t list_count) {
+page_block_to_thread_free_list(page_t* page, uint32_t block_offset, uint32_t list_count) {
 	(void)sizeof(page);
-	return ((uint64_t)list_count << 32ULL) | (uint64_t)block_index;
+	return ((uint64_t)list_count << 32ULL) | (uint64_t)block_offset;
 }
 
 static inline block_t*
@@ -1402,15 +1406,16 @@ page_put_thread_free_block(page_t* page, block_t* block) {
 		}
 	} else {
 		unsigned long long prev_thread_free = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
-		uint32_t block_index = page_block_index(page, block);
-		rpmalloc_assert(page_block(page, block_index) == block, "Block pointer is not aligned to start of block");
+		uint32_t block_offset = page_block_offset(page, block);
+		rpmalloc_assert(!((block_offset - PAGE_HEADER_SIZE) % page->block_size),
+		                "Block pointer is not aligned to start of block");
 		uint32_t list_size = page_block_from_thread_free_list(page, prev_thread_free, &block->next) + 1;
-		uint64_t thread_free = page_block_to_thread_free_list(page, block_index, list_size);
+		uint64_t thread_free = page_block_to_thread_free_list(page, block_offset, list_size);
 		uint32_t spin = 0;
 		while (!atomic_compare_exchange_weak_explicit(&page->thread_free, &prev_thread_free, thread_free,
 		                                              memory_order_release, memory_order_relaxed)) {
 			list_size = page_block_from_thread_free_list(page, prev_thread_free, &block->next) + 1;
-			thread_free = page_block_to_thread_free_list(page, block_index, list_size);
+			thread_free = page_block_to_thread_free_list(page, block_offset, list_size);
 			wait_spin(&spin);
 		}
 	}
@@ -1820,8 +1825,9 @@ block_usable_size(block_t* block) {
 	span_t* span = (span_t*)((uintptr_t)block & SPAN_MASK);
 	if (EXPECTED(span->page_type <= PAGE_LARGE)) {
 		page_t* page = span_get_page_from_block(span, block);
-		void* blocks_start = pointer_offset(page, PAGE_HEADER_SIZE);
-		return page->block_size - ((size_t)pointer_diff(block, blocks_start) % page->block_size);
+		// Offset within a page is below 2^32, a 32-bit modulo is several times cheaper than a 64-bit one
+		uint32_t block_offset = (uint32_t)pointer_diff(block, page) - PAGE_HEADER_SIZE;
+		return page->block_size - (block_offset % page->block_size);
 	} else {
 		return ((size_t)span->page_size * (size_t)span->page_count) - (size_t)pointer_diff(block, span);
 	}
