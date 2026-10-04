@@ -1184,12 +1184,16 @@ page_get_size(page_t* page) {
 		return page_get_span(page)->page_size;
 }
 
+//! Check if the page is owned by the calling thread. Compares the owning heap with the thread heap
+//  rather than loading heap->owner_thread: the thread heap load does not depend on the page header,
+//  so the check is one dependent load shorter, and a cross-thread free no longer reads the first
+//  cache line of the owning heap, which the owner writes on every small block allocation.
 static inline int
 page_is_thread_heap(page_t* page) {
 #if RPMALLOC_FIRST_CLASS_HEAPS
-	return (!page->heap->owner_thread || (page->heap->owner_thread == get_thread_id()));
+	return ((page->heap == get_thread_heap()) || !page->heap->owner_thread);
 #else
-	return (page->heap->owner_thread == get_thread_id());
+	return (page->heap == get_thread_heap());
 #endif
 }
 
@@ -1507,9 +1511,9 @@ page_allocate_block(page_t* page, unsigned int zero) {
 static inline int
 span_is_thread_heap(span_t* span) {
 #if RPMALLOC_FIRST_CLASS_HEAPS
-	return (!span->heap->owner_thread || (span->heap->owner_thread == get_thread_id()));
+	return ((span->heap == get_thread_heap()) || !span->heap->owner_thread);
 #else
-	return (span->heap->owner_thread == get_thread_id());
+	return (span->heap == get_thread_heap());
 #endif
 }
 
