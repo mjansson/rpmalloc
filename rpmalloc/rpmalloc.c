@@ -1891,32 +1891,51 @@ huge_cache_pop(size_t alloc_size) {
 
 #endif
 
+//! Free a huge block by caching or unmapping its mapping. Kept out of line so the generic free path,
+//  taken by every cross-thread free, needs no stack frame
+static NOINLINE void
+span_deallocate_huge(span_t* span) {
+#if ENABLE_STATISTICS
+	statistics_sub_saturating(&global_statistics.huge_alloc, (size_t)span->page_count * span->page_size);
+#endif
+#if RPMALLOC_HEAP_STATISTICS
+	if (span->heap) {
+		span->heap->stats.mapped_size -= span->mapped_size;
+#if ENABLE_DECOMMIT
+		span->heap->stats.committed_size -= span->page_count * span->page_size;
+#else
+		span->heap->stats.committed_size -= span->mapped_size;
+#endif
+	}
+#endif
+#if HUGE_CACHE_SLOT_COUNT
+	if (huge_cache_push(span))
+		return;
+#endif
+	global_memory_interface->memory_unmap(span, span->offset, span->mapped_size);
+}
+
+//! Free a block in a page holding aligned blocks, which first finds the block start. Kept out of line
+//  like the huge block free
+static NOINLINE void
+span_deallocate_aligned_block(page_t* page, void* block) {
+	block = page_block_realign(page, block);
+	if (page_is_thread_heap(page))
+		page_put_local_free_block(page, block);
+	else
+		page_put_thread_free_block(page, block);
+}
+
 static NOINLINE void
 span_deallocate_block(span_t* span, page_t* page, void* block) {
 	if (UNEXPECTED(page->page_type == PAGE_HUGE)) {
-#if ENABLE_STATISTICS
-		statistics_sub_saturating(&global_statistics.huge_alloc, (size_t)span->page_count * span->page_size);
-#endif
-#if RPMALLOC_HEAP_STATISTICS
-		if (span->heap) {
-			span->heap->stats.mapped_size -= span->mapped_size;
-#if ENABLE_DECOMMIT
-			span->heap->stats.committed_size -= span->page_count * span->page_size;
-#else
-			span->heap->stats.committed_size -= span->mapped_size;
-#endif
-		}
-#endif
-#if HUGE_CACHE_SLOT_COUNT
-		if (huge_cache_push(span))
-			return;
-#endif
-		global_memory_interface->memory_unmap(span, span->offset, span->mapped_size);
+		span_deallocate_huge(span);
 		return;
 	}
 
-	if (page->has_aligned_block) {
-		block = page_block_realign(page, block);
+	if (UNEXPECTED(page->has_aligned_block)) {
+		span_deallocate_aligned_block(page, block);
+		return;
 	}
 
 	int is_thread_local = page_is_thread_heap(page);
