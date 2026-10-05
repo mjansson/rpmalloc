@@ -2615,7 +2615,7 @@ span_huge_remap(span_t* span, size_t size) {
 }
 #endif
 
-static void*
+static NOINLINE void*
 heap_reallocate_block(heap_t* heap, void* block, size_t size, size_t old_size, unsigned int flags) {
 	if (block) {
 		// Grab the span using guaranteed span alignment
@@ -2623,10 +2623,11 @@ heap_reallocate_block(heap_t* heap, void* block, size_t size, size_t old_size, u
 		if (EXPECTED(span->page_type <= PAGE_LARGE)) {
 			// Normal sized block
 			page_t* page = span_get_page_from_block(span, block);
-			void* blocks_start = pointer_offset(page, PAGE_HEADER_SIZE);
-			uint32_t block_offset = (uint32_t)pointer_diff(block, blocks_start);
-			uint32_t block_idx = block_offset / page->block_size;
-			void* block_origin = pointer_offset(blocks_start, (size_t)block_idx * page->block_size);
+			// A pointer from the allocator is at its block start unless the page holds aligned blocks,
+			// so the division locating the block start is only needed for those pages
+			void* block_origin = block;
+			if (UNEXPECTED(page->has_aligned_block))
+				block_origin = page_block_realign(page, block);
 			if (!old_size)
 				old_size = (size_t)((ptrdiff_t)page->block_size - pointer_diff(block, block_origin));
 			if ((size_t)page->block_size >= size) {
@@ -2815,6 +2816,15 @@ rprealloc(void* ptr, size_t size) {
 		return ptr;
 	}
 #endif
+	if (EXPECTED(ptr != 0)) {
+		// Fast path, a block from a page without aligned blocks that still fits the size is kept as is
+		span_t* span = block_get_span(ptr);
+		if (EXPECTED(span->page_type <= PAGE_LARGE)) {
+			page_t* page = span_get_page_from_block(span, ptr);
+			if (EXPECTED(!page->has_aligned_block && ((size_t)page->block_size >= size)))
+				return ptr;
+		}
+	}
 	heap_t* heap = get_thread_heap();
 	return heap_reallocate_block(heap, ptr, size, 0, 0);
 }
