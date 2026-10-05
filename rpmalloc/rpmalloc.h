@@ -38,7 +38,9 @@ extern "C" {
 #define RPMALLOC_RESTRICT __restrict
 #define RPMALLOC_ALLOCATOR
 #define RPMALLOC_CACHE_ALIGNED __attribute__((aligned(RPMALLOC_CACHE_LINE_SIZE)))
-#if (defined(__clang_major__) && (__clang_major__ < 4)) || (!defined(__clang_major__) && defined(__GNUC__))
+// GCC has supported __malloc__ and alloc_size since 4.3, older compilers get no attributes
+#if (defined(__clang_major__) && (__clang_major__ < 4)) || \
+    (!defined(__clang_major__) && defined(__GNUC__) && ((__GNUC__ < 4) || ((__GNUC__ == 4) && (__GNUC_MINOR__ < 3))))
 #define RPMALLOC_ATTRIB_MALLOC
 #define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
 #define RPMALLOC_ATTRIB_ALLOC_SIZE2(count, size)
@@ -266,14 +268,14 @@ rpcalloc(size_t num, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_S
 
 //! Reallocate the given block to at least the given size
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
-rprealloc(void* ptr, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(2);
+rprealloc(void* ptr, size_t size) RPMALLOC_ATTRIB_ALLOC_SIZE(2);
 
 //! Reallocate the given block to at least the given size and alignment,
 //  with optional control flags (see RPMALLOC_NO_PRESERVE).
 //  Alignment must be a power of two and a multiple of sizeof(void*),
 //  and should ideally be less than memory page size.
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
-rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize, unsigned int flags) RPMALLOC_ATTRIB_MALLOC
+rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize, unsigned int flags)
     RPMALLOC_ATTRIB_ALLOC_SIZE(3);
 
 //! Allocate a memory block of at least the given size and alignment.
@@ -368,7 +370,7 @@ rpmalloc_heap_aligned_calloc(rpmalloc_heap_t* heap, size_t alignment, size_t num
 //! Reallocate the given block to at least the given size. The memory block MUST be allocated
 //  by the same heap given to this function.
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
-rpmalloc_heap_realloc(rpmalloc_heap_t* heap, void* ptr, size_t size, unsigned int flags) RPMALLOC_ATTRIB_MALLOC
+rpmalloc_heap_realloc(rpmalloc_heap_t* heap, void* ptr, size_t size, unsigned int flags)
     RPMALLOC_ATTRIB_ALLOC_SIZE(3);
 
 //! Reallocate the given block to at least the given size. The memory block MUST be allocated
@@ -377,7 +379,7 @@ rpmalloc_heap_realloc(rpmalloc_heap_t* heap, void* ptr, size_t size, unsigned in
 //  less than memory page size.
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
 rpmalloc_heap_aligned_realloc(rpmalloc_heap_t* heap, void* ptr, size_t alignment, size_t size,
-                              unsigned int flags) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(4);
+                              unsigned int flags) RPMALLOC_ATTRIB_ALLOC_SIZE(4);
 
 //! Free the given memory block from the given heap. The memory block MUST be allocated
 //  by the same heap given to this function.
