@@ -845,10 +845,12 @@ get_size_class(size_t size) {
 	--minblock_count;
 	// Calculate position of most significant bit, since minblock_count now guaranteed to be > 64 this position is
 	// guaranteed to be >= 6
+	// Use xor rather than subtraction, (N-1) ^ clz == (N-1) - clz for clz in [0, N-1], and compilers fold
+	// the xor into the bit scan result (bsr) instead of emitting the clz conversion followed by a subtract
 #if ARCH_64BIT
-	const uint32_t most_significant_bit = (uint32_t)(63 - (int)rpmalloc_clz(minblock_count));
+	const uint32_t most_significant_bit = (uint32_t)(63 ^ rpmalloc_clz(minblock_count));
 #else
-	const uint32_t most_significant_bit = (uint32_t)(31 - (int)rpmalloc_clz(minblock_count));
+	const uint32_t most_significant_bit = (uint32_t)(31 ^ rpmalloc_clz(minblock_count));
 #endif
 	// Class sizes are of the bit format [..]000xxx000[..] where we already have the position of the most significant
 	// bit, now calculate the subclass from the remaining two bits
