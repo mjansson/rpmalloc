@@ -292,7 +292,13 @@ __attribute__ ((section("__DATA, __interpose"))) = {
 
 #if USE_ALIAS
 
+#if defined(__GNUC__) && !defined(__clang__) && (__GNUC__ >= 9)
+// Copy the target attributes (malloc, alloc_size) to the alias, GCC 9+ rejects aliases declared with
+// less restrictive attributes than their target (-Wmissing-attributes)
+#define RPALIAS(fn) __attribute__((alias(#fn), copy(fn), used, visibility("default")));
+#else
 #define RPALIAS(fn) __attribute__((alias(#fn), used, visibility("default")));
+#endif
 
 // Alias the C++ operators using the mangled names (https://itanium-cxx-abi.github.io/cxx-abi/abi.html#mangling)
 
