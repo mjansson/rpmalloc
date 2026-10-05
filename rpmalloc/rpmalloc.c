@@ -1736,8 +1736,7 @@ span_allocate_page(span_t* span) {
 //! Cache recently freed huge block mappings for reuse instead of paying a
 //! munmap + mmap + page fault round trip per huge allocation cycle. Entries
 //! are bounded by a committed byte budget and unmapped after an idle epoch.
-//! A cached mapping is reused when its size fits the request within the size
-//! class spacing (25% overshoot).
+//! A cached mapping is reused for requests of at least half its size.
 #ifndef HUGE_CACHE_SLOT_COUNT
 #define HUGE_CACHE_SLOT_COUNT 32
 #endif
@@ -1850,8 +1849,8 @@ huge_cache_push(span_t* span) {
 	return cached;
 }
 
-//! Try to pop a cached huge mapping fitting the requested size (within the
-//! size class spacing), returns 0 on miss
+//! Try to pop the smallest cached huge mapping of at least the requested size
+//! and at most twice that size, returns 0 on miss
 static span_t*
 huge_cache_pop(size_t alloc_size) {
 	// Racy emptiness peek is fine - a missed entry only costs a fresh mapping
@@ -1864,7 +1863,7 @@ huge_cache_pop(size_t alloc_size) {
 	}
 	if (empty)
 		return 0;
-	size_t size_limit = alloc_size + (alloc_size >> 2);
+	size_t size_limit = alloc_size * 2;
 	span_t* best = 0;
 	size_t best_size = 0;
 	uint32_t best_slot = 0;
