@@ -2109,6 +2109,31 @@ heap_page_free_overflow(heap_t* heap, uint32_t page_type) {
 	heap_page_free_decommit(heap, page_type, global_page_free_retain[page_type]);
 }
 
+//! Trims the memory a heap holds for reuse when it is released, by its exiting thread or as a first
+//  class heap. Until another thread adopts the heap nothing reuses that memory or runs the decommit
+//  delay, so a heap that many short lived threads pass along would otherwise keep it all. The empty
+//  large pages kept as the last available page of their size class are retired, and free pages are
+//  decommitted down to below the overflow threshold, the most the heap holds without a delay
+static void
+heap_release_free_pages(heap_t* heap) {
+	for (uint32_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
+		page_t* page = heap->page_available[iclass];
+		if (!page || page->next || page->block_used || (page->page_type != PAGE_LARGE))
+			continue;
+		heap->page_available[iclass] = 0;
+		page->is_free = 1;
+		page->is_zero = 0;
+		page->next = heap->page_free[PAGE_LARGE];
+		heap->page_free[PAGE_LARGE] = page;
+		++heap->page_free_commit_count[PAGE_LARGE];
+	}
+	for (uint32_t itype = 0; itype < 4; ++itype) {
+		heap->page_free_overflow_ms[itype] = 0;
+		if (heap->page_free_commit_count[itype] >= global_page_free_overflow[itype])
+			heap_page_free_decommit(heap, itype, global_page_free_overflow[itype] - 1);
+	}
+}
+
 static inline int
 heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page) {
 	page->size_class = size_class;
@@ -3293,6 +3318,7 @@ extern void
 rpmalloc_thread_finalize(void) {
 	heap_t* heap = get_thread_heap();
 	if (heap != global_heap_default) {
+		heap_release_free_pages(heap);
 		heap_release(heap);
 		set_thread_heap(global_heap_default);
 	}
@@ -3456,8 +3482,10 @@ rpmalloc_heap_acquire(void) {
 
 void
 rpmalloc_heap_release(rpmalloc_heap_t* heap) {
-	if (heap)
+	if (heap) {
+		heap_release_free_pages(heap);
 		heap_release(heap);
+	}
 }
 
 RPMALLOC_ALLOCATOR void*

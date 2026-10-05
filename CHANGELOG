@@ -1,3 +1,38 @@
+2.0.2
+
+calloc, its aligned and heap variants and reallocarray now always check the size multiplication for
+overflow and fail with ENOMEM, instead of only when argument validation is enabled.
+
+Free pages are decommitted after a delay (PAGE_DECOMMIT_DELAY_MS, 250 ms by default) instead of as
+soon as a fixed page count is exceeded, avoiding decommit and page fault cycles in workloads that
+allocate and free in phases. There is no background thread, the owning thread checks the delay when
+it frees a page, and rpmalloc_thread_collect now decommits the excess immediately.
+
+A released heap trims the memory it retains, retiring the empty large pages kept for their size
+class and decommitting free pages to below the overflow threshold.
+
+The last available page of a size class is kept when its final block is freed, so alternating
+allocation and free of a single block no longer reinitializes the page on every pair.
+
+calloc of huge blocks no longer clears fresh mappings that the OS has already zero filled.
+
+Growing a huge block with realloc on Linux moves the mapping with mremap instead of copying it.
+
+Aligned allocations with an alignment of up to 128 bytes use a naturally aligned size class instead
+of over-allocating and realigning the block.
+
+Block ownership on free is checked by comparing heap pointers, and the heap fields accessed by other
+threads are kept on their own cache line, reducing contention between owning and freeing threads.
+
+Cross-thread frees store byte offsets instead of block indices in the deferred free list and keep
+the CAS retry loops out of line, and deferred free lists are claimed with a single atomic exchange.
+
+The size class computation no longer emits a redundant subtraction after the bit scan with GCC.
+
+GCC builds now apply the malloc and alloc_size attributes to the allocation API, and the malloc
+attribute is no longer applied to the realloc style functions.
+
+
 2.0.1
 
 Fixed a data race in concurrent lazy initialization where simultaneous first allocations from
