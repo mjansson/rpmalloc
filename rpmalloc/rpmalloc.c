@@ -234,6 +234,9 @@ madvise(caddr_t, size_t, int);
 #define SPAN_SIZE (256 * 1024 * 1024)
 #define SPAN_MASK (~((uintptr_t)(SPAN_SIZE - 1)))
 
+//! Largest alignment given to blocks of a size class by their start offset
+#define NATURAL_ALIGNMENT_LIMIT 2048
+
 #if ENABLE_VALIDATE_ARGS
 //! Maximum allocation size to avoid integer overflow
 #undef  MAX_ALLOC_SIZE
@@ -1253,14 +1256,34 @@ page_is_thread_heap(page_t* page) {
 #endif
 }
 
+//! Offset of the first block from the page start for a block size. Blocks start at the largest power of
+//  two dividing the block size, at least the page header size and at most NATURAL_ALIGNMENT_LIMIT, so
+//  every block of a class is aligned to that power of two. The tail slack of every page is larger than
+//  the extra offset, so no size class loses a block to it. The offset is derived from the block size,
+//  which the callers load anyway, rather than stored in the page flag word
+static inline uint32_t
+block_start_offset(uint32_t block_size) {
+	uint32_t offset = block_size & (0U - block_size);
+	if (offset < PAGE_HEADER_SIZE)
+		offset = PAGE_HEADER_SIZE;
+	else if (offset > NATURAL_ALIGNMENT_LIMIT)
+		offset = NATURAL_ALIGNMENT_LIMIT;
+	return offset;
+}
+
+static inline uint32_t
+page_block_start_offset(page_t* page) {
+	return block_start_offset(page->block_size);
+}
+
 static inline block_t*
 page_block_start(page_t* page) {
-	return pointer_offset(page, PAGE_HEADER_SIZE);
+	return pointer_offset(page, page_block_start_offset(page));
 }
 
 static inline block_t*
 page_block(page_t* page, uint32_t block_index) {
-	return pointer_offset(page, PAGE_HEADER_SIZE + (page->block_size * block_index));
+	return pointer_offset(page, page_block_start_offset(page) + (page->block_size * block_index));
 }
 
 //! Byte offset of a block from the start of its page. Pages are at most LARGE_PAGE_SIZE (16MiB), so
@@ -1287,11 +1310,19 @@ page_block_to_thread_free_list(page_t* page, uint32_t block_offset, uint32_t lis
 	return ((uint64_t)list_count << 32ULL) | (uint64_t)block_offset;
 }
 
+//! Start of the block holding a pointer into a page with aligned blocks. The modulo is taken on the offset
+//  from the page start, so the division does not wait on the block start offset, and then adjusted by it.
+//  Aligned blocks come from classes at least the alignment larger than the request, whose block start
+//  offset is at most the block size
 static inline block_t*
 page_block_realign(page_t* page, block_t* block) {
-	void* blocks_start = page_block_start(page);
-	uint32_t block_offset = (uint32_t)pointer_diff(block, blocks_start);
-	return pointer_offset(block, -(int32_t)(block_offset % page->block_size));
+	uint32_t block_size = page->block_size;
+	uint32_t start_offset = page_block_start_offset(page);
+	rpmalloc_assert(start_offset <= block_size, "Block start offset exceeds aligned block size");
+	uint32_t page_offset = (uint32_t)pointer_diff(block, page) % block_size;
+	uint32_t block_offset =
+	    (page_offset >= start_offset) ? (page_offset - start_offset) : (page_offset + block_size - start_offset);
+	return pointer_offset(block, -(int32_t)block_offset);
 }
 
 static block_t*
@@ -1495,7 +1526,7 @@ page_put_thread_free_block(page_t* page, block_t* block) {
 	} else {
 		unsigned long long prev_thread_free = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
 		uint32_t block_offset = page_block_offset(page, block);
-		rpmalloc_assert(!((block_offset - PAGE_HEADER_SIZE) % page->block_size),
+		rpmalloc_assert(!((block_offset - page_block_start_offset(page)) % page->block_size),
 		                "Block pointer is not aligned to start of block");
 		uint32_t list_size = page_block_from_thread_free_list(page, prev_thread_free, &block->next) + 1;
 		uint64_t thread_free = page_block_to_thread_free_list(page, block_offset, list_size);
@@ -1894,7 +1925,7 @@ block_usable_size(block_t* block) {
 	if (EXPECTED(span->page_type <= PAGE_LARGE)) {
 		page_t* page = span_get_page_from_block(span, block);
 		// Offset within a page is below 2^32, a 32-bit modulo is several times cheaper than a 64-bit one
-		uint32_t block_offset = (uint32_t)pointer_diff(block, page) - PAGE_HEADER_SIZE;
+		uint32_t block_offset = (uint32_t)pointer_diff(block, page) - page_block_start_offset(page);
 		return page->block_size - (block_offset % page->block_size);
 	} else {
 		return ((size_t)span->page_size * (size_t)span->page_count) - (size_t)pointer_diff(block, span);
@@ -2517,6 +2548,17 @@ heap_allocate_block_aligned(heap_t* heap, size_t alignment, size_t size, unsigne
 	}
 
 	size_t align_mask = alignment - 1;
+	if ((alignment > PAGE_HEADER_SIZE) && (alignment <= NATURAL_ALIGNMENT_LIMIT)) {
+		// A size class whose block size is a multiple of the alignment starts its blocks at an offset
+		// that is also a multiple of it, so every block of the class is naturally aligned
+		size_t aligned_size = (size + align_mask) & ~align_mask;
+		if ((aligned_size >= size) && (aligned_size <= LARGE_BLOCK_SIZE_LIMIT)) {
+			uint32_t size_class = get_size_class(aligned_size);
+			uint32_t block_size = (size_class < SIZE_CLASS_COUNT) ? global_size_class[size_class].block_size : 0;
+			if ((block_size & (0U - block_size)) >= alignment)
+				return heap_allocate_block(heap, aligned_size, zero);
+		}
+	}
 	if (alignment <= PAGE_HEADER_SIZE) {
 		// Blocks start at a page header size offset from a page (or span) start, which is aligned to at
 		// least the page size. Rounding the size up to a multiple of the alignment (and at least the
@@ -2536,11 +2578,14 @@ heap_allocate_block_aligned(heap_t* heap, size_t alignment, size_t size, unsigne
 	block_t* block = heap_allocate_block(heap, size + alignment, zero);
 	if ((uintptr_t)block & align_mask) {
 		block = (void*)(((uintptr_t)block & ~(uintptr_t)align_mask) + alignment);
-		// Mark as having aligned blocks
+		// Mark as having aligned blocks, writing the flag word only the first time rather than on every
+		// aligned allocation
 		span_t* span = block_get_span(block);
 		page_t* page = span_get_page_from_block(span, block);
-		page->has_aligned_block = 1;
-		page->generic_free = 1;
+		if (!page->has_aligned_block) {
+			page->has_aligned_block = 1;
+			page->generic_free = 1;
+		}
 	}
 	return block;
 }
@@ -2623,7 +2668,7 @@ heap_reallocate_block(heap_t* heap, void* block, size_t size, size_t old_size, u
 		if (EXPECTED(span->page_type <= PAGE_LARGE)) {
 			// Normal sized block
 			page_t* page = span_get_page_from_block(span, block);
-			void* blocks_start = pointer_offset(page, PAGE_HEADER_SIZE);
+			void* blocks_start = page_block_start(page);
 			uint32_t block_offset = (uint32_t)pointer_diff(block, blocks_start);
 			uint32_t block_idx = block_offset / page->block_size;
 			void* block_origin = pointer_offset(blocks_start, (size_t)block_idx * page->block_size);
