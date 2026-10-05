@@ -538,7 +538,7 @@ struct page_t {
 	//! Block used count
 	uint32_t block_used;
 	//! Page type
-	page_type_t page_type;
+	uint32_t page_type : 3;
 	//! Flag set if part of heap full list
 	uint32_t is_full : 1;
 	//! Flag set if part of heap free list
@@ -554,19 +554,18 @@ struct page_t {
 	//  so the read/write race is benign. ThreadSanitizer still reports it; see
 	//  test/tsan-suppressions.txt.
 	uint32_t has_aligned_block : 1;
-	//! Fast combination flag for either huge, fully allocated or has aligned blocks
-	uint32_t generic_free : 1;
 	//! Set if the span maps reserve-only (pages commit on demand, may be decommitted),
 	//  captured at map time so it survives a config change across a finalize/initialize
 	uint32_t commit_on_demand : 1;
 	//! log2 of the committed prefix (the page size at the span's map time)
 	uint32_t commit_prefix_shift : 6;
-	//! Local free list count
-	uint32_t local_free_count;
 	//! Local free list
 	block_t* local_free;
 	//! Owning heap
 	heap_t* heap;
+	//! Owning heap while the page takes the fast free path, null for huge, full or aligned block pages,
+	//  so the free fast path checks ownership and eligibility with a single compare
+	heap_t* heap_fast;
 	//! Next page in list
 	page_t* next;
 	//! Previous page in list
@@ -1298,7 +1297,6 @@ static block_t*
 page_get_local_free_block(page_t* page) {
 	block_t* block = page->local_free;
 	page->local_free = block->next;
-	--page->local_free_count;
 	++page->block_used;
 	return block;
 }
@@ -1390,7 +1388,7 @@ page_full_to_available(page_t* page) {
 	heap->page_available[page->size_class] = page;
 	page->is_full = 0;
 	if (page->has_aligned_block == 0)
-		page->generic_free = 0;
+		page->heap_fast = heap;
 }
 
 static void
@@ -1401,6 +1399,7 @@ page_full_to_free_on_new_heap(page_t* page, heap_t* heap) {
 	page->is_full = 0;
 	page->is_free = 1;
 	page->heap = heap;
+	page->heap_fast = 0;
 	atomic_store_explicit(&page->thread_free, 0, memory_order_release);
 	page->next = heap->page_free[page->page_type];
 	heap->page_free[page->page_type] = page;
@@ -1420,14 +1419,13 @@ page_available_to_full(page_t* page) {
 	}
 	page->is_full = 1;
 	page->is_zero = 0;
-	page->generic_free = 1;
+	page->heap_fast = 0;
 }
 
 static inline void
 page_put_local_free_block(page_t* page, block_t* block) {
 	block->next = page->local_free;
 	page->local_free = block;
-	++page->local_free_count;
 	_rpmalloc_stat_add_free(page->heap, page->size_class, 1);
 	if (UNEXPECTED(--page->block_used == 0)) {
 		page_available_to_free(page);
@@ -1445,10 +1443,10 @@ page_adopt_thread_free_block_list(page_t* page) {
 		// Other threads can only replace with another valid list head, this will never change to 0 in other
 		// threads, so a single exchange claims the whole list without a retry loop
 		thread_free = atomic_exchange_explicit(&page->thread_free, 0, memory_order_acquire);
-		page->local_free_count = page_block_from_thread_free_list(page, thread_free, &page->local_free);
-		rpmalloc_assert(page->local_free_count <= page->block_used, "Page thread free list count internal failure");
-		page->block_used -= page->local_free_count;
-		_rpmalloc_stat_add_free(page->heap, page->size_class, page->local_free_count);
+		uint32_t thread_free_count = page_block_from_thread_free_list(page, thread_free, &page->local_free);
+		rpmalloc_assert(thread_free_count <= page->block_used, "Page thread free list count internal failure");
+		page->block_used -= thread_free_count;
+		_rpmalloc_stat_add_free(page->heap, page->size_class, thread_free_count);
 	}
 }
 
@@ -1508,10 +1506,11 @@ page_put_thread_free_block(page_t* page, block_t* block) {
 static void
 page_push_local_free_to_heap(page_t* page) {
 	// Push the page free list as the fast track list of free blocks for heap
+	// Every initialized block not counted as used is in the local free list, so after handing the
+	// whole list to the heap all initialized blocks are in use
 	page->heap->local_free[page->size_class] = page->local_free;
-	page->block_used += page->local_free_count;
+	page->block_used = page->block_initialized;
 	page->local_free = 0;
-	page->local_free_count = 0;
 }
 
 static NOINLINE void*
@@ -1540,7 +1539,6 @@ page_initialize_blocks(page_t* page) {
 			last_block->next = 0;
 			page->local_free = first_block;
 			page->block_initialized += list_count;
-			page->local_free_count = list_count;
 		}
 	}
 
@@ -1853,12 +1851,12 @@ block_get_span(block_t* block) {
 	return (span_t*)((uintptr_t)block & SPAN_MASK);
 }
 
+//! Deallocate a block, taking the fast path for a block in a page whose heap_fast is the given heap. The
+//  caller owns that heap, it is the thread heap or the first class heap the block was allocated from
 static inline void
-block_deallocate(block_t* block) {
+block_deallocate_heap(block_t* block, heap_t* owned_heap) {
 	span_t* span = (span_t*)((uintptr_t)block & SPAN_MASK);
 	page_t* page = span_get_page_from_block(span, block);
-	const int is_thread_local = page_is_thread_heap(page);
-
 #if RPMALLOC_HEAP_STATISTICS
 	heap_t* heap = span->heap;
 	if (heap) {
@@ -1869,23 +1867,22 @@ block_deallocate(block_t* block) {
 	}
 #endif
 
-	// Optimized path for thread local free with non-huge block in page
-	// that has no aligned blocks
-	if (EXPECTED(is_thread_local != 0)) {
-		if (EXPECTED(page->generic_free == 0)) {
-			// Page is not huge, not full and has no aligned block - fast path
-			block->next = page->local_free;
-			page->local_free = block;
-			++page->local_free_count;
-			_rpmalloc_stat_add_free(page->heap, page->size_class, 1);
-			if (UNEXPECTED(--page->block_used == 0))
-				page_available_to_free(page);
-		} else {
-			span_deallocate_block(span, page, block);
-		}
+	// Optimized path for a free by the heap owner with non-huge block in page that is not full and has
+	// no aligned blocks, all of which heap_fast encodes by matching the owned heap
+	if (EXPECTED(page->heap_fast == owned_heap)) {
+		block->next = page->local_free;
+		page->local_free = block;
+		_rpmalloc_stat_add_free(page->heap, page->size_class, 1);
+		if (UNEXPECTED(--page->block_used == 0))
+			page_available_to_free(page);
 	} else {
 		span_deallocate_block(span, page, block);
 	}
+}
+
+static inline void
+block_deallocate(block_t* block) {
+	block_deallocate_heap(block, get_thread_heap());
 }
 
 static inline size_t
@@ -2169,12 +2166,11 @@ heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page) {
 	page->block_used = 0;
 	page->block_initialized = 0;
 	page->local_free = 0;
-	page->local_free_count = 0;
 	page->is_full = 0;
 	page->is_free = 0;
 	page->has_aligned_block = 0;
-	page->generic_free = 0;
 	page->heap = heap;
+	page->heap_fast = heap;
 	page_t* head = heap->page_available[size_class];
 	page->next = head;
 	page->prev = 0;
@@ -2412,7 +2408,7 @@ heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
 		}
 		span->page.heap = heap;
 		span->page.is_full = 1;
-		span->page.generic_free = 1;
+		span->page.heap_fast = 0;
 		span->page.page_type = PAGE_HUGE;
 #if ENABLE_STATISTICS
 		size_t huge_alloc_size = (size_t)span->page_count * span->page_size;
@@ -2540,7 +2536,7 @@ heap_allocate_block_aligned(heap_t* heap, size_t alignment, size_t size, unsigne
 		span_t* span = block_get_span(block);
 		page_t* page = span_get_page_from_block(span, block);
 		page->has_aligned_block = 1;
-		page->generic_free = 1;
+		page->heap_fast = 0;
 	}
 	return block;
 }
@@ -3601,8 +3597,9 @@ rpmalloc_heap_aligned_realloc(rpmalloc_heap_t* heap, void* ptr, size_t alignment
 
 void
 rpmalloc_heap_free(rpmalloc_heap_t* heap, void* ptr) {
-	(void)sizeof(heap);
-	block_deallocate(ptr);
+	// First class heaps have no owner thread, the caller owns the heap. A null heap must not reach the
+	// fast path compare, it would match the pages that take the generic path
+	block_deallocate_heap(ptr, heap ? heap : get_thread_heap());
 }
 
 //! Free all memory allocated by the heap
