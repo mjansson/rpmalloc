@@ -27,6 +27,7 @@
 #include <thread.h>
 #include <test.h>
 
+#include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -407,6 +408,70 @@ test_alloc(void) {
 	rpmalloc_finalize();
 
 	printf("Memory allocation tests passed\n");
+
+	return 0;
+}
+
+#if RPMALLOC_TEST_OVERRIDE
+extern void*
+rpreallocarray(void* ptr, size_t count, size_t size);
+#endif
+
+static int
+test_mul_overflow(void) {
+	// Volatile so the compiler cannot fold or reject the overflowing products at compile time
+	volatile size_t half = (SIZE_MAX / 2) + 2;
+	volatile size_t two = 2;
+	volatile size_t big = SIZE_MAX / 4 + 1;
+	volatile size_t sixteen = 16;
+
+	rpmalloc_initialize(0);
+
+	errno = 0;
+	void* ptr = rpcalloc(half, two);
+	if (ptr || (errno != ENOMEM))
+		return test_fail("calloc with overflowing size did not fail");
+	ptr = rpcalloc(two, half);
+	if (ptr)
+		return test_fail("calloc with overflowing size did not fail");
+	ptr = rpcalloc(big, sixteen);
+	if (ptr)
+		return test_fail("calloc with overflowing size did not fail");
+	ptr = rpaligned_calloc(64, half, two);
+	if (ptr)
+		return test_fail("aligned calloc with overflowing size did not fail");
+
+	ptr = rpcalloc(two, sixteen);
+	if (!ptr)
+		return test_fail("calloc with valid size failed");
+
+#if RPMALLOC_TEST_OVERRIDE
+	errno = 0;
+	void* newptr = rpreallocarray(ptr, half, two);
+	if (newptr || (errno != ENOMEM))
+		return test_fail("reallocarray with overflowing size did not fail");
+	newptr = rpreallocarray(0, big, sixteen);
+	if (newptr)
+		return test_fail("reallocarray with overflowing size did not fail");
+	newptr = rpreallocarray(ptr, two, two * sixteen);
+	if (!newptr)
+		return test_fail("reallocarray with valid size failed");
+	ptr = newptr;
+#endif
+	rpfree(ptr);
+
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	rpmalloc_heap_t* heap = rpmalloc_heap_acquire();
+	if (rpmalloc_heap_calloc(heap, half, two))
+		return test_fail("heap calloc with overflowing size did not fail");
+	if (rpmalloc_heap_aligned_calloc(heap, 64, big, sixteen))
+		return test_fail("heap aligned calloc with overflowing size did not fail");
+	rpmalloc_heap_release(heap);
+#endif
+
+	rpmalloc_finalize();
+
+	printf("Multiplication overflow tests passed\n");
 
 	return 0;
 }
@@ -1665,6 +1730,8 @@ test_run(int argc, char** argv) {
 	if (test_alloc())
 		return -1;
 	if (test_realloc())
+		return -1;
+	if (test_mul_overflow())
 		return -1;
 	if (test_superalign())
 		return -1;
