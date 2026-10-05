@@ -2291,7 +2291,10 @@ heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
 			heap->span_used[PAGE_HUGE] = span;
 		}
 		void* ptr = pointer_offset(block, SPAN_HEADER_SIZE);
-		if (zero)
+		// A fresh mapping from the default OS interface is already zero filled (anonymous mmap and
+		// VirtualAlloc both guarantee it), clearing it again would fault in and commit every page.
+		// Reused cached mappings and custom memory interfaces give no such guarantee.
+		if (zero && (from_cache || (global_memory_interface->memory_map != os_mmap)))
 			memset(ptr, 0, size);
 #if RPMALLOC_HEAP_STATISTICS
 		heap->stats.allocated_size += size;
