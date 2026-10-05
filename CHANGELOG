@@ -8,8 +8,10 @@ soon as a fixed page count is exceeded, avoiding decommit and page fault cycles 
 allocate and free in phases. There is no background thread, the owning thread checks the delay when
 it frees a page, and rpmalloc_thread_collect now decommits the excess immediately.
 
-A released heap trims the memory it retains, retiring the empty large pages kept for their size
-class and decommitting free pages to below the overflow threshold.
+A released heap retires the empty medium-large and large pages kept for their size class and
+decommits its free pages of those types to below the overflow threshold. The trim is done on release
+when other heaps are already queued for reuse, and otherwise by the thread that adopts the heap.
+Small and medium-small pages are left to the decommit delay.
 
 The last available page of a size class is kept when its final block is freed, so alternating
 allocation and free of a single block no longer reinitializes the page on every pair.
