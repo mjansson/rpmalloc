@@ -2373,6 +2373,22 @@ heap_allocate_block_aligned(heap_t* heap, size_t alignment, size_t size, unsigne
 	}
 
 	size_t align_mask = alignment - 1;
+	if (alignment <= PAGE_HEADER_SIZE) {
+		// Blocks start at a page header size offset from a page (or span) start, which is aligned to at
+		// least the page size. Rounding the size up to a multiple of the alignment (and at least the
+		// alignment) selects a size class whose block size is a multiple of the alignment: up to 1KiB
+		// every multiple of the granularity is a class, above that all class sizes are multiples of
+		// 256. Every block of that class is then naturally aligned, so there is no need to over-allocate
+		// and realign, and the page keeps the fast free path.
+		size_t aligned_size = (size + align_mask) & ~align_mask;
+		if (aligned_size < alignment)
+			aligned_size = alignment;
+		if (aligned_size >= size) {
+			block_t* block = heap_allocate_block(heap, aligned_size, zero);
+			rpmalloc_assert(!((uintptr_t)block & align_mask), "Natural block alignment internal failure");
+			return block;
+		}
+	}
 	block_t* block = heap_allocate_block(heap, size + alignment, zero);
 	if ((uintptr_t)block & align_mask) {
 		block = (void*)(((uintptr_t)block & ~(uintptr_t)align_mask) + alignment);
