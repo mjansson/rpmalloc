@@ -1395,11 +1395,9 @@ page_adopt_thread_free_block_list(page_t* page) {
 		return;
 	unsigned long long thread_free = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
 	if (thread_free != 0) {
-		// Other threads can only replace with another valid list head, this will never change to 0 in other threads
-		uint32_t spin = 0;
-		while (!atomic_compare_exchange_weak_explicit(&page->thread_free, &thread_free, 0, memory_order_acquire,
-		                                              memory_order_relaxed))
-			wait_spin(&spin);
+		// Other threads can only replace with another valid list head, this will never change to 0 in other
+		// threads, so a single exchange claims the whole list without a retry loop
+		thread_free = atomic_exchange_explicit(&page->thread_free, 0, memory_order_acquire);
 		page->local_free_count = page_block_from_thread_free_list(page, thread_free, &page->local_free);
 		rpmalloc_assert(page->local_free_count <= page->block_used, "Page thread free list count internal failure");
 		page->block_used -= page->local_free_count;
@@ -2156,11 +2154,8 @@ heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 	// Check if there is a free page from multithreaded deallocations
 	uintptr_t block_mt = atomic_load_explicit(&heap->thread_free[page_type], memory_order_relaxed);
 	if (UNEXPECTED(block_mt != 0)) {
-		uint32_t spin = 0;
-		while (!atomic_compare_exchange_weak_explicit(&heap->thread_free[page_type], &block_mt, 0, memory_order_acquire,
-		                                              memory_order_relaxed)) {
-			wait_spin(&spin);
-		}
+		// Claim the whole list in one exchange, concurrent pushes either land before (and are claimed) or after
+		block_mt = atomic_exchange_explicit(&heap->thread_free[page_type], 0, memory_order_acquire);
 		block_t* block = (void*)block_mt;
 		while (block) {
 			block_t* next_block = block->next;
