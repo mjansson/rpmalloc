@@ -568,8 +568,6 @@ struct page_t {
 	uint32_t local_reuse : 1;
 	//! Set when the page received blocks freed by other threads
 	uint32_t remote_fed : 1;
-	//! Local free list count
-	uint32_t local_free_count;
 	//! Local free list
 	block_t* local_free;
 	//! Owning heap
@@ -1341,7 +1339,6 @@ static block_t*
 page_get_local_free_block(page_t* page) {
 	block_t* block = page->local_free;
 	page->local_free = block->next;
-	--page->local_free_count;
 	++page->block_used;
 	return block;
 }
@@ -1497,7 +1494,6 @@ static inline void
 page_put_local_free_block(page_t* page, block_t* block) {
 	block->next = page->local_free;
 	page->local_free = block;
-	++page->local_free_count;
 	_rpmalloc_stat_add_free(page->heap, page->size_class, 1);
 	if (UNEXPECTED(--page->block_used == 0)) {
 		page_available_to_free(page);
@@ -1516,10 +1512,10 @@ page_adopt_thread_free_block_list(page_t* page) {
 		// threads, so a single exchange claims the whole list without a retry loop
 		thread_free = atomic_exchange_explicit(&page->thread_free, 0, memory_order_acquire);
 		page->remote_fed = 1;
-		page->local_free_count = page_block_from_thread_free_list(page, thread_free, &page->local_free);
-		rpmalloc_assert(page->local_free_count <= page->block_used, "Page thread free list count internal failure");
-		page->block_used -= page->local_free_count;
-		_rpmalloc_stat_add_free(page->heap, page->size_class, page->local_free_count);
+		uint32_t thread_free_count = page_block_from_thread_free_list(page, thread_free, &page->local_free);
+		rpmalloc_assert(thread_free_count <= page->block_used, "Page thread free list count internal failure");
+		page->block_used -= thread_free_count;
+		_rpmalloc_stat_add_free(page->heap, page->size_class, thread_free_count);
 	}
 }
 
@@ -1579,10 +1575,11 @@ page_put_thread_free_block(page_t* page, block_t* block) {
 static void
 page_push_local_free_to_heap(page_t* page) {
 	// Push the page free list as the fast track list of free blocks for heap
+	// Every initialized block not counted as used is in the local free list, so after handing the
+	// whole list to the heap all initialized blocks are in use
 	page->heap->local_free[page->size_class] = page->local_free;
-	page->block_used += page->local_free_count;
+	page->block_used = page->block_initialized;
 	page->local_free = 0;
-	page->local_free_count = 0;
 }
 
 static NOINLINE void*
@@ -1611,7 +1608,6 @@ page_initialize_blocks(page_t* page) {
 			last_block->next = 0;
 			page->local_free = first_block;
 			page->block_initialized += list_count;
-			page->local_free_count = list_count;
 		}
 	}
 
@@ -1951,7 +1947,6 @@ block_deallocate(block_t* block) {
 			// Page is not huge, not full and has no aligned block - fast path
 			block->next = page->local_free;
 			page->local_free = block;
-			++page->local_free_count;
 			_rpmalloc_stat_add_free(page->heap, page->size_class, 1);
 			if (UNEXPECTED(--page->block_used == 0))
 				page_available_to_free(page);
@@ -2270,7 +2265,6 @@ heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page) {
 	page->block_used = 0;
 	page->block_initialized = 0;
 	page->local_free = 0;
-	page->local_free_count = 0;
 	page->is_full = 0;
 	page->is_free = 0;
 	page->has_aligned_block = 0;
