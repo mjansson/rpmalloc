@@ -592,8 +592,16 @@ struct span_t {
 
 // Control structure for a heap, either a thread heap or a first class heap if enabled
 struct heap_t {
+	// The first HEAP_ALIGNMENT bytes hold the fields other threads access: owner_thread is read and
+	// thread_free is written by every cross-thread free into a full page. Keeping them apart from the
+	// owner's hot allocation state avoids invalidating the owner's local free lists on every remote
+	// free and the remote CAS line being pulled away by owner writes.
 	//! Owning thread ID
 	uintptr_t owner_thread;
+	//! Multithreaded free list
+	atomic_uintptr_t thread_free[4];
+	//! Padding to the end of the remotely accessed line
+	char remote_pad[HEAP_ALIGNMENT - (sizeof(uintptr_t) + (4 * sizeof(atomic_uintptr_t)))];
 	//! Heap local free list for small size classes
 	block_t* local_free[SIZE_CLASS_COUNT];
 	//! Available non-full pages for each size class
@@ -602,8 +610,6 @@ struct heap_t {
 	page_t* page_free[4];
 	//! Free but still committed page count for each page tyoe
 	uint32_t page_free_commit_count[4];
-	//! Multithreaded free list
-	atomic_uintptr_t thread_free[4];
 	//! Available partially initialized spans for each page type
 	span_t* span_partial[4];
 	//! Spans in full use for each page type
@@ -634,6 +640,7 @@ struct heap_t {
 _Static_assert(sizeof(page_t) <= PAGE_HEADER_SIZE, "Invalid page header size");
 _Static_assert(sizeof(span_t) <= SPAN_HEADER_SIZE, "Invalid span header size");
 _Static_assert(sizeof(heap_t) <= 4096, "Invalid heap size");
+_Static_assert(offsetof(heap_t, local_free) == HEAP_ALIGNMENT, "Remotely accessed heap fields must fill one line");
 
 ////////////
 ///
@@ -838,10 +845,12 @@ get_size_class(size_t size) {
 	--minblock_count;
 	// Calculate position of most significant bit, since minblock_count now guaranteed to be > 64 this position is
 	// guaranteed to be >= 6
+	// Use xor rather than subtraction, (N-1) ^ clz == (N-1) - clz for clz in [0, N-1], and compilers fold
+	// the xor into the bit scan result (bsr) instead of emitting the clz conversion followed by a subtract
 #if ARCH_64BIT
-	const uint32_t most_significant_bit = (uint32_t)(63 - (int)rpmalloc_clz(minblock_count));
+	const uint32_t most_significant_bit = (uint32_t)(63 ^ rpmalloc_clz(minblock_count));
 #else
-	const uint32_t most_significant_bit = (uint32_t)(31 - (int)rpmalloc_clz(minblock_count));
+	const uint32_t most_significant_bit = (uint32_t)(31 ^ rpmalloc_clz(minblock_count));
 #endif
 	// Class sizes are of the bit format [..]000xxx000[..] where we already have the position of the most significant
 	// bit, now calculate the subclass from the remaining two bits
@@ -1184,12 +1193,16 @@ page_get_size(page_t* page) {
 		return page_get_span(page)->page_size;
 }
 
+//! Check if the page is owned by the calling thread. Compares the owning heap with the thread heap
+//  rather than loading heap->owner_thread: the thread heap load does not depend on the page header,
+//  so the check is one dependent load shorter, and a cross-thread free no longer reads the first
+//  cache line of the owning heap, which the owner writes on every small block allocation.
 static inline int
 page_is_thread_heap(page_t* page) {
 #if RPMALLOC_FIRST_CLASS_HEAPS
-	return (!page->heap->owner_thread || (page->heap->owner_thread == get_thread_id()));
+	return ((page->heap == get_thread_heap()) || !page->heap->owner_thread);
 #else
-	return (page->heap->owner_thread == get_thread_id());
+	return (page->heap == get_thread_heap());
 #endif
 }
 
@@ -1203,24 +1216,28 @@ page_block(page_t* page, uint32_t block_index) {
 	return pointer_offset(page, PAGE_HEADER_SIZE + (page->block_size * block_index));
 }
 
+//! Byte offset of a block from the start of its page. Pages are at most LARGE_PAGE_SIZE (16MiB), so
+//  the offset always fits in 32 bits.
 static inline uint32_t
-page_block_index(page_t* page, block_t* block) {
-	block_t* block_first = page_block_start(page);
-	return (uint32_t)pointer_diff(block, block_first) / page->block_size;
+page_block_offset(page_t* page, block_t* block) {
+	return (uint32_t)pointer_diff(block, page);
 }
 
+//! The thread free list token holds the list head as a byte offset from the page start in the low
+//  32 bits (a block index would cost a division on every cross-thread free and a multiplication
+//  on every decode) and the list count in the high 32 bits
 static inline uint32_t
 page_block_from_thread_free_list(page_t* page, uint64_t token, block_t** block) {
-	uint32_t block_index = (uint32_t)(token & 0xFFFFFFFFULL);
+	uint32_t block_offset = (uint32_t)(token & 0xFFFFFFFFULL);
 	uint32_t list_count = (uint32_t)((token >> 32ULL) & 0xFFFFFFFFULL);
-	*block = list_count ? page_block(page, block_index) : 0;
+	*block = list_count ? (block_t*)pointer_offset(page, block_offset) : 0;
 	return list_count;
 }
 
 static inline uint64_t
-page_block_to_thread_free_list(page_t* page, uint32_t block_index, uint32_t list_count) {
+page_block_to_thread_free_list(page_t* page, uint32_t block_offset, uint32_t list_count) {
 	(void)sizeof(page);
-	return ((uint64_t)list_count << 32ULL) | (uint64_t)block_index;
+	return ((uint64_t)list_count << 32ULL) | (uint64_t)block_offset;
 }
 
 static inline block_t*
@@ -1296,6 +1313,11 @@ page_available_to_free(page_t* page) {
 	rpmalloc_assert(page->is_decommitted == 0, "Page decommitted flag internal failure");
 	heap_t* heap = page->heap;
 	if (heap->page_available[page->size_class] == page) {
+		// Keep the last available page of a size class in place. Retiring it would make the next
+		// allocation of the class take the generic path and reinitialize the page from scratch,
+		// which an alternating allocate/free pattern would then repeat on every pair
+		if (!page->next)
+			return;
 		heap->page_available[page->size_class] = page->next;
 	} else {
 		page->prev->next = page->next;
@@ -1373,11 +1395,9 @@ page_adopt_thread_free_block_list(page_t* page) {
 		return;
 	unsigned long long thread_free = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
 	if (thread_free != 0) {
-		// Other threads can only replace with another valid list head, this will never change to 0 in other threads
-		uint32_t spin = 0;
-		while (!atomic_compare_exchange_weak_explicit(&page->thread_free, &thread_free, 0, memory_order_acquire,
-		                                              memory_order_relaxed))
-			wait_spin(&spin);
+		// Other threads can only replace with another valid list head, this will never change to 0 in other
+		// threads, so a single exchange claims the whole list without a retry loop
+		thread_free = atomic_exchange_explicit(&page->thread_free, 0, memory_order_acquire);
 		page->local_free_count = page_block_from_thread_free_list(page, thread_free, &page->local_free);
 		rpmalloc_assert(page->local_free_count <= page->block_used, "Page thread free list count internal failure");
 		page->block_used -= page->local_free_count;
@@ -1398,13 +1418,13 @@ heap_put_thread_free_block_retry(atomic_uintptr_t* list, block_t* block, uintptr
 
 //! Contended retry path for pushing a block to the page thread free list
 static NOINLINE void
-page_put_thread_free_block_retry(page_t* page, block_t* block, uint32_t block_index,
+page_put_thread_free_block_retry(page_t* page, block_t* block, uint32_t block_offset,
                                  unsigned long long prev_thread_free) {
 	uint32_t spin = 0;
 	uint64_t thread_free;
 	do {
 		uint32_t list_size = page_block_from_thread_free_list(page, prev_thread_free, &block->next) + 1;
-		thread_free = page_block_to_thread_free_list(page, block_index, list_size);
+		thread_free = page_block_to_thread_free_list(page, block_offset, list_size);
 		wait_spin(&spin);
 	} while (!atomic_compare_exchange_weak_explicit(&page->thread_free, &prev_thread_free, thread_free,
 	                                                memory_order_release, memory_order_relaxed));
@@ -1427,13 +1447,14 @@ page_put_thread_free_block(page_t* page, block_t* block) {
 			heap_put_thread_free_block_retry(list, block, prev_head);
 	} else {
 		unsigned long long prev_thread_free = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
-		uint32_t block_index = page_block_index(page, block);
-		rpmalloc_assert(page_block(page, block_index) == block, "Block pointer is not aligned to start of block");
+		uint32_t block_offset = page_block_offset(page, block);
+		rpmalloc_assert(!((block_offset - PAGE_HEADER_SIZE) % page->block_size),
+		                "Block pointer is not aligned to start of block");
 		uint32_t list_size = page_block_from_thread_free_list(page, prev_thread_free, &block->next) + 1;
-		uint64_t thread_free = page_block_to_thread_free_list(page, block_index, list_size);
+		uint64_t thread_free = page_block_to_thread_free_list(page, block_offset, list_size);
 		if (UNEXPECTED(!atomic_compare_exchange_weak_explicit(&page->thread_free, &prev_thread_free, thread_free,
 		                                                      memory_order_release, memory_order_relaxed)))
-			page_put_thread_free_block_retry(page, block, block_index, prev_thread_free);
+			page_put_thread_free_block_retry(page, block, block_offset, prev_thread_free);
 	}
 }
 
@@ -1528,9 +1549,9 @@ page_allocate_block(page_t* page, unsigned int zero) {
 static inline int
 span_is_thread_heap(span_t* span) {
 #if RPMALLOC_FIRST_CLASS_HEAPS
-	return (!span->heap->owner_thread || (span->heap->owner_thread == get_thread_id()));
+	return ((span->heap == get_thread_heap()) || !span->heap->owner_thread);
 #else
-	return (span->heap->owner_thread == get_thread_id());
+	return (span->heap == get_thread_heap());
 #endif
 }
 
@@ -1841,8 +1862,9 @@ block_usable_size(block_t* block) {
 	span_t* span = (span_t*)((uintptr_t)block & SPAN_MASK);
 	if (EXPECTED(span->page_type <= PAGE_LARGE)) {
 		page_t* page = span_get_page_from_block(span, block);
-		void* blocks_start = pointer_offset(page, PAGE_HEADER_SIZE);
-		return page->block_size - ((size_t)pointer_diff(block, blocks_start) % page->block_size);
+		// Offset within a page is below 2^32, a 32-bit modulo is several times cheaper than a 64-bit one
+		uint32_t block_offset = (uint32_t)pointer_diff(block, page) - PAGE_HEADER_SIZE;
+		return page->block_size - (block_offset % page->block_size);
 	} else {
 		return ((size_t)span->page_size * (size_t)span->page_count) - (size_t)pointer_diff(block, span);
 	}
@@ -2153,11 +2175,8 @@ heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 	// Check if there is a free page from multithreaded deallocations
 	uintptr_t block_mt = atomic_load_explicit(&heap->thread_free[page_type], memory_order_relaxed);
 	if (UNEXPECTED(block_mt != 0)) {
-		uint32_t spin = 0;
-		while (!atomic_compare_exchange_weak_explicit(&heap->thread_free[page_type], &block_mt, 0, memory_order_acquire,
-		                                              memory_order_relaxed)) {
-			wait_spin(&spin);
-		}
+		// Claim the whole list in one exchange, concurrent pushes either land before (and are claimed) or after
+		block_mt = atomic_exchange_explicit(&heap->thread_free[page_type], 0, memory_order_acquire);
 		block_t* block = (void*)block_mt;
 		while (block) {
 			block_t* next_block = block->next;
@@ -2312,7 +2331,10 @@ heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
 			heap->span_used[PAGE_HUGE] = span;
 		}
 		void* ptr = pointer_offset(block, SPAN_HEADER_SIZE);
-		if (zero)
+		// A fresh mapping from the default OS interface is already zero filled (anonymous mmap and
+		// VirtualAlloc both guarantee it), clearing it again would fault in and commit every page.
+		// Reused cached mappings and custom memory interfaces give no such guarantee.
+		if (zero && (from_cache || (global_memory_interface->memory_map != os_mmap)))
 			memset(ptr, 0, size);
 #if RPMALLOC_HEAP_STATISTICS
 		heap->stats.allocated_size += size;
@@ -2394,6 +2416,22 @@ heap_allocate_block_aligned(heap_t* heap, size_t alignment, size_t size, unsigne
 	}
 
 	size_t align_mask = alignment - 1;
+	if (alignment <= PAGE_HEADER_SIZE) {
+		// Blocks start at a page header size offset from a page (or span) start, which is aligned to at
+		// least the page size. Rounding the size up to a multiple of the alignment (and at least the
+		// alignment) selects a size class whose block size is a multiple of the alignment: up to 1KiB
+		// every multiple of the granularity is a class, above that all class sizes are multiples of
+		// 256. Every block of that class is then naturally aligned, so there is no need to over-allocate
+		// and realign, and the page keeps the fast free path.
+		size_t aligned_size = (size + align_mask) & ~align_mask;
+		if (aligned_size < alignment)
+			aligned_size = alignment;
+		if (aligned_size >= size) {
+			block_t* block = heap_allocate_block(heap, aligned_size, zero);
+			rpmalloc_assert(!((uintptr_t)block & align_mask), "Natural block alignment internal failure");
+			return block;
+		}
+	}
 	block_t* block = heap_allocate_block(heap, size + alignment, zero);
 	if ((uintptr_t)block & align_mask) {
 		block = (void*)(((uintptr_t)block & ~(uintptr_t)align_mask) + alignment);
@@ -2405,6 +2443,76 @@ heap_allocate_block_aligned(heap_t* heap, size_t alignment, size_t size, unsigne
 	}
 	return block;
 }
+
+#if defined(__linux__) && defined(MREMAP_MAYMOVE) && defined(MREMAP_FIXED)
+#define ENABLE_HUGE_REMAP 1
+#else
+#define ENABLE_HUGE_REMAP 0
+#endif
+
+#if ENABLE_HUGE_REMAP
+//! Grow a huge block by moving its mapping into a new, larger span aligned reservation with mremap.
+//  The kernel moves the page table entries instead of copying the content, so growing a large buffer
+//  costs no memory copy and no page faults on the moved range. Returns the new block, or 0 if the
+//  block cannot be remapped (the caller then falls back to allocate, copy and free).
+static void*
+span_huge_remap(span_t* span, size_t size) {
+	// Only plain mappings from the default OS interface can be moved: huge page (hugetlb) mappings have
+	// stricter remap rules, and spans tracked in a first class heap span list cannot change address
+	if ((global_memory_interface->memory_map != os_mmap) || os_huge_pages || span->offset ||
+	    !span->heap->owner_thread)
+		return 0;
+	size_t alloc_size = get_page_aligned_size(size + SPAN_HEADER_SIZE);
+	size_t old_mapped_size = span->mapped_size;
+	if (alloc_size <= old_mapped_size)
+		return 0;
+	size_t offset = 0;
+	size_t mapped_size = 0;
+	void* target = os_mmap(alloc_size, SPAN_SIZE, &offset, &mapped_size);
+	if (!target)
+		return 0;
+	void* moved = mremap(span, old_mapped_size, mapped_size, MREMAP_MAYMOVE | MREMAP_FIXED, target);
+	if (moved != target) {
+		os_munmap(target, offset, mapped_size);
+		return 0;
+	}
+	span = target;
+#if ENABLE_DECOMMIT
+	if (os_commit_on_demand())
+		global_memory_interface->memory_commit(span, alloc_size);
+#endif
+	size_t old_committed = (size_t)span->page_count * span->page_size;
+#if ENABLE_STATISTICS
+	// The old mapping is gone without passing through os_munmap, account for it the same way
+	statistics_sub_saturating(&global_statistics.page_mapped, old_mapped_size / global_config.page_size);
+	statistics_sub_saturating(&global_statistics.page_active, old_mapped_size / global_config.page_size);
+	statistics_sub_saturating(&global_statistics.huge_alloc, old_committed);
+#endif
+	span->page_count = (uint32_t)(alloc_size / span->page_size);
+	span->mapped_size = mapped_size;
+	size_t new_committed = (size_t)span->page_count * span->page_size;
+#if ENABLE_STATISTICS
+	size_t huge_alloc_current =
+	    atomic_fetch_add_explicit(&global_statistics.huge_alloc, new_committed, memory_order_relaxed) +
+	    new_committed;
+	size_t huge_alloc_peak = atomic_load_explicit(&global_statistics.huge_alloc_peak, memory_order_relaxed);
+	while (huge_alloc_current > huge_alloc_peak) {
+		if (atomic_compare_exchange_weak_explicit(&global_statistics.huge_alloc_peak, &huge_alloc_peak,
+		                                          huge_alloc_current, memory_order_relaxed, memory_order_relaxed))
+			break;
+	}
+#endif
+#if RPMALLOC_HEAP_STATISTICS
+	span->heap->stats.mapped_size += mapped_size - old_mapped_size;
+	span->heap->stats.committed_size += new_committed - old_committed;
+	span->heap->stats.allocated_size += new_committed - old_committed;
+#else
+	(void)sizeof(old_committed);
+	(void)sizeof(new_committed);
+#endif
+	return pointer_offset(span, SPAN_HEADER_SIZE);
+}
+#endif
 
 static void*
 heap_reallocate_block(heap_t* heap, void* block, size_t size, size_t old_size, unsigned int flags) {
@@ -2450,6 +2558,16 @@ heap_reallocate_block(heap_t* heap, void* block, size_t size, size_t old_size, u
 	// and deallocate the old. Avoid hysteresis by overallocating if increase is small (below 37%)
 	size_t lower_bound = old_size + (old_size >> 2) + (old_size >> 3);
 	size_t new_size = (size > lower_bound) ? size : ((size > old_size) ? lower_bound : size);
+#if ENABLE_HUGE_REMAP
+	if (block && (new_size > old_size) && (new_size > LARGE_BLOCK_SIZE_LIMIT)) {
+		span_t* span = block_get_span(block);
+		if ((span->page_type == PAGE_HUGE) && (block == pointer_offset(span, SPAN_HEADER_SIZE))) {
+			void* moved_block = span_huge_remap(span, new_size);
+			if (moved_block)
+				return moved_block;
+		}
+	}
+#endif
 	void* old_block = block;
 	block = heap_allocate_block(heap, new_size, 0);
 	if (block && old_block) {
