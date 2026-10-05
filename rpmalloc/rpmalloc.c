@@ -561,6 +561,10 @@ struct page_t {
 	uint32_t commit_on_demand : 1;
 	//! log2 of the committed prefix (the page size at the span's map time)
 	uint32_t commit_prefix_shift : 6;
+	//! Set when a refill took blocks freed by the owner thread from the page local free list
+	uint32_t local_reuse : 1;
+	//! Set when the page received blocks freed by other threads
+	uint32_t remote_fed : 1;
 	//! Local free list count
 	uint32_t local_free_count;
 	//! Local free list
@@ -730,6 +734,12 @@ static const size_class_t global_size_class[SIZE_CLASS_COUNT] = {
     MLCLASS(7168),  MLCLASS(8192),  MLCLASS(10240), MLCLASS(12288), MLCLASS(14336), MLCLASS(16384), LCLASS(20480),
     LCLASS(24576),  LCLASS(28672),  LCLASS(32768),  LCLASS(40960),  LCLASS(49152),  LCLASS(57344),  LCLASS(65536),
     LCLASS(81920),  LCLASS(98304),  LCLASS(114688), LCLASS(131072)};
+
+#ifndef PAGE_FULL_RETAIN
+//! Number of pages without free blocks a refill moves to the back of the available list before
+//  marking pages full
+#define PAGE_FULL_RETAIN 2
+#endif
 
 #ifndef PAGE_DECOMMIT_DELAY_MS
 //! Time in milliseconds the free committed pages of a page type must stay above the overflow
@@ -1354,6 +1364,28 @@ page_commit_memory_pages(page_t* page) {
 	return 0;
 }
 
+//! Unlink a page that is not the head from the available list. The head prev pointer is the tail
+static inline void
+page_available_unlink(heap_t* heap, page_t* page) {
+	page->prev->next = page->next;
+	if (page->next)
+		page->next->prev = page->prev;
+	else
+		heap->page_available[page->size_class]->prev = page->prev;
+}
+
+//! Move the head page of the available list to the tail
+static inline void
+page_available_rotate(heap_t* heap, page_t* page) {
+	page_t* tail = page->prev;
+	page_t* head = page->next;
+	heap->page_available[page->size_class] = head;
+	head->prev = page;
+	tail->next = page;
+	page->prev = tail;
+	page->next = 0;
+}
+
 static void
 page_available_to_free(page_t* page) {
 	rpmalloc_assert(page->is_full == 0, "Page full flag internal failure");
@@ -1366,10 +1398,9 @@ page_available_to_free(page_t* page) {
 		if (!page->next)
 			return;
 		heap->page_available[page->size_class] = page->next;
+		page->next->prev = page->prev;
 	} else {
-		page->prev->next = page->next;
-		if (page->next)
-			page->next->prev = page->prev;
+		page_available_unlink(heap, page);
 	}
 	page->is_free = 1;
 	page->is_zero = 0;
@@ -1384,9 +1415,11 @@ page_full_to_available(page_t* page) {
 	rpmalloc_assert(page->is_full == 1, "Page full flag internal failure");
 	rpmalloc_assert(page->is_decommitted == 0, "Page decommitted flag internal failure");
 	heap_t* heap = page->heap;
-	page->next = heap->page_available[page->size_class];
-	if (page->next)
-		page->next->prev = page;
+	page_t* head = heap->page_available[page->size_class];
+	page->next = head;
+	page->prev = head ? head->prev : page;
+	if (head)
+		head->prev = page;
 	heap->page_available[page->size_class] = page;
 	page->is_full = 0;
 	if (page->has_aligned_block == 0)
@@ -1413,10 +1446,10 @@ page_available_to_full(page_t* page) {
 	heap_t* heap = page->heap;
 	if (heap->page_available[page->size_class] == page) {
 		heap->page_available[page->size_class] = page->next;
-	} else {
-		page->prev->next = page->next;
 		if (page->next)
 			page->next->prev = page->prev;
+	} else {
+		page_available_unlink(heap, page);
 	}
 	page->is_full = 1;
 	page->is_zero = 0;
@@ -1445,6 +1478,7 @@ page_adopt_thread_free_block_list(page_t* page) {
 		// Other threads can only replace with another valid list head, this will never change to 0 in other
 		// threads, so a single exchange claims the whole list without a retry loop
 		thread_free = atomic_exchange_explicit(&page->thread_free, 0, memory_order_acquire);
+		page->remote_fed = 1;
 		page->local_free_count = page_block_from_thread_free_list(page, thread_free, &page->local_free);
 		rpmalloc_assert(page->local_free_count <= page->block_used, "Page thread free list count internal failure");
 		page->block_used -= page->local_free_count;
@@ -1547,16 +1581,31 @@ page_initialize_blocks(page_t* page) {
 	return block;
 }
 
+//! Allocate a block from the page, returns null if the page has no free block left. The page is only
+//  marked full here, when a refill finds it without free blocks, not when its free list moves to the
+//  heap free list: a page whose free blocks sit in the heap free list is still in use, and marking it
+//  full then made the next local free into it take the generic path to make it available again
 static inline RPMALLOC_ALLOCATOR void*
 page_allocate_block(page_t* page, unsigned int zero) {
 	unsigned int is_zero = 0;
-	block_t* block = (page->local_free != 0) ? page_get_local_free_block(page) : 0;
+	block_t* block = 0;
+	if (page->local_free != 0) {
+		// Fresh blocks never stay in the page local free list across refills, so these were freed by the
+		// owner thread
+		page->local_reuse = 1;
+		block = page_get_local_free_block(page);
+	}
 	if (UNEXPECTED(block == 0)) {
 		if (atomic_load_explicit(&page->thread_free, memory_order_acquire) != 0) {
 			page_adopt_thread_free_block_list(page);
 			block = (page->local_free != 0) ? page_get_local_free_block(page) : 0;
 		}
 		if (block == 0) {
+			if (page->block_initialized == page->block_count) {
+				rpmalloc_assert(page->block_used == page->block_count, "Page block use counter out of sync");
+				rpmalloc_assert(!page->is_full, "Page block use counter out of sync with full flag");
+				return 0;
+			}
 			block = page_initialize_blocks(page);
 			is_zero = page->is_zero;
 		}
@@ -1565,17 +1614,6 @@ page_allocate_block(page_t* page, unsigned int zero) {
 	rpmalloc_assert(page->block_used <= page->block_count, "Page block use counter out of sync");
 	if (page->local_free && !page->heap->local_free[page->size_class])
 		page_push_local_free_to_heap(page);
-
-	// The page might be full when free list has been pushed to heap local free list,
-	// check if there is a thread free list to adopt
-	if (page->block_used == page->block_count) {
-		page_adopt_thread_free_block_list(page);
-		if (page->block_used == page->block_count) {
-			// Page is now fully utilized
-			rpmalloc_assert(!page->is_full, "Page block use counter out of sync with full flag");
-			page_available_to_full(page);
-		}
-	}
 
 	if (zero) {
 		if (!is_zero)
@@ -2173,11 +2211,13 @@ heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page) {
 	page->is_full = 0;
 	page->is_free = 0;
 	page->has_aligned_block = 0;
+	page->local_reuse = 0;
+	page->remote_fed = 0;
 	page->generic_free = 0;
 	page->heap = heap;
 	page_t* head = heap->page_available[size_class];
 	page->next = head;
-	page->prev = 0;
+	page->prev = head ? head->prev : page;
 	atomic_store_explicit(&page->thread_free, 0, memory_order_release);
 	if (head)
 		head->prev = page;
@@ -2280,7 +2320,9 @@ heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 		block_t* block = (void*)block_mt;
 		while (block) {
 			block_t* next_block = block->next;
+			page_t* block_page = span_get_page_from_block(block_get_span(block), block);
 			block_deallocate(block);
+			block_page->remote_fed = 1;
 			block = next_block;
 		}
 		// Retry after processing deferred thread frees
@@ -2345,12 +2387,25 @@ heap_pop_local_free(heap_t* heap, uint32_t size_class) {
 //! Generic allocation path from heap pages, spans or new mapping
 static NOINLINE RPMALLOC_ALLOCATOR void*
 heap_allocate_block_small_to_large(heap_t* heap, uint32_t size_class, unsigned int zero) {
-	page_t* page = heap_get_page(heap, size_class);
-	if (EXPECTED(page != 0)) {
-		// Count on the page owner, which may differ from heap when an uninitialized thread is routed
-		// to its real heap, so the allocation and its later free are accounted on the same heap
-		_rpmalloc_stat_inc_alloc(page->heap, size_class);
-		return page_allocate_block(page, zero);
+	page_t* page;
+	uint32_t retain = PAGE_FULL_RETAIN;
+	while ((page = heap_get_page(heap, size_class)) != 0) {
+		void* block = page_allocate_block(page, zero);
+		if (EXPECTED(block != 0)) {
+			// Count on the page owner, which may differ from heap when an uninitialized thread is routed
+			// to its real heap, so the allocation and its later free are accounted on the same heap
+			_rpmalloc_stat_inc_alloc(page->heap, size_class);
+			return block;
+		}
+		// The page has no free block. Move it to the back of the list a limited number of times so it
+		// collects frees without leaving the list, then mark pages full
+		heap = page->heap;
+		if (retain && page->next && page->local_reuse && !page->remote_fed) {
+			--retain;
+			page_available_rotate(heap, page);
+		} else {
+			page_available_to_full(page);
+		}
 	}
 	return 0;
 }
