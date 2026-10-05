@@ -636,6 +636,8 @@ struct heap_t {
 	uint32_t id;
 	//! Finalization state flag
 	uint32_t finalize;
+	//! Set when the heap was released without being trimmed, the thread adopting it trims it first
+	uint32_t release_trim;
 	//! Memory map region offset
 	uint32_t offset;
 	//! Memory map size
@@ -784,6 +786,9 @@ static _Thread_local heap_t* global_thread_heap TLS_MODEL = &global_heap_fallbac
 
 static heap_t*
 heap_allocate(int first_class);
+
+static void
+heap_release_free_pages(heap_t* heap);
 
 static NOINLINE void
 heap_page_free_overflow(heap_t* heap, uint32_t page_type);
@@ -1952,6 +1957,10 @@ heap_allocate_new(int first_class) {
 			heap_t* heap = global_heap_queue;
 			global_heap_queue = heap->next;
 			heap_lock_release();
+			if (heap->release_trim) {
+				heap->release_trim = 0;
+				heap_release_free_pages(heap);
+			}
 			return heap;
 		}
 		if (global_heap_pristine) {
@@ -2109,29 +2118,47 @@ heap_page_free_overflow(heap_t* heap, uint32_t page_type) {
 	heap_page_free_decommit(heap, page_type, global_page_free_retain[page_type]);
 }
 
-//! Trims the memory a heap holds for reuse when it is released, by its exiting thread or as a first
-//  class heap. Until another thread adopts the heap nothing reuses that memory or runs the decommit
-//  delay, so a heap that many short lived threads pass along would otherwise keep it all. The empty
-//  large pages kept as the last available page of their size class are retired, and free pages are
-//  decommitted down to below the overflow threshold, the most the heap holds without a delay
+//! Trims the memory a released heap holds for reuse. Until another thread adopts the heap nothing
+//  reuses that memory or runs the decommit delay, so a heap that many short lived threads pass along
+//  would otherwise keep it all. The empty medium-large and large pages kept as the last available
+//  page of their size class are retired, and free pages of those types are decommitted down to below
+//  the overflow threshold, the most the heap holds without a delay. Small and medium-small pages are
+//  cheap to keep and costly to fault back in, they are left to the decommit delay, which keeps
+//  running across heap owners
 static void
 heap_release_free_pages(heap_t* heap) {
 	for (uint32_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
 		page_t* page = heap->page_available[iclass];
-		if (!page || page->next || page->block_used || (page->page_type != PAGE_LARGE))
+		if (!page || page->next || page->block_used || (page->page_type < PAGE_MEDIUM_LARGE))
 			continue;
 		heap->page_available[iclass] = 0;
 		page->is_free = 1;
 		page->is_zero = 0;
-		page->next = heap->page_free[PAGE_LARGE];
-		heap->page_free[PAGE_LARGE] = page;
-		++heap->page_free_commit_count[PAGE_LARGE];
+		page->next = heap->page_free[page->page_type];
+		heap->page_free[page->page_type] = page;
+		++heap->page_free_commit_count[page->page_type];
 	}
-	for (uint32_t itype = 0; itype < 4; ++itype) {
+	for (uint32_t itype = PAGE_MEDIUM_LARGE; itype <= PAGE_LARGE; ++itype) {
 		heap->page_free_overflow_ms[itype] = 0;
 		if (heap->page_free_commit_count[itype] >= global_page_free_overflow[itype])
 			heap_page_free_decommit(heap, itype, global_page_free_overflow[itype] - 1);
 	}
+}
+
+//! Releases a heap, by its exiting thread or as a first class heap, for reuse by another thread.
+//  With other heaps already queued the heap is likely to stay unused for a while and is trimmed
+//  right away. With the queue empty a thread is likely to adopt it shortly, so the trim is left to
+//  the adopter rather than delaying the release while threads wait for a heap
+static void
+heap_release_trim(heap_t* heap) {
+	heap_lock_acquire();
+	int queued = (global_heap_queue != 0);
+	heap_lock_release();
+	if (queued)
+		heap_release_free_pages(heap);
+	else
+		heap->release_trim = 1;
+	heap_release(heap);
 }
 
 static inline int
@@ -3318,8 +3345,7 @@ extern void
 rpmalloc_thread_finalize(void) {
 	heap_t* heap = get_thread_heap();
 	if (heap != global_heap_default) {
-		heap_release_free_pages(heap);
-		heap_release(heap);
+		heap_release_trim(heap);
 		set_thread_heap(global_heap_default);
 	}
 }
@@ -3482,10 +3508,8 @@ rpmalloc_heap_acquire(void) {
 
 void
 rpmalloc_heap_release(rpmalloc_heap_t* heap) {
-	if (heap) {
-		heap_release_free_pages(heap);
-		heap_release(heap);
-	}
+	if (heap)
+		heap_release_trim(heap);
 }
 
 RPMALLOC_ALLOCATOR void*
