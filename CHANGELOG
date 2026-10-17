@@ -14,6 +14,11 @@ rpmalloc_finalize does nothing if the allocator is not initialized, instead of f
 destructor slot or key it does not hold. The DllMain of the Windows dynamic library build no longer
 finalizes the allocator when the process is terminating.
 
+A shared object with rpmalloc compiled in can be loaded with dlopen on Linux with musl libc, which
+rejects initial-exec thread local storage in a library loaded at runtime. Shared objects on Linux
+with a C library other than glibc use the local-dynamic TLS model, executables and glibc keep
+initial-exec, and the model can be overridden by defining TLS_MODEL.
+
 calloc, its aligned and heap variants and reallocarray now always check the size multiplication for
 overflow and fail with ENOMEM, instead of only when argument validation is enabled.
 

@@ -802,8 +802,11 @@ static size_t os_page_size;
 
 //! Current thread heap
 #if defined(_MSC_VER) && !defined(__clang__)
-#define TLS_MODEL
 #define _Thread_local __declspec(thread)
+#endif
+#ifndef TLS_MODEL
+#if defined(_MSC_VER) && !defined(__clang__)
+#define TLS_MODEL
 #elif defined(__ANDROID__)
 #if __ANDROID_API__ >= 29 && \
     ((defined(__clang__) && (__clang_major__ >= 17)) || (defined(__NDK_MAJOR__) && (__NDK_MAJOR__ >= 26)))
@@ -811,9 +814,12 @@ static size_t os_page_size;
 #else
 #define TLS_MODEL
 #endif
+#elif defined(__linux__) && !defined(__GLIBC__) && defined(__PIC__) && !defined(__PIE__)
+//! Shared object without glibc, musl rejects initial-exec TLS in a library loaded with dlopen
+#define TLS_MODEL __attribute__((tls_model("local-dynamic")))
 #else
 #define TLS_MODEL __attribute__((tls_model("initial-exec")))
-// #define TLS_MODEL
+#endif
 #endif
 //! Per thread state. Besides the thread heap it holds a chain of blocks the thread freed into a page
 //  owned by another heap and has not pushed to the page yet. A cross-thread free into the same page as
