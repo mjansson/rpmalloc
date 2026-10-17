@@ -747,6 +747,17 @@ static const size_class_t global_size_class[SIZE_CLASS_COUNT] = {
 #define PAGE_FULL_RETAIN 2
 #endif
 
+#ifndef PAGE_AVAILABLE_TAIL
+//! Append a full page that receives a free at the tail of the available list instead of the head
+#define PAGE_AVAILABLE_TAIL 1
+#endif
+
+#ifndef PAGE_AVAILABLE_CANDIDATES
+//! Number of available pages a refill that exhausted the head page looks at for the fullest page with
+//  free blocks to continue from (0 takes the next page)
+#define PAGE_AVAILABLE_CANDIDATES 0
+#endif
+
 #ifndef PAGE_DECOMMIT_DELAY_MS
 //! Time in milliseconds the free committed pages of a page type must stay above the overflow
 //  threshold before the excess is decommitted. Delaying the decommit keeps memory committed across
@@ -1426,11 +1437,24 @@ page_full_to_available(page_t* page) {
 	rpmalloc_assert(page->is_decommitted == 0, "Page decommitted flag internal failure");
 	heap_t* heap = page->heap;
 	page_t* head = heap->page_available[page->size_class];
+#if PAGE_AVAILABLE_TAIL
+	page->next = 0;
+	if (head) {
+		page_t* tail = head->prev;
+		tail->next = page;
+		page->prev = tail;
+		head->prev = page;
+	} else {
+		page->prev = page;
+		heap->page_available[page->size_class] = page;
+	}
+#else
 	page->next = head;
 	page->prev = head ? head->prev : page;
 	if (head)
 		head->prev = page;
 	heap->page_available[page->size_class] = page;
+#endif
 	page->is_full = 0;
 	if (page->has_aligned_block == 0)
 		atomic_store_explicit(&page->heap_fast, (uintptr_t)heap, memory_order_relaxed);
@@ -2441,6 +2465,41 @@ heap_get_page(heap_t* heap, uint32_t size_class) {
 	return heap_get_page_generic(heap, size_class);
 }
 
+#if PAGE_AVAILABLE_CANDIDATES
+//! Move the fullest page with free blocks among the first pages of the available list to the head, so
+//  refills prefer fuller pages and emptier pages get a chance to drain and be freed
+static void
+page_available_select_fullest(heap_t* heap, uint32_t size_class) {
+	page_t* head = heap->page_available[size_class];
+	if (!head || !head->next)
+		return;
+	page_t* best = 0;
+	uint32_t best_used = 0;
+	int best_reusable = 0;
+	uint32_t visit = 0;
+	for (page_t* page = head; page && (visit < PAGE_AVAILABLE_CANDIDATES); page = page->next, ++visit) {
+		uint64_t thread_free = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
+		// Prefer pages with freed blocks to reuse over pages that would initialize (touch) new blocks
+		int reusable = (page->local_free != 0) || (thread_free != 0);
+		if (!reusable && (page->block_initialized == page->block_count))
+			continue;
+		uint32_t used = page->block_used - (uint32_t)((thread_free >> 32ULL) & 0x7FFFFFFFULL);
+		if (!best || (reusable > best_reusable) || ((reusable == best_reusable) && (used > best_used))) {
+			best = page;
+			best_used = used;
+			best_reusable = reusable;
+		}
+	}
+	if (!best || (best == head))
+		return;
+	page_available_unlink(heap, best);
+	best->next = head;
+	best->prev = head->prev;
+	head->prev = best;
+	heap->page_available[size_class] = best;
+}
+#endif
+
 //! Pop a block from the heap local free list
 static inline RPMALLOC_ALLOCATOR void*
 heap_pop_local_free(heap_t* heap, uint32_t size_class) {
@@ -2478,6 +2537,9 @@ heap_allocate_block_small_to_large(heap_t* heap, uint32_t size_class, unsigned i
 			                                            memory_order_acq_rel, memory_order_relaxed))
 				page_available_to_full(page);
 		}
+#if PAGE_AVAILABLE_CANDIDATES
+		page_available_select_fullest(heap, size_class);
+#endif
 	}
 	return 0;
 }
