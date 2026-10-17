@@ -419,6 +419,66 @@ extern void*
 rpreallocarray(void* ptr, size_t count, size_t size);
 #endif
 
+//! Allocate and free blocks of the given size with the requested bytes set, so the next allocation of the
+//  size class reuses a dirty block
+static void
+test_zero_dirty(size_t size) {
+	void* block[4];
+	for (int i = 0; i < 4; ++i) {
+		block[i] = rpmalloc(size);
+		memset(block[i], 0xff, size);
+	}
+	for (int i = 0; i < 4; ++i)
+		rpfree(block[i]);
+}
+
+static int
+test_zero_check(const unsigned char* ptr, size_t size, size_t alignment) {
+	if (!ptr)
+		return test_fail("Zero allocation failed");
+	if (alignment && ((uintptr_t)ptr & (alignment - 1)))
+		return test_fail("Zero allocation not aligned");
+	for (size_t ibyte = 0; ibyte < size; ++ibyte) {
+		if (ptr[ibyte])
+			return test_fail("Zero allocation not zero");
+	}
+	return 0;
+}
+
+static int
+test_zero_alloc(void) {
+	// calloc and zalloc zero the requested bytes. Blocks of the size classes involved are dirtied and freed
+	// first so the zeroed allocations reuse them, across class boundaries, alignments, page types and huge
+	// blocks (the freed huge block is cached and reused)
+	rpmalloc_initialize(0);
+	static const size_t sizes[] = {0,    1,    8,     9,     16,     17,     1023,   1024,
+	                               1025, 2049, 5121,  20480, 20481,  131073, 300000, 2100000};
+	static const size_t alignments[] = {0, 8, 16, 32, 64, 128, 256, 4096};
+	for (size_t isize = 0; isize < sizeof(sizes) / sizeof(sizes[0]); ++isize) {
+		for (size_t ialign = 0; ialign < sizeof(alignments) / sizeof(alignments[0]); ++ialign) {
+			size_t size = sizes[isize];
+			size_t alignment = alignments[ialign];
+			size_t aligned_size = alignment ? ((size + alignment - 1) & ~(alignment - 1)) : size;
+			for (int izero = 0; izero < 2; ++izero) {
+				test_zero_dirty(size);
+				test_zero_dirty(aligned_size);
+				test_zero_dirty(size + alignment);
+				unsigned char* ptr;
+				if (izero)
+					ptr = alignment ? rpaligned_zalloc(alignment, size) : rpzalloc(size);
+				else
+					ptr = alignment ? rpaligned_calloc(alignment, 1, size) : rpcalloc(1, size);
+				if (test_zero_check(ptr, size, alignment))
+					return -1;
+				rpfree(ptr);
+			}
+		}
+	}
+	rpmalloc_finalize();
+	printf("Zero allocation tests passed\n");
+	return 0;
+}
+
 static int
 test_mul_overflow(void) {
 	// Volatile so the compiler cannot fold or reject the overflowing products at compile time
@@ -3012,6 +3072,8 @@ test_run(int argc, char** argv) {
 		}
 	}
 	if (test_alloc())
+		return -1;
+	if (test_zero_alloc())
 		return -1;
 	if (test_realloc())
 		return -1;

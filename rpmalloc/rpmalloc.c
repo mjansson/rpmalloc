@@ -1841,9 +1841,10 @@ page_initialize_blocks(page_t* page) {
 //! Allocate a block from the page, returns null if the page has no free block left. The page is only
 //  marked full here, when a refill finds it without free blocks, not when its free list moves to the
 //  heap free list: a page whose free blocks sit in the heap free list is still in use, and marking it
-//  full then made the next local free into it take the generic path to make it available again
+//  full then made the next local free into it take the generic path to make it available again. The
+//  first zero_size bytes of the block are zeroed
 static inline RPMALLOC_ALLOCATOR void*
-page_allocate_block(page_t* page, unsigned int zero) {
+page_allocate_block(page_t* page, size_t zero_size) {
 	unsigned int is_zero = 0;
 	block_t* block = 0;
 	if (page->local_free != 0) {
@@ -1872,9 +1873,9 @@ page_allocate_block(page_t* page, unsigned int zero) {
 	if (page->local_free && !page->heap->local_free[page->size_class])
 		page_push_local_free_to_heap(page);
 
-	if (zero) {
+	if (zero_size) {
 		if (!is_zero)
-			memset(block, 0, page->block_size);
+			memset(block, 0, zero_size);
 		else
 			*(uintptr_t*)block = 0;
 	}
@@ -3001,11 +3002,11 @@ heap_pop_local_free(heap_t* heap, uint32_t size_class) {
 
 //! Generic allocation path from heap pages, spans or new mapping
 static NOINLINE RPMALLOC_ALLOCATOR void*
-heap_allocate_block_small_to_large(heap_t* heap, uint32_t size_class, unsigned int zero) {
+heap_allocate_block_small_to_large(heap_t* heap, uint32_t size_class, size_t zero_size) {
 	page_t* page;
 	uint32_t retain = PAGE_FULL_RETAIN;
 	while ((page = heap_get_page(heap, size_class)) != 0) {
-		void* block = page_allocate_block(page, zero);
+		void* block = page_allocate_block(page, zero_size);
 		if (EXPECTED(block != 0)) {
 			// Count on the page owner, which may differ from heap when an uninitialized thread is routed
 			// to its real heap, so the allocation and its later free are accounted on the same heap
@@ -3037,7 +3038,7 @@ heap_allocate_block_small_to_large(heap_t* heap, uint32_t size_class, unsigned i
 
 //! Generic allocation path from heap pages, spans or new mapping
 static NOINLINE RPMALLOC_ALLOCATOR void*
-heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
+heap_allocate_block_huge(heap_t* heap, size_t size, size_t zero_size) {
 	if (global_thread.chain_count != 0)
 		thread_free_chain_flush(&global_thread);
 	if (heap->id == 0) {
@@ -3047,7 +3048,7 @@ heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
 	}
 	size_t alloc_size = get_page_aligned_size(size + SPAN_HEADER_SIZE);
 	size_t commit_size = alloc_size;
-	size_t zero_size = size;
+	size_t clear_size = zero_size;
 	span_t* span = 0;
 	int from_cache = 0;
 #if HUGE_CACHE_SLOT_COUNT
@@ -3060,8 +3061,8 @@ heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
 		// The pages of the mapping beyond its committed size were decommitted, or never committed, and read as
 		// zero once committed, only the committed pages can hold old content
 		size_t dirty_size = span_huge_committed(span) - SPAN_HEADER_SIZE;
-		if ((global_memory_interface->memory_map == os_mmap) && (dirty_size < zero_size))
-			zero_size = dirty_size;
+		if ((global_memory_interface->memory_map == os_mmap) && (dirty_size < clear_size))
+			clear_size = dirty_size;
 #endif
 #if ENABLE_DECOMMIT
 		size_t committed = span_huge_committed(span);
@@ -3074,7 +3075,7 @@ heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
 				global_memory_interface->memory_unmap(span, span->offset, span->mapped_size);
 				span = 0;
 				from_cache = 0;
-				zero_size = size;
+				clear_size = zero_size;
 			}
 		} else if (commit_size < committed) {
 			void* tail = pointer_offset(span, commit_size);
@@ -3143,13 +3144,13 @@ heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
 	// VirtualAlloc both guarantee it), clearing it again would fault in and commit every page.
 	// Reused cached mappings and custom memory interfaces give no such guarantee, but the pages a
 	// reused mapping commits beyond its previously committed pages are zero where decommit zeroes.
-	if (zero && (from_cache || (global_memory_interface->memory_map != os_mmap)))
-		memset(ptr, 0, zero_size);
+	if (clear_size && (from_cache || (global_memory_interface->memory_map != os_mmap)))
+		memset(ptr, 0, clear_size);
 	return ptr;
 }
 
 static RPMALLOC_ALLOCATOR NOINLINE void*
-heap_allocate_block_generic(heap_t* heap, size_t size, unsigned int zero) {
+heap_allocate_block_generic(heap_t* heap, size_t size, size_t zero_size) {
 	uint32_t size_class = get_size_class(size);
 	if (EXPECTED(size_class < SIZE_CLASS_COUNT)) {
 #if RPMALLOC_HEAP_STATISTICS
@@ -3161,27 +3162,29 @@ heap_allocate_block_generic(heap_t* heap, size_t size, unsigned int zero) {
 			// Fast track with small block available in heap level local free list; a hit means this
 			// heap owns the block
 			_rpmalloc_stat_inc_alloc(heap, size_class);
-			if (zero)
-				memset(block, 0, global_size_class[size_class].block_size);
+			if (zero_size)
+				memset(block, 0, zero_size);
 			return block;
 		}
 
-		return heap_allocate_block_small_to_large(heap, size_class, zero);
+		return heap_allocate_block_small_to_large(heap, size_class, zero_size);
 	}
 
-	return heap_allocate_block_huge(heap, size, zero);
+	return heap_allocate_block_huge(heap, size, zero_size);
 }
 
-//! Find or allocate a block of the given size
+//! Find or allocate a block of the given size. The first zero_size bytes of the block are zeroed, the
+//  requested size for calloc and zalloc rather than the whole size class block: the bytes past the
+//  request are not part of the allocation
 static inline RPMALLOC_ALLOCATOR void*
-heap_allocate_block(heap_t* heap, size_t size, unsigned int zero) {
+heap_allocate_block(heap_t* heap, size_t size, size_t zero_size) {
 	if (size <= (SMALL_GRANULARITY * 64)) {
 		uint32_t size_class = get_size_class_tiny(size);
 		block_t* block = heap_pop_local_free(heap, size_class);
 		if (EXPECTED(block != 0)) {
 			// Fast track with small block available in heap level local free list
-			if (zero)
-				memset(block, 0, global_size_class[size_class].block_size);
+			if (zero_size)
+				memset(block, 0, zero_size);
 #if RPMALLOC_HEAP_STATISTICS
 			heap->stats.allocated_size += global_size_class[size_class].block_size;
 #endif
@@ -3194,15 +3197,15 @@ heap_allocate_block(heap_t* heap, size_t size, unsigned int zero) {
 		// The size class is already known - refill directly, skipping the
 		// generic path size class recomputation and dead local free list pop
 		// (small_to_large counts the allocation on the owning heap)
-		return heap_allocate_block_small_to_large(heap, size_class, zero);
+		return heap_allocate_block_small_to_large(heap, size_class, zero_size);
 	}
-	return heap_allocate_block_generic(heap, size, zero);
+	return heap_allocate_block_generic(heap, size, zero_size);
 }
 
 static RPMALLOC_ALLOCATOR void*
 heap_allocate_block_aligned(heap_t* heap, size_t alignment, size_t size, unsigned int zero) {
 	if (alignment <= SMALL_GRANULARITY)
-		return heap_allocate_block(heap, size, zero);
+		return heap_allocate_block(heap, size, zero ? size : 0);
 
 #if ENABLE_VALIDATE_ARGS
 	if ((size + alignment) < size) {
@@ -3231,12 +3234,14 @@ heap_allocate_block_aligned(heap_t* heap, size_t alignment, size_t size, unsigne
 		if (aligned_size < alignment)
 			aligned_size = alignment;
 		if (aligned_size >= size) {
-			block_t* block = heap_allocate_block(heap, aligned_size, zero);
+			block_t* block = heap_allocate_block(heap, aligned_size, zero ? size : 0);
 			rpmalloc_assert(!((uintptr_t)block & align_mask), "Natural block alignment internal failure");
 			return block;
 		}
 	}
-	block_t* block = heap_allocate_block(heap, size + alignment, zero);
+	// The block is realigned by up to the alignment after allocation, zeroing the whole request from the
+	// block start covers the realigned range and keeps fresh pages and mappings untouched
+	block_t* block = heap_allocate_block(heap, size + alignment, zero ? (size + alignment) : 0);
 	if ((uintptr_t)block & align_mask) {
 		block = (void*)(((uintptr_t)block & ~(uintptr_t)align_mask) + alignment);
 		// Mark as having aligned blocks
@@ -3580,7 +3585,7 @@ rpzalloc(size_t size) {
 	}
 #endif
 	heap_t* heap = get_thread_heap();
-	return heap_allocate_block(heap, size, 1);
+	return heap_allocate_block(heap, size, size);
 }
 
 extern inline void
@@ -3604,7 +3609,7 @@ rpcalloc(size_t num, size_t size) {
 	}
 #endif
 	heap_t* heap = get_thread_heap();
-	return heap_allocate_block(heap, total, 1);
+	return heap_allocate_block(heap, total, total);
 }
 
 extern inline RPMALLOC_ALLOCATOR void*
@@ -4391,7 +4396,7 @@ rpmalloc_heap_calloc(rpmalloc_heap_t* heap, size_t num, size_t size) {
 		return 0;
 	}
 #endif
-	return heap_allocate_block(heap, total, 1);
+	return heap_allocate_block(heap, total, total);
 }
 
 extern inline RPMALLOC_ALLOCATOR void*
