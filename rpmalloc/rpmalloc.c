@@ -2928,24 +2928,29 @@ heap_get_page(heap_t* heap, uint32_t size_class);
 static void
 block_deallocate(block_t* block);
 
-static page_t*
-heap_get_page_generic(heap_t* heap, uint32_t size_class) {
-	page_type_t page_type = get_page_type(size_class);
-	if (UNEXPECTED(global_thread.chain_count != 0))
-		thread_free_chain_flush(&global_thread);
-#if HUGE_CACHE_SLOT_COUNT
-	// The page refill path is taken regularly by any allocating thread, release cached huge mappings gone idle
-	huge_cache_collect_idle();
-#endif
+//! Check if other threads freed blocks into full pages of the heap, of any page type. The lists share the
+//  cache line of the heap that other threads write
+static inline int
+heap_has_thread_free(heap_t* heap) {
+	uintptr_t pending = atomic_load_explicit(&heap->thread_free[PAGE_SMALL], memory_order_relaxed) |
+	                    atomic_load_explicit(&heap->thread_free[PAGE_MEDIUM_SMALL], memory_order_relaxed) |
+	                    atomic_load_explicit(&heap->thread_free[PAGE_MEDIUM_LARGE], memory_order_relaxed) |
+	                    atomic_load_explicit(&heap->thread_free[PAGE_LARGE], memory_order_relaxed);
+	return (pending != 0);
+}
 
-	// Check if there is a free page from multithreaded deallocations
-	uintptr_t block_mt = atomic_load_explicit(&heap->thread_free[page_type], memory_order_relaxed);
-	if (UNEXPECTED(block_mt != 0)) {
+//! Collect the blocks other threads freed into full pages of the heap, of every page type. The pages become
+//  available again, or free once all their blocks are freed. Must not be called from the free path: the
+//  local frees here can free pages and run the decommit of free pages
+static NOINLINE void
+heap_collect_thread_free(heap_t* heap) {
+	for (uint32_t itype = 0; itype < 4; ++itype) {
+		if (!atomic_load_explicit(&heap->thread_free[itype], memory_order_relaxed))
+			continue;
 		// Claim the whole list in one exchange, concurrent pushes either land before (and are claimed) or after
-		block_mt = atomic_exchange_explicit(&heap->thread_free[page_type], 0, memory_order_acquire);
+		block_t* block = (block_t*)atomic_exchange_explicit(&heap->thread_free[itype], 0, memory_order_acquire);
 		// A thread free chain is pushed as a run of blocks of one page, each run is put in the page free list
 		// at once. The blocks belong to pages of this heap and are block starts
-		block_t* block = (void*)block_mt;
 		page_t* block_page = block ? span_get_page_from_block(block_get_span(block), block) : 0;
 		while (block) {
 			block_t* last = block;
@@ -2964,8 +2969,28 @@ heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 			block = next_block;
 			block_page = next_page;
 		}
-		// Retry after processing deferred thread frees
-		return heap_get_page(heap, size_class);
+	}
+}
+
+static page_t*
+heap_get_page_generic(heap_t* heap, uint32_t size_class) {
+	page_type_t page_type = get_page_type(size_class);
+	if (UNEXPECTED(global_thread.chain_count != 0))
+		thread_free_chain_flush(&global_thread);
+#if HUGE_CACHE_SLOT_COUNT
+	// The page refill path is taken regularly by any allocating thread, release cached huge mappings gone idle
+	huge_cache_collect_idle();
+#endif
+
+	// Collect the blocks other threads freed into full pages, of all page types and not only the type needed
+	// here, so a heap that stopped allocating a page type still reclaims and decommits those pages. Repeat
+	// while frees keep arriving and no page of the size class is available, as a loop rather than a
+	// recursion through heap_get_page
+	while (UNEXPECTED(heap_has_thread_free(heap))) {
+		heap_collect_thread_free(heap);
+		page_t* page = heap->page_available[size_class];
+		if (page)
+			return page;
 	}
 
 	// Check if there is a free page
@@ -4277,8 +4302,9 @@ rpmalloc_thread_finalize(void) {
 
 extern void
 rpmalloc_thread_collect(void) {
-	// Push the blocks this thread freed into other heaps, then decommit the free pages held above the
-	// retain count right away instead of waiting for the decommit delay
+	// Push the blocks this thread freed into other heaps and collect the blocks other threads freed into full
+	// pages, so the pages they emptied are free, then decommit the free pages held above the retain count right
+	// away instead of waiting for the decommit delay
 	thread_free_chain_flush(&global_thread);
 	heap_t* heap = get_thread_heap();
 	if (heap == global_heap_default)
@@ -4286,6 +4312,7 @@ rpmalloc_thread_collect(void) {
 #if HUGE_CACHE_SLOT_COUNT
 	huge_cache_collect(monotonic_time_ms());
 #endif
+	heap_collect_thread_free(heap);
 	for (uint32_t itype = 0; itype < 4; ++itype) {
 		if (global_page_free_overflow[itype] == 0xFFFFFFFFU)
 			continue;

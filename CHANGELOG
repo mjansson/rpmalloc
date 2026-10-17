@@ -19,6 +19,10 @@ rejects initial-exec thread local storage in a library loaded at runtime. Shared
 with a C library other than glibc use the local-dynamic TLS model, executables and glibc keep
 initial-exec, and the model can be overridden by defining TLS_MODEL.
 
+Blocks other threads free into full pages are collected for every page type whenever a thread needs
+a new page, and by rpmalloc_thread_collect, instead of only when the thread needs a new page of the
+same type. Pages of a type the thread no longer allocates are reclaimed and decommitted.
+
 calloc, its aligned and heap variants and reallocarray now always check the size multiplication for
 overflow and fail with ENOMEM, instead of only when argument validation is enabled.
 

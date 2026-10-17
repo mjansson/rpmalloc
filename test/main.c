@@ -3093,6 +3093,66 @@ test_huge_cache(void) {
 	return 0;
 }
 
+enum { COLLECT_BLOCKS = 48 * 16 };
+
+static void
+collect_free_thread(void* arg) {
+	void** block = arg;
+	rpmalloc_thread_initialize();
+	for (unsigned int i = 0; i < COLLECT_BLOCKS; ++i)
+		rpfree(block[i]);
+	rpmalloc_thread_finalize();
+	thread_exit(0);
+}
+
+static int
+test_collect_crossthread(void) {
+	// Blocks another thread frees into full pages wait in a list of the owning heap. rpmalloc_thread_collect
+	// collects them, so the pages they empty are free and decommitted even though the owner does not
+	// allocate that page type again. Blocks served from the recommitted pages are still zeroed by rpcalloc.
+	rpmalloc_initialize(0);
+	const size_t size = 4000;  // 4KiB size class, 15 blocks per 64KiB small page, about 50 pages
+	static void* block[COLLECT_BLOCKS];
+	for (unsigned int i = 0; i < COLLECT_BLOCKS; ++i) {
+		block[i] = rpmalloc(size);
+		if (!block[i])
+			return test_fail("Allocation failed");
+		memset(block[i], 0xcd, size);
+	}
+
+	rpmalloc_global_statistics_t before;
+	rpmalloc_global_statistics(&before);
+	thread_arg targ;
+	targ.fn = collect_free_thread;
+	targ.arg = block;
+	if (thread_join(thread_run(&targ)) != 0)
+		return test_fail("Free thread failed");
+	rpmalloc_thread_collect();
+	rpmalloc_global_statistics_t after;
+	rpmalloc_global_statistics(&after);
+	const rpmalloc_config_t* config = rpmalloc_config();
+	int can_decommit = !config->disable_decommit && (config->page_size < (64 * 1024));
+	if (can_decommit && before.mapped && (after.decommitted <= before.decommitted))
+		return test_fail("Pages emptied by another thread not decommitted after thread collect");
+
+	for (unsigned int i = 0; i < COLLECT_BLOCKS; ++i) {
+		unsigned char* ptr = rpcalloc(1, size);
+		if (!ptr)
+			return test_fail("Allocation failed");
+		for (size_t ibyte = 0; ibyte < size; ++ibyte) {
+			if (ptr[ibyte] != 0)
+				return test_fail("Zeroed allocation not zeroed after collect");
+		}
+		block[i] = ptr;
+	}
+	for (unsigned int i = 0; i < COLLECT_BLOCKS; ++i)
+		rpfree(block[i]);
+
+	rpmalloc_finalize();
+	printf("Cross thread collect tests passed\n");
+	return 0;
+}
+
 extern int
 test_malloc(int print_log);
 
@@ -3191,6 +3251,8 @@ test_run(int argc, char** argv) {
 	if (test_page_decommit())
 		return -1;
 	if (test_huge_cache())
+		return -1;
+	if (test_collect_crossthread())
 		return -1;
 	printf("All tests passed\n");
 	return 0;
