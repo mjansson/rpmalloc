@@ -97,11 +97,22 @@ test_alloc(void) {
 
 	rpmalloc_initialize(0);
 
-	void* zero_alloc = rpmalloc(0);
-	size_t small_granularity = rpmalloc_usable_size(zero_alloc);
-	if (small_granularity != 16)
+	// Sizes up to 8 bytes use the 8 byte tiny class, larger sizes the 16 byte granularity
+	for (size_t size = 0; size <= 8; ++size) {
+		void* tiny_alloc = rpmalloc(size);
+		if (rpmalloc_usable_size(tiny_alloc) != 8)
+			return test_fail("Unexpected tiny block size");
+		if ((uintptr_t)tiny_alloc & 7)
+			return test_fail("Tiny block not aligned");
+		rpfree(tiny_alloc);
+	}
+	size_t small_granularity = 16;
+	void* granularity_alloc = rpmalloc(9);
+	if (rpmalloc_usable_size(granularity_alloc) != small_granularity)
 		return test_fail("Unexpected block granularity");
-	rpfree(zero_alloc);
+	if ((uintptr_t)granularity_alloc & (small_granularity - 1))
+		return test_fail("Block not aligned to granularity");
+	rpfree(granularity_alloc);
 
 	for (id = 0; id < 30000; ++id)
 		data[id] = (char)(id % 139 + id % 17);
@@ -416,6 +427,103 @@ test_alloc(void) {
 extern void*
 rpreallocarray(void* ptr, size_t count, size_t size);
 #endif
+
+static int
+test_tiny_check(void* ptr, size_t size, size_t alignment) {
+	if (!ptr)
+		return test_fail("Tiny aligned allocation failed");
+	if ((uintptr_t)ptr & (alignment - 1))
+		return test_fail("Tiny aligned allocation not aligned");
+	if (rpmalloc_usable_size(ptr) < size)
+		return test_fail("Tiny aligned allocation usable size too small");
+	return 0;
+}
+
+//! Allocate a block of the 8 byte tiny class that is not 16 byte aligned
+static void*
+test_tiny_misaligned(void) {
+	void* aligned[64];
+	void* found = 0;
+	size_t count = 0;
+	while (!found && (count < 64)) {
+		void* block = rpmalloc(8);
+		if ((uintptr_t)block & 15)
+			found = block;
+		else
+			aligned[count++] = block;
+	}
+	for (size_t iblock = 0; iblock < count; ++iblock)
+		rpfree(aligned[iblock]);
+	return found;
+}
+
+static int
+test_tiny_alloc(void) {
+	// Blocks of the 8 byte tiny class are only 8 byte aligned. Every aligned entry point must hand out a
+	// block of at least the alignment size for small requests with a larger alignment
+	rpmalloc_initialize(0);
+	for (size_t size = 0; size <= 32; ++size) {
+		for (size_t alignment = 1; alignment <= 32; alignment <<= 1) {
+			void* ptr = rpaligned_alloc(alignment, size);
+			if (test_tiny_check(ptr, size, alignment))
+				return -1;
+			rpfree(ptr);
+			ptr = rpmemalign(alignment, size);
+			if (test_tiny_check(ptr, size, alignment))
+				return -1;
+			rpfree(ptr);
+			ptr = 0;
+			if (rpposix_memalign(&ptr, alignment, size) || test_tiny_check(ptr, size, alignment))
+				return test_fail("Tiny posix_memalign failed");
+			rpfree(ptr);
+			unsigned char* zero = rpaligned_calloc(alignment, 1, size);
+			if (test_tiny_check(zero, size, alignment))
+				return -1;
+			for (size_t ibyte = 0; ibyte < size; ++ibyte) {
+				if (zero[ibyte])
+					return test_fail("Tiny aligned calloc not zero");
+			}
+			rpfree(zero);
+
+			// Realloc of a tiny block that is not 16 byte aligned to a larger alignment moves it, preserving
+			// the content
+			unsigned char* tiny = test_tiny_misaligned();
+			if (!tiny)
+				return test_fail("Tiny blocks are not 8 byte granular");
+			size_t tiny_size = size < 8 ? size : 8;
+			memset(tiny, 0x5a, tiny_size);
+			void* grow = rpaligned_realloc(tiny, alignment, size, 0, RPMALLOC_GROW_OR_FAIL);
+			if (grow && test_tiny_check(grow, size, alignment))
+				return -1;
+			if (grow)
+				tiny = grow;
+			unsigned char* moved = rpaligned_realloc(tiny, alignment, size, 0, 0);
+			if (test_tiny_check(moved, size, alignment))
+				return -1;
+			for (size_t ibyte = 0; ibyte < tiny_size; ++ibyte) {
+				if (moved[ibyte] != 0x5a)
+					return test_fail("Tiny aligned realloc did not preserve content");
+			}
+			rpfree(moved);
+		}
+	}
+
+	// Plain realloc moves a tiny block to the 16 byte class once it outgrows it
+	unsigned char* ptr = rpmalloc(8);
+	memset(ptr, 0x3c, 8);
+	ptr = rprealloc(ptr, 12);
+	if ((rpmalloc_usable_size(ptr) != 16) || ((uintptr_t)ptr & 15))
+		return test_fail("Tiny realloc did not move to the 16 byte class");
+	for (size_t ibyte = 0; ibyte < 8; ++ibyte) {
+		if (ptr[ibyte] != 0x3c)
+			return test_fail("Tiny realloc did not preserve content");
+	}
+	rpfree(ptr);
+
+	rpmalloc_finalize();
+	printf("Tiny block tests passed\n");
+	return 0;
+}
 
 static int
 test_mul_overflow(void) {
@@ -1821,6 +1929,8 @@ test_run(int argc, char** argv) {
 		}
 	}
 	if (test_alloc())
+		return -1;
+	if (test_tiny_alloc())
 		return -1;
 	if (test_realloc())
 		return -1;

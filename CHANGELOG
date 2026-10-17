@@ -1,5 +1,10 @@
 2.0.2
 
+Requests of up to 8 bytes use a new 8 byte size class instead of a 16 byte block. Its blocks are
+8-byte aligned, which suits any object of that size, and larger requests keep the 16 byte
+granularity and alignment. Aligned allocations with an alignment of 16 bytes and a smaller size
+still return 16 byte aligned blocks.
+
 calloc, its aligned and heap variants and reallocarray now always check the size multiplication for
 overflow and fail with ENOMEM, instead of only when argument validation is enabled.
 

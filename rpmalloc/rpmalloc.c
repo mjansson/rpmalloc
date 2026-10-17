@@ -206,6 +206,11 @@ madvise(caddr_t, size_t, int);
 
 #define SMALL_GRANULARITY 16
 
+//! Block size of the smallest size class, used for requests of up to this size. Its blocks are aligned to
+//  their size only, which suits any object that fits (C23 7.24.3, C++ [basic.stc.dynamic.allocation]).
+//  Larger requests keep the 16 byte granularity and alignment
+#define TINY_BLOCK_SIZE 8
+
 #define SMALL_BLOCK_SIZE_LIMIT (4 * 1024)
 #define MEDIUM_SMALL_BLOCK_SIZE_LIMIT (32 * 1024)
 #define MEDIUM_LARGE_BLOCK_SIZE_LIMIT (256 * 1024)
@@ -715,6 +720,8 @@ static rpmalloc_config_t global_config = {0};
 static uintptr_t global_main_thread_id;
 
 //! Size classes
+#define TCLASS \
+	{ TINY_BLOCK_SIZE, (SMALL_PAGE_SIZE - PAGE_HEADER_SIZE) / TINY_BLOCK_SIZE }
 #define SCLASS(n) \
 	{ (n * SMALL_GRANULARITY), (SMALL_PAGE_SIZE - PAGE_HEADER_SIZE) / (n * SMALL_GRANULARITY) }
 #define MSCLASS(n) \
@@ -724,7 +731,7 @@ static uintptr_t global_main_thread_id;
 #define LCLASS(n) \
 	{ (n * SMALL_GRANULARITY), (LARGE_PAGE_SIZE - PAGE_HEADER_SIZE) / (n * SMALL_GRANULARITY) }
 static const size_class_t global_size_class[SIZE_CLASS_COUNT] = {
-    SCLASS(1),      SCLASS(1),      SCLASS(2),      SCLASS(3),      SCLASS(4),      SCLASS(5),      SCLASS(6),
+    TCLASS,         SCLASS(1),      SCLASS(2),      SCLASS(3),      SCLASS(4),      SCLASS(5),      SCLASS(6),
     SCLASS(7),      SCLASS(8),      SCLASS(9),      SCLASS(10),     SCLASS(11),     SCLASS(12),     SCLASS(13),
     SCLASS(14),     SCLASS(15),     SCLASS(16),     SCLASS(17),     SCLASS(18),     SCLASS(19),     SCLASS(20),
     SCLASS(21),     SCLASS(22),     SCLASS(23),     SCLASS(24),     SCLASS(25),     SCLASS(26),     SCLASS(27),
@@ -889,10 +896,14 @@ get_thread_heap(void) {
 	return global_thread_heap;
 }
 
-//! Get the size class from given size in bytes for tiny blocks (below 16 times the minimum granularity)
+//! Get the size class from given size in bytes for tiny blocks (up to 64 times the minimum granularity).
+//  Sizes up to the tiny block size map to class 0, larger sizes to their number of granularity units. The
+//  mask compiles to a compare and conditional select. GCC turns the equivalent conditional expression into a
+//  branch that duplicates the rest of the allocation fast path
 static inline uint32_t
 get_size_class_tiny(size_t size) {
-	return (((uint32_t)size + (SMALL_GRANULARITY - 1)) / SMALL_GRANULARITY);
+	uint32_t size_class = ((uint32_t)size + (SMALL_GRANULARITY - 1)) / SMALL_GRANULARITY;
+	return size_class & (0U - (uint32_t)(size > TINY_BLOCK_SIZE));
 }
 
 //! Get the size class from given size in bytes
@@ -902,8 +913,9 @@ get_size_class(size_t size) {
 	// For sizes up to 64 times the minimum granularity (i.e 1024 bytes) the size class is equal to number of such
 	// blocks
 	if (size <= (SMALL_GRANULARITY * 64)) {
-		rpmalloc_assert(global_size_class[minblock_count].block_size >= size, "Size class misconfiguration");
-		return (uint32_t)(minblock_count ? minblock_count : 1);
+		uint32_t class_idx = get_size_class_tiny(size);
+		rpmalloc_assert(global_size_class[class_idx].block_size >= size, "Size class misconfiguration");
+		return class_idx;
 	}
 	--minblock_count;
 	// Calculate position of most significant bit, since minblock_count now guaranteed to be > 64 this position is
@@ -2625,8 +2637,13 @@ heap_allocate_block(heap_t* heap, size_t size, unsigned int zero) {
 
 static RPMALLOC_ALLOCATOR void*
 heap_allocate_block_aligned(heap_t* heap, size_t alignment, size_t size, unsigned int zero) {
-	if (alignment <= SMALL_GRANULARITY)
+	if (alignment <= SMALL_GRANULARITY) {
+		// Blocks of the tiny class are only aligned to the tiny block size, a smaller request with a larger
+		// alignment takes a block of the alignment size
+		if (size < alignment)
+			size = alignment;
 		return heap_allocate_block(heap, size, zero);
+	}
 
 #if ENABLE_VALIDATE_ARGS
 	if ((size + alignment) < size) {
@@ -2811,8 +2828,13 @@ heap_reallocate_block(heap_t* heap, void* block, size_t size, size_t old_size, u
 static void*
 heap_reallocate_block_aligned(heap_t* heap, void* block, size_t alignment, size_t size, size_t old_size,
                               unsigned int flags) {
-	if (alignment <= SMALL_GRANULARITY)
+	if (alignment <= SMALL_GRANULARITY) {
+		// As for allocation, a request smaller than the alignment needs a block of at least the alignment
+		// size, the tiny class is only aligned to the tiny block size
+		if (size < alignment)
+			size = alignment;
 		return heap_reallocate_block(heap, block, size, old_size, flags);
+	}
 
 	int no_alloc = !!(flags & RPMALLOC_GROW_OR_FAIL);
 	size_t usable_size = (block ? block_usable_size(block) : 0);

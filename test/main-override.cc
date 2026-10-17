@@ -83,7 +83,7 @@ test_malloc(int print_log) {
 	p = new int;
 	if (!p)
 		return test_fail("new failed");
-	if (rpmalloc_usable_size(p) != 16)
+	if (rpmalloc_usable_size(p) != 8)
 		return test_fail("usable size invalid (2)");
 	delete static_cast<int*>(p);
 

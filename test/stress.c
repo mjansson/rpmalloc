@@ -55,6 +55,7 @@
 #endif
 
 #define BLOCK_MAGIC 0x52504d41u  // 'RPMA'
+#define TINY_MAGIC 0x52505431u   // 'RPT1'
 #define DEAD_MAGIC 0xDEADBEEFu
 #define FILL_CAP 256u            // bytes of payload pattern written/verified per block
 #define LOCAL_RING 64u           // blocks kept live per thread before recycling locally
@@ -66,9 +67,16 @@ typedef struct block_header_t {
 	uint64_t size;
 } block_header_t;
 
+// Blocks smaller than the header carry a tiny record instead: the tiny magic and a value derived from the
+// block address, so a block handed out twice or overlapping another block is still caught.
+typedef struct tiny_header_t {
+	uint32_t magic;
+	uint32_t check;
+} tiny_header_t;
+
 // Size bands covering every rpmalloc size type. {min, max} in bytes.
 static const size_t size_band[][2] = {
-    {16, 64},                                // tiny
+    {8, 64},                                 // tiny
     {65, 1024},                              // small
     {1025, 16 * 1024},                       // medium-small
     {16 * 1024 + 1, 256 * 1024},             // medium-large
@@ -136,8 +144,33 @@ pick_size(uint32_t* random_state) {
 	return min_size + (size_t)(random_next(random_state) % (uint32_t)(max_size - min_size + 1));
 }
 
+static uint32_t
+tiny_check(const void* block) {
+	uint64_t address = (uint64_t)(uintptr_t)block;
+	return (uint32_t)(((address ^ (address >> 32)) * 0x9e3779b97f4a7c15ULL) >> 32);
+}
+
+// Abort unless the block has the alignment rpmalloc guarantees: 8 bytes for the tiny class (up to 8 bytes),
+// 16 bytes above that, or the explicitly requested alignment.
+static void
+block_check_alignment(const void* block, size_t size, size_t alignment) {
+	size_t required = (size > 8) ? 16 : 8;
+	if (alignment > required)
+		required = alignment;
+	if ((uintptr_t)block & (required - 1)) {
+		fprintf(stderr, "STRESS FAIL: block of %zu bytes at %p not aligned to %zu\n", size, block, required);
+		abort();
+	}
+}
+
 static void
 block_fill(void* block, size_t size, uint32_t seed) {
+	if (size < sizeof(block_header_t)) {
+		tiny_header_t* tiny = (tiny_header_t*)block;
+		tiny->magic = TINY_MAGIC;
+		tiny->check = tiny_check(block);
+		return;
+	}
 	block_header_t* header = (block_header_t*)block;
 	header->magic = BLOCK_MAGIC;
 	header->seed = seed;
@@ -152,6 +185,15 @@ block_fill(void* block, size_t size, uint32_t seed) {
 // Verify and poison a block. Aborts the process on any corruption.
 static void
 block_check(void* block) {
+	tiny_header_t* tiny = (tiny_header_t*)block;
+	if (tiny->magic == TINY_MAGIC) {
+		if (tiny->check != tiny_check(block)) {
+			fprintf(stderr, "STRESS FAIL: tiny block corruption at %p\n", block);
+			abort();
+		}
+		tiny->magic = DEAD_MAGIC;
+		return;
+	}
 	block_header_t* header = (block_header_t*)block;
 	if (header->magic != BLOCK_MAGIC) {
 		fprintf(stderr, "STRESS FAIL: bad magic 0x%08x (double free or corruption) at %p\n", header->magic, block);
@@ -185,9 +227,10 @@ block_alloc(uint32_t* random_state) {
 	size_t size = pick_size(random_state);
 	uint32_t seed = random_next(random_state);
 	void* block;
+	size_t alignment = 0;
 	// Occasionally request extra alignment (unless disabled for diagnostics).
 	if (use_aligned_alloc && (seed & 7u) == 0) {
-		size_t alignment = (size_t)1 << (4 + (seed % 5));  // 16..256
+		alignment = (size_t)1 << (4 + (seed % 5));  // 16..256
 		block = rpaligned_alloc(alignment, size);
 	} else {
 		block = rpmalloc(size);
@@ -196,6 +239,7 @@ block_alloc(uint32_t* random_state) {
 		fprintf(stderr, "STRESS FAIL: allocation of %zu bytes failed\n", size);
 		abort();
 	}
+	block_check_alignment(block, size, alignment);
 	block_fill(block, size, seed);
 	atomic_fetch_add_explicit(&total_allocations, 1, memory_order_relaxed);
 	atomic_fetch_add_explicit(&total_bytes, (unsigned long long)size, memory_order_relaxed);
@@ -236,6 +280,7 @@ worker(void* worker_index_arg) {
 					fprintf(stderr, "STRESS FAIL: realloc to %zu failed\n", new_size);
 					abort();
 				}
+				block_check_alignment(resized, new_size, 0);
 				block_fill(resized, new_size, random_next(&random_state));
 				atomic_fetch_add_explicit(&total_reallocations, 1, memory_order_relaxed);
 				block = resized;
