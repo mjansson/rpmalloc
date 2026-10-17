@@ -410,16 +410,19 @@ DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved);
 
 extern __declspec(dllexport) BOOL WINAPI
 DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
-	(void)sizeof(reserved);
 	(void)sizeof(instance);
-	if (reason == DLL_PROCESS_ATTACH)
+	if (reason == DLL_PROCESS_ATTACH) {
 		rpmalloc_initialize(0);
-	else if (reason == DLL_PROCESS_DETACH)
-		rpmalloc_finalize();
-	else if (reason == DLL_THREAD_ATTACH)
+	} else if (reason == DLL_PROCESS_DETACH) {
+		// The C runtime can allocate later in the unload, and threads are already terminated if reserved is set
+		global_module_detached = 1;
+		if (!reserved)
+			rpmalloc_finalize();
+	} else if (reason == DLL_THREAD_ATTACH) {
 		rpmalloc_thread_initialize();
-	else if (reason == DLL_THREAD_DETACH)
+	} else if (reason == DLL_THREAD_DETACH) {
 		rpmalloc_thread_finalize();
+	}
 	return TRUE;
 }
 

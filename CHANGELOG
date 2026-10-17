@@ -1,5 +1,19 @@
 2.0.2
 
+Unloading a DLL or shared object that has rpmalloc compiled in no longer leaves the thread exit
+destructor (a fiber local storage slot on Windows, a pthread key elsewhere) registered in unmapped
+code, which crashed the next exit of a thread that had allocated through the module, and on Windows
+the process exit. The destructor is released when the module is unloaded, by a TLS callback in
+Windows static builds (MSVC and MinGW), DllMain in the Windows dynamic library build and a module
+destructor on other platforms, and is not registered again by allocations made during the rest of
+the unload. Memory mapped by the module is only unmapped if rpmalloc_finalize is called with
+unmap_on_finalize enabled before the unload. The fiber local storage callback now uses the NTAPI
+calling convention, as required on 32-bit Windows.
+
+rpmalloc_finalize does nothing if the allocator is not initialized, instead of freeing a thread
+destructor slot or key it does not hold. The DllMain of the Windows dynamic library build no longer
+finalizes the allocator when the process is terminating.
+
 calloc, its aligned and heap variants and reallocarray now always check the size multiplication for
 overflow and fail with ENOMEM, instead of only when argument validation is enabled.
 
