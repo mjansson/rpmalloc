@@ -525,6 +525,10 @@ struct block_t {
 	block_t* next;
 };
 
+//! Fast free heap of a page whose frees take the generic path. Heaps are HEAP_ALIGNMENT aligned, so it
+//  matches neither a heap nor the null heap of a thread without one
+#define PAGE_HEAP_FAST_GENERIC ((uintptr_t)1)
+
 //! A page contains blocks of a given size
 struct page_t {
 	//! Size class of blocks
@@ -567,11 +571,10 @@ struct page_t {
 	block_t* local_free;
 	//! Owning heap
 	heap_t* heap;
-	//! Owning heap while the page takes the fast free path, null for huge, full or aligned block pages,
-	//  so the free fast path checks ownership and eligibility with a single compare. Other threads read it
-	//  unsynchronized when freeing into the page, but compare it against their own heap, which it never
-	//  holds, so they take the generic path whatever they read (see test/tsan-suppressions.txt)
-	heap_t* heap_fast;
+	//! Owning heap while the page takes the fast free path, PAGE_HEAP_FAST_GENERIC for huge, full or aligned
+	//  block pages, so the free fast path checks ownership and eligibility with a single compare. Threads
+	//  freeing into the page read it while the owner updates it, and never find their own heap in it
+	atomic_uintptr_t heap_fast;
 	//! Next page in list
 	page_t* next;
 	//! Previous page in list
@@ -1430,7 +1433,7 @@ page_full_to_available(page_t* page) {
 	heap->page_available[page->size_class] = page;
 	page->is_full = 0;
 	if (page->has_aligned_block == 0)
-		page->heap_fast = heap;
+		atomic_store_explicit(&page->heap_fast, (uintptr_t)heap, memory_order_relaxed);
 	// Other threads do not modify the token of a page flagged full, it holds only the flag
 	atomic_store_explicit(&page->thread_free, 0, memory_order_release);
 }
@@ -1464,7 +1467,7 @@ page_available_to_full(page_t* page) {
 	}
 	page->is_full = 1;
 	page->is_zero = 0;
-	page->heap_fast = 0;
+	atomic_store_explicit(&page->heap_fast, PAGE_HEAP_FAST_GENERIC, memory_order_relaxed);
 }
 
 static inline void
@@ -1947,7 +1950,7 @@ block_deallocate_heap(block_t* block, heap_t* owned_heap) {
 
 	// Optimized path for a free by the heap owner with non-huge block in page that is not full and has
 	// no aligned blocks, all of which heap_fast encodes by matching the owned heap
-	if (EXPECTED(page->heap_fast == owned_heap)) {
+	if (EXPECTED(atomic_load_explicit(&page->heap_fast, memory_order_relaxed) == (uintptr_t)owned_heap)) {
 		block->next = page->local_free;
 		page->local_free = block;
 		_rpmalloc_stat_add_free(page->heap, page->size_class, 1);
@@ -2276,7 +2279,7 @@ heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page) {
 	page->local_reuse = 0;
 	page->remote_fed = 0;
 	page->heap = heap;
-	page->heap_fast = heap;
+	atomic_store_explicit(&page->heap_fast, (uintptr_t)heap, memory_order_relaxed);
 	page_t* head = heap->page_available[size_class];
 	page->next = head;
 	page->prev = head ? head->prev : page;
@@ -2536,7 +2539,7 @@ heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
 		}
 		span->page.heap = heap;
 		span->page.is_full = 1;
-		span->page.heap_fast = 0;
+		atomic_store_explicit(&span->page.heap_fast, PAGE_HEAP_FAST_GENERIC, memory_order_relaxed);
 		span->page.page_type = PAGE_HUGE;
 #if ENABLE_STATISTICS
 		size_t huge_alloc_size = (size_t)span->page_count * span->page_size;
@@ -2664,7 +2667,7 @@ heap_allocate_block_aligned(heap_t* heap, size_t alignment, size_t size, unsigne
 		span_t* span = block_get_span(block);
 		page_t* page = span_get_page_from_block(span, block);
 		page->has_aligned_block = 1;
-		page->heap_fast = 0;
+		atomic_store_explicit(&page->heap_fast, PAGE_HEAP_FAST_GENERIC, memory_order_relaxed);
 	}
 	return block;
 }
@@ -3736,9 +3739,9 @@ rpmalloc_heap_aligned_realloc(rpmalloc_heap_t* heap, void* ptr, size_t alignment
 
 void
 rpmalloc_heap_free(rpmalloc_heap_t* heap, void* ptr) {
-	// First class heaps have no owner thread, the caller owns the heap. A null heap must not reach the
-	// fast path compare, it would match the pages that take the generic path
-	block_deallocate_heap(ptr, heap ? heap : get_thread_heap());
+	// A first class heap without an owner thread is owned by the caller. A heap that is the current heap of
+	// a thread is owned by that thread only, so it and a null heap compare against the calling thread heap
+	block_deallocate_heap(ptr, (heap && !heap->owner_thread) ? heap : get_thread_heap());
 }
 
 //! Free all memory allocated by the heap

@@ -10,9 +10,3 @@
 race:heap_allocate_block_aligned
 race:span_deallocate_block
 race:page_put_thread_free_block
-#
-# page_t heap_fast is written by the owner thread on page state changes and read
-# by cross-thread frees, which compare it against their own heap. The owner only
-# stores its own heap or null, so a remote reader takes the generic path whatever
-# value it reads. See struct page_t in rpmalloc.c.
-race:block_deallocate_heap

@@ -1214,6 +1214,99 @@ test_first_class_heaps(void) {
 	return 0;
 }
 
+#if RPMALLOC_FIRST_CLASS_HEAPS
+typedef struct heapless_free_arg_t {
+	void* aligned_block;
+	void* huge_block;
+} heapless_free_arg_t;
+
+static void
+heapless_free_thread(void* argp) {
+	heapless_free_arg_t* arg = argp;
+	// Without a current heap every free is a cross-thread free into pages of other heaps
+	rpmalloc_thread_initialize();
+	rpmalloc_heap_thread_set_current(0);
+	rpfree(arg->aligned_block);
+	rpfree(arg->huge_block);
+}
+#endif
+
+static int
+test_heapless_free(void) {
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	// Blocks freed by a thread without a heap must take the generic cross-thread path. An aligned block
+	// pushed as is to the local free list of its page would later be handed out from inside the block,
+	// overlapping the next block, and a huge block would never be released
+	enum { BLOCK_COUNT = 512 };
+	const size_t block_size = 556;
+	void* blocks[BLOCK_COUNT];
+	unsigned int block_used = 0;
+	heapless_free_arg_t arg = {0};
+
+	rpmalloc_initialize(0);
+
+	rpmalloc_global_statistics_t stats;
+	rpmalloc_global_statistics(&stats);
+	size_t huge_alloc = stats.huge_alloc;
+
+	// Plain blocks of the size class the aligned block comes from keep its page in use. Retry until the
+	// aligned block starts inside its block, which is what marks the page as holding aligned blocks
+	for (unsigned int iblock = 0; iblock < 8; ++iblock)
+		blocks[block_used++] = rpmalloc(block_size);
+	size_t plain_usable = rpmalloc_usable_size(blocks[0]);
+	for (unsigned int itry = 0; (itry < 16) && !arg.aligned_block; ++itry) {
+		void* block = rpaligned_alloc(256, block_size - 256);
+		if (!block)
+			return test_fail("Aligned allocation failed");
+		if (rpmalloc_usable_size(block) < plain_usable)
+			arg.aligned_block = block;
+		else
+			blocks[block_used++] = block;
+		blocks[block_used++] = rpmalloc(block_size);
+	}
+	if (!arg.aligned_block)
+		return test_fail("Aligned allocation never started inside its block");
+	arg.huge_block = rpmalloc(4 * 1024 * 1024);
+	if (!arg.huge_block)
+		return test_fail("Huge allocation failed");
+
+	thread_arg targ;
+	targ.fn = heapless_free_thread;
+	targ.arg = &arg;
+	uintptr_t thread = thread_run(&targ);
+	thread_join(thread);
+
+	// Fill the page the aligned block was freed into, and more, then check that no blocks overlap
+	while (block_used < BLOCK_COUNT) {
+		blocks[block_used] = rpmalloc(block_size);
+		if (!blocks[block_used])
+			return test_fail("Allocation failed after free from thread without heap");
+		++block_used;
+	}
+	for (unsigned int iblock = 0; iblock < block_used; ++iblock)
+		memset(blocks[iblock], (int)(iblock & 0xFF), block_size);
+	for (unsigned int iblock = 0; iblock < block_used; ++iblock) {
+		const unsigned char* data = blocks[iblock];
+		for (size_t ibyte = 0; ibyte < block_size; ++ibyte) {
+			if (data[ibyte] != (unsigned char)(iblock & 0xFF))
+				return test_fail("Block overlap after free from thread without heap");
+		}
+	}
+
+	rpmalloc_global_statistics(&stats);
+	if (stats.huge_alloc != huge_alloc)
+		return test_fail("Huge block freed from thread without heap was not released");
+
+	for (unsigned int iblock = 0; iblock < block_used; ++iblock)
+		rpfree(blocks[iblock]);
+
+	rpmalloc_finalize();
+
+	printf("Heapless free tests passed\n");
+#endif
+	return 0;
+}
+
 static int
 test_large_pages(void) {
 	int ret = 0;
@@ -1758,6 +1851,8 @@ test_run(int argc, char** argv) {
 	if (test_transparent_huge_pages())
 		return -1;
 	if (test_first_class_heaps())
+		return -1;
+	if (test_heapless_free())
 		return -1;
 	if (test_named_pages())
 		return -1;
