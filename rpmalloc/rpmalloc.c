@@ -2453,7 +2453,7 @@ heap_pop_local_free(heap_t* heap, uint32_t size_class) {
 
 //! Generic allocation path from heap pages, spans or new mapping
 static NOINLINE RPMALLOC_ALLOCATOR void*
-heap_allocate_block_small_to_large(heap_t* heap, uint32_t size_class, unsigned int zero) {
+heap_allocate_block_small_to_large_generic(heap_t* heap, uint32_t size_class, unsigned int zero) {
 	page_t* page;
 	uint32_t retain = PAGE_FULL_RETAIN;
 	while ((page = heap_get_page(heap, size_class)) != 0) {
@@ -2480,6 +2480,37 @@ heap_allocate_block_small_to_large(heap_t* heap, uint32_t size_class, unsigned i
 		}
 	}
 	return 0;
+}
+
+//! Refill the empty heap free list of a size class and allocate a block. In the common case the head
+//  available page holds blocks freed by the owner thread in its local free list, the first is returned
+//  and the rest become the heap free list. That case needs no stack frame, all others (including any
+//  zeroed allocation, whose memset call would need one) take the out of line generic path
+static NOINLINE RPMALLOC_ALLOCATOR void*
+heap_allocate_block_small_to_large(heap_t* heap, uint32_t size_class, unsigned int zero) {
+	rpmalloc_assert(!heap->local_free[size_class], "Heap free list not empty on refill");
+	if (UNEXPECTED(zero))
+		return heap_allocate_block_small_to_large_generic(heap, size_class, zero);
+	page_t* page = heap->page_available[size_class];
+	if (EXPECTED(page != 0)) {
+		block_t* block = page->local_free;
+		if (EXPECTED(block != 0)) {
+			rpmalloc_assert(page->heap == heap, "Available page owner mismatch");
+			rpmalloc_assert(page->block_used < page->block_initialized, "Page block use counter out of sync");
+			// Fresh blocks never stay in the page local free list across refills, so these were freed by
+			// the owner thread. The flag is set once per page, a test avoids a store on every refill
+			if (UNEXPECTED(!page->local_reuse))
+				page->local_reuse = 1;
+			// Every initialized block not counted as used is in the page local free list, so once the
+			// list is taken all initialized blocks are in use
+			heap->local_free[size_class] = block->next;
+			page->local_free = 0;
+			page->block_used = page->block_initialized;
+			_rpmalloc_stat_inc_alloc(heap, size_class);
+			return block;
+		}
+	}
+	return heap_allocate_block_small_to_large_generic(heap, size_class, zero);
 }
 
 //! Generic allocation path from heap pages, spans or new mapping
