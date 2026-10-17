@@ -1193,6 +1193,12 @@ os_mcommit(void* address, size_t size) {
 		rpmalloc_assert(0, "Failed to commit virtual memory block");
 	}
 	*/
+#if defined(MADV_FREE_REUSE)
+	// Pages decommitted with MADV_FREE_REUSABLE must be marked for reuse to be accounted to the process
+	// again. Failures are ignored, the pages are accessible either way
+	while ((madvise(address, size, MADV_FREE_REUSE) == -1) && (errno == EAGAIN))
+		errno = 0;
+#endif
 #endif
 #if ENABLE_STATISTICS
 	size_t page_count = size / global_config.page_size;
@@ -1239,13 +1245,16 @@ os_mdecommit(void* address, size_t size) {
 		rpmalloc_assert(0, "Failed to decommit virtual memory block");
 	}
 	*/
-#if defined(MADV_DONTNEED)
-	if (madvise(address, size, MADV_DONTNEED)) {
-#elif defined(MADV_FREE_REUSABLE)
+#if defined(MADV_FREE_REUSABLE)
+	// Apple platforms only deactivate pages given MADV_DONTNEED, which neither lowers the resident size
+	// nor the memory footprint of the process, while touching the pages again still page faults.
+	// Reusable pages are taken off the footprint right away and are reclaimed under memory pressure
 	int ret;
 	while ((ret = madvise(address, size, MADV_FREE_REUSABLE)) == -1 && (errno == EAGAIN))
 		errno = 0;
 	if ((ret == -1) && (errno != 0)) {
+#elif defined(MADV_DONTNEED)
+	if (madvise(address, size, MADV_DONTNEED)) {
 #elif defined(MADV_PAGEOUT)
 	if (madvise(address, size, MADV_PAGEOUT)) {
 #elif defined(MADV_FREE)
