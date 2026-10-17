@@ -691,6 +691,9 @@ struct heap_t {
 	//! Time (monotonic ms) the free committed page count first went over the overflow threshold
 	//  for each page type, zero while below the threshold
 	uint64_t page_free_overflow_ms[4];
+	//! Size decommitted from free pages of other page types beyond what committed pages needed, in small
+	//  page units, used by the next commits before decommitting more
+	uint32_t page_commit_credit;
 	//! Available partially initialized spans for each page type
 	span_t* span_partial[4];
 	//! Spans in full use for each page type
@@ -848,6 +851,11 @@ static uint32_t global_page_free_overflow[5] = {16, 8, 4, 2, 0};
 //! Number of pages to retain when free page threshold overflows
 static uint32_t global_page_free_retain[5] = {4, 2, 1, 1, 0};
 
+//! Size of each page type in small page units
+static const uint32_t global_page_units[4] = {1, MEDIUM_SMALL_PAGE_SIZE / SMALL_PAGE_SIZE,
+                                              MEDIUM_LARGE_PAGE_SIZE / SMALL_PAGE_SIZE,
+                                              LARGE_PAGE_SIZE / SMALL_PAGE_SIZE};
+
 //! OS huge page support
 static int os_huge_pages;
 //! OS transparent huge page support (advise mappings to be huge page backed without
@@ -941,6 +949,18 @@ heap_release_free_pages(heap_t* heap);
 
 static NOINLINE void
 heap_page_free_overflow(heap_t* heap, uint32_t page_type);
+
+static NOINLINE void
+heap_page_free_overflow_other(heap_t* heap, uint32_t page_type);
+
+//! Check if the decommit delay of free pages of another page type than the given one is running
+static inline int
+heap_page_free_overflow_other_pending(heap_t* heap, uint32_t page_type) {
+	uint64_t pending = 0;
+	for (uint32_t itype = 0; itype < 4; ++itype)
+		pending |= (itype != page_type) ? heap->page_free_overflow_ms[itype] : 0;
+	return (pending != 0);
+}
 
 //! Coarse monotonic time in milliseconds (no syscall on Linux/vDSO)
 static inline uint64_t
@@ -1632,6 +1652,8 @@ page_available_to_free(page_t* page) {
 		heap->page_free_tail[page->page_type] = page;
 	if (++heap->page_free_commit_count[page->page_type] >= global_page_free_overflow[page->page_type])
 		heap_page_free_overflow(heap, page->page_type);
+	if (heap_page_free_overflow_other_pending(heap, page->page_type))
+		heap_page_free_overflow_other(heap, page->page_type);
 }
 
 static void
@@ -2880,15 +2902,15 @@ heap_page_free_decommit(heap_t* heap, uint32_t page_type, uint32_t page_retain_c
 }
 
 //! Decommit the most recently freed page at the head of the free list and move it to the tail, behind the
-//  committed pages, so the list keeps its committed pages first
-static void
+//  committed pages, so the list keeps its committed pages first. Returns zero if no page was decommitted
+static int
 heap_page_free_decommit_head(heap_t* heap, uint32_t page_type) {
 	page_t* page = heap->page_free[page_type];
 	if (!page || page->is_decommitted)
-		return;
+		return 0;
 	page_decommit_memory_pages(page);
 	if (!page->is_decommitted)
-		return;
+		return 0;
 	--heap->page_free_commit_count[page_type];
 	if (page->next) {
 		heap->page_free[page_type] = page->next;
@@ -2896,6 +2918,7 @@ heap_page_free_decommit_head(heap_t* heap, uint32_t page_type) {
 		page->next = 0;
 		heap->page_free_tail[page_type] = page;
 	}
+	return 1;
 }
 
 //! Called when the free committed page count of a page type is at or above the overflow threshold.
@@ -2926,6 +2949,64 @@ heap_page_free_overflow(heap_t* heap, uint32_t page_type) {
 	}
 	heap->page_free_overflow_ms[page_type] = 0;
 	heap_page_free_decommit(heap, page_type, global_page_free_retain[page_type]);
+}
+
+//! Decommit the free pages of other page types than the given one whose decommit delay has passed. The
+//  delay of a page type was only checked when a page of that type was freed, so the free pages of a type
+//  the program stopped freeing stayed committed indefinitely. Page frees and commits of any type now
+//  check the delay of the other types too
+static NOINLINE void
+heap_page_free_overflow_other(heap_t* heap, uint32_t page_type) {
+	uint64_t now = monotonic_time_ms();
+	for (uint32_t itype = 0; itype < 4; ++itype) {
+		uint64_t since = heap->page_free_overflow_ms[itype];
+		if ((itype == page_type) || !since || ((now - since) < PAGE_DECOMMIT_DELAY_MS))
+			continue;
+		heap->page_free_overflow_ms[itype] = 0;
+		heap_page_free_decommit(heap, itype, global_page_free_retain[itype]);
+	}
+}
+
+//! Called when the heap takes a new page of the given page type from a span. Free pages of the other page
+//  types above their overflow threshold cannot be reused for the new page, so instead of growing the
+//  committed memory of the heap by the page, free pages of other types of at least the same size are
+//  decommitted. Recommitting a free page of the heap does not, a heap cycling between page types would
+//  otherwise decommit and page fault the pages of each type every cycle.
+//  The size decommitted beyond the page size is kept as credit for the next commits, so a heap moving
+//  from large to small pages decommits one large page per large page worth of small pages
+static NOINLINE void
+heap_page_commit_trim(heap_t* heap, uint32_t page_type) {
+	uint32_t needed = global_page_units[page_type];
+	if (heap->page_commit_credit >= needed) {
+		heap->page_commit_credit -= needed;
+		return;
+	}
+	needed -= heap->page_commit_credit;
+	heap->page_commit_credit = 0;
+	for (int itype = PAGE_LARGE; itype >= PAGE_SMALL; --itype) {
+		if (((uint32_t)itype == page_type) || (global_page_free_overflow[itype] == 0xFFFFFFFFU))
+			continue;
+		while (heap->page_free_commit_count[itype] >= global_page_free_overflow[itype]) {
+			if (!heap_page_free_decommit_head(heap, (uint32_t)itype))
+				break;
+			uint32_t units = global_page_units[itype];
+			if (units >= needed) {
+				heap->page_commit_credit = units - needed;
+				return;
+			}
+			needed -= units;
+		}
+	}
+}
+
+//! Check if free pages of another page type than the given one are held above their overflow threshold
+static inline int
+heap_page_commit_trim_pending(heap_t* heap, uint32_t page_type) {
+	for (uint32_t itype = 0; itype < 4; ++itype) {
+		if ((itype != page_type) && (heap->page_free_commit_count[itype] >= global_page_free_overflow[itype]))
+			return 1;
+	}
+	return heap->page_commit_credit != 0;
 }
 
 //! Trims the memory a released heap holds for reuse. Until another thread adopts the heap nothing
@@ -3096,6 +3177,16 @@ heap_has_thread_free(heap_t* heap) {
 	return (pending != 0);
 }
 
+//! Taking a new page from a span decommits free pages of other page types the heap cannot reuse for it
+//  and runs the decommit delay of the other page types
+static inline void
+heap_page_commit_check(heap_t* heap, uint32_t page_type) {
+	if (heap_page_commit_trim_pending(heap, page_type))
+		heap_page_commit_trim(heap, page_type);
+	if (heap_page_free_overflow_other_pending(heap, page_type))
+		heap_page_free_overflow_other(heap, page_type);
+}
+
 //! Collect the blocks other threads freed into full pages of the heap, of every page type. The pages become
 //  available again, or free once all their blocks are freed. Must not be called from the free path: the
 //  local frees here can free pages and run the decommit of free pages
@@ -3156,13 +3247,16 @@ heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 		heap->page_free[page_type] = page->next;
 		if (!page->next)
 			heap->page_free_tail[page_type] = 0;
-		if (page->is_decommitted == 0) {
+		int recommit = (page->is_decommitted != 0);
+		if (!recommit) {
 			rpmalloc_assert(heap->page_free_commit_count[page_type] > 0, "Free committed page count out of sync");
 			if (--heap->page_free_commit_count[page_type] < global_page_free_overflow[page_type])
 				heap->page_free_overflow_ms[page_type] = 0;
 		}
 		if (heap_make_free_page_available(heap, size_class, page) != 0)
 			return 0;
+		if (recommit && heap_page_free_overflow_other_pending(heap, page_type))
+			heap_page_free_overflow_other(heap, page_type);
 		return page;
 	}
 	rpmalloc_assert(heap->page_free_commit_count[page_type] == 0, "Free committed page count out of sync");
@@ -3182,6 +3276,7 @@ heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 		page = span_allocate_page(span);
 		if (!page || (heap_make_free_page_available(page->heap, size_class, page) != 0))
 			return 0;
+		heap_page_commit_check(page->heap, page_type);
 	}
 
 	return page;
@@ -3735,6 +3830,7 @@ heap_free_all(heap_t* heap) {
 		heap->page_free_overflow_ms[itype] = 0;
 		atomic_store_explicit(&heap->thread_free[itype], 0, memory_order_release);
 	}
+	heap->page_commit_credit = 0;
 	for (int itype = 0; itype < 5; ++itype) {
 		span_t* span = heap->span_used[itype];
 		while (span) {
