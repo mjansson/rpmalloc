@@ -98,9 +98,9 @@ jobs:
       matrix:
         include:
           - { os: ubuntu-latest,    arch: x64,   san: ubsan, flags: "-fsanitize=undefined -fno-sanitize-recover=all", gating: true,  src: "test/main.c",   run: "RPMALLOC_TEST_SCALE=50 ./san-bin" }
-          - { os: ubuntu-latest,    arch: x64,   san: asan,  flags: "-fsanitize=address,undefined",                   gating: true,  src: "test/stress.c", run: "RPMALLOC_STRESS_SECONDS=12 RPMALLOC_STRESS_THREADS=2 RPMALLOC_STRESS_MAX_SIZE=65536 ./san-bin" }
+          - { os: ubuntu-latest,    arch: x64,   san: asan,  flags: "-fsanitize=address,undefined",                   gating: true,  src: "test/stress.c", run: "RPMALLOC_STRESS_SECONDS=12 RPMALLOC_STRESS_THREADS=2 RPMALLOC_STRESS_MAX_SIZE=65536 ./san-bin && RPMALLOC_STRESS_SECONDS=12 RPMALLOC_STRESS_THREADS=4 RPMALLOC_STRESS_MAX_SIZE=65536 RPMALLOC_STRESS_HUGE=1 ./san-bin" }
           - { os: ubuntu-24.04-arm, arch: arm64, san: ubsan, flags: "-fsanitize=undefined -fno-sanitize-recover=all", gating: true,  src: "test/main.c",   run: "RPMALLOC_TEST_SCALE=50 ./san-bin" }
-          - { os: ubuntu-24.04-arm, arch: arm64, san: asan,  flags: "-fsanitize=address,undefined",                   gating: true,  src: "test/stress.c", run: "RPMALLOC_STRESS_SECONDS=12 RPMALLOC_STRESS_THREADS=2 RPMALLOC_STRESS_MAX_SIZE=65536 ./san-bin" }
+          - { os: ubuntu-24.04-arm, arch: arm64, san: asan,  flags: "-fsanitize=address,undefined",                   gating: true,  src: "test/stress.c", run: "RPMALLOC_STRESS_SECONDS=12 RPMALLOC_STRESS_THREADS=2 RPMALLOC_STRESS_MAX_SIZE=65536 ./san-bin && RPMALLOC_STRESS_SECONDS=12 RPMALLOC_STRESS_THREADS=4 RPMALLOC_STRESS_MAX_SIZE=65536 RPMALLOC_STRESS_HUGE=1 ./san-bin" }
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ !matrix.gating }}
     timeout-minutes: 15

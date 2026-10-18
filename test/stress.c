@@ -29,6 +29,10 @@
  *   RPMALLOC_STRESS_MAX_SIZE cap on allocation size in bytes (default: unlimited). Useful
  *                            under ThreadSanitizer, where the huge band crawls; stress.sh
  *                            defaults this to 262144 for tsan runs.
+ *   RPMALLOC_STRESS_HUGE     set to 1 to also churn 2-32MiB blocks through a small shared pool
+ *                            (default off), exercising the huge block cache from all threads with
+ *                            allocations, zeroed allocations checked for zero, in place growth and
+ *                            shrinking and cross-thread frees. Not limited by RPMALLOC_STRESS_MAX_SIZE.
  *
  * Suggested run durations (RPMALLOC_STRESS_SECONDS):
  *   30      quick smoke test (default)
@@ -59,6 +63,9 @@
 #define FILL_CAP 256u            // bytes of payload pattern written/verified per block
 #define LOCAL_RING 64u           // blocks kept live per thread before recycling locally
 #define POOL_SLOTS 4096u         // shared slots used to hand blocks between threads
+#define HUGE_POOL_SLOTS 32u      // shared slots for huge churn blocks, bounding the live huge memory
+#define HUGE_MIN_SIZE (2 * 1024 * 1024 + 1)
+#define HUGE_MAX_SIZE (32 * 1024 * 1024)
 
 typedef struct block_header_t {
 	uint32_t magic;
@@ -79,6 +86,7 @@ static const size_t size_band[][2] = {
 _Static_assert(NUM_BANDS == 6, "size band weighting in pick_size assumes 6 bands");
 
 static atomic_uintptr_t shared_pool[POOL_SLOTS];
+static atomic_uintptr_t huge_pool[HUGE_POOL_SLOTS];
 static atomic_int stop_requested;
 
 static atomic_ullong total_allocations;
@@ -86,6 +94,7 @@ static atomic_ullong total_local_frees;
 static atomic_ullong total_cross_frees;
 static atomic_ullong total_reallocations;
 static atomic_ullong total_bytes;
+static atomic_ullong total_huge_churns;
 
 static size_t worker_count;
 static int run_seconds;
@@ -95,6 +104,8 @@ static size_t max_alloc_size;
 //! Whether to issue aligned allocations (default on). Set RPMALLOC_STRESS_ALIGN=0 to disable;
 //  useful to isolate the (benign) aligned-block page-flag race under ThreadSanitizer.
 static int use_aligned_alloc = 1;
+//! Whether to churn huge blocks through the huge pool (default off). Set RPMALLOC_STRESS_HUGE=1 to enable.
+static int use_huge_churn;
 
 static uint64_t
 monotonic_ms(void) {
@@ -149,9 +160,9 @@ block_fill(void* block, size_t size, uint32_t seed) {
 		payload[offset] = (uint8_t)(seed + (uint32_t)offset);
 }
 
-// Verify and poison a block. Aborts the process on any corruption.
+// Verify a block. Aborts the process on any corruption.
 static void
-block_check(void* block) {
+block_verify(void* block) {
 	block_header_t* header = (block_header_t*)block;
 	if (header->magic != BLOCK_MAGIC) {
 		fprintf(stderr, "STRESS FAIL: bad magic 0x%08x (double free or corruption) at %p\n", header->magic, block);
@@ -167,7 +178,13 @@ block_check(void* block) {
 			abort();
 		}
 	}
-	header->magic = DEAD_MAGIC;
+}
+
+// Verify and poison a block. Aborts the process on any corruption.
+static void
+block_check(void* block) {
+	block_verify(block);
+	((block_header_t*)block)->magic = DEAD_MAGIC;
 }
 
 static void
@@ -212,6 +229,63 @@ pool_handoff(void* block, uint32_t* random_state) {
 		block_free((void*)evicted, 1);
 }
 
+static size_t
+pick_huge_size(uint32_t* random_state) {
+	return HUGE_MIN_SIZE + (size_t)(random_next(random_state) % (uint32_t)(HUGE_MAX_SIZE - HUGE_MIN_SIZE + 1));
+}
+
+// Allocate a huge block, zeroed a quarter of the time and checked for zero, grow or shrink it a quarter of the
+// time and check its content survives, then hand it to a random huge pool slot and free the evicted block. The
+// pool is shared by all threads, so the huge block cache sees concurrent allocations, reuse and cross-thread frees
+static void
+huge_churn(uint32_t* random_state) {
+	size_t size = pick_huge_size(random_state);
+	uint32_t seed = random_next(random_state);
+	void* block;
+	if ((seed & 3u) == 0) {
+		block = rpcalloc(1, size);
+		if (!block) {
+			fprintf(stderr, "STRESS FAIL: zeroed huge allocation of %zu bytes failed\n", size);
+			abort();
+		}
+		// The whole block must read as zero, including pages a reused mapping commits again
+		const uint8_t* bytes = (const uint8_t*)block;
+		for (size_t offset = 0; offset < size; offset += 4096) {
+			if (bytes[offset]) {
+				fprintf(stderr, "STRESS FAIL: zeroed huge block %p not zero at offset %zu\n", block, offset);
+				abort();
+			}
+		}
+		if (bytes[size - 1]) {
+			fprintf(stderr, "STRESS FAIL: zeroed huge block %p not zero at its end\n", block);
+			abort();
+		}
+	} else {
+		block = rpmalloc(size);
+		if (!block) {
+			fprintf(stderr, "STRESS FAIL: huge allocation of %zu bytes failed\n", size);
+			abort();
+		}
+	}
+	block_fill(block, size, seed);
+	if ((seed & 12u) == 0) {
+		size_t new_size = pick_huge_size(random_state);
+		void* resized = rprealloc(block, new_size);
+		if (!resized) {
+			fprintf(stderr, "STRESS FAIL: huge realloc to %zu failed\n", new_size);
+			abort();
+		}
+		block_verify(resized);
+		block_fill(resized, new_size, random_next(random_state));
+		block = resized;
+	}
+	size_t slot = random_next(random_state) % HUGE_POOL_SLOTS;
+	uintptr_t evicted = atomic_exchange_explicit(&huge_pool[slot], (uintptr_t)block, memory_order_acq_rel);
+	if (evicted)
+		block_free((void*)evicted, 1);
+	atomic_fetch_add_explicit(&total_huge_churns, 1, memory_order_relaxed);
+}
+
 static void
 worker(void* worker_index_arg) {
 	uint32_t random_state = (uint32_t)((uintptr_t)worker_index_arg ^ 0x9e3779b9u);
@@ -251,6 +325,8 @@ worker(void* worker_index_arg) {
 				if (recycled)
 					block_free(recycled, 0);
 			}
+			if (use_huge_churn && ((random_next(&random_state) & 15u) == 0))
+				huge_churn(&random_state);
 		}
 		thread_yield();
 	}
@@ -304,9 +380,15 @@ main(int argc, char** argv) {
 	if (env_align)
 		use_aligned_alloc = atoi(env_align) != 0;
 
+	const char* env_huge = getenv("RPMALLOC_STRESS_HUGE");
+	if (env_huge)
+		use_huge_churn = atoi(env_huge) != 0;
+
 	printf("rpmalloc stress: %zu threads, %d seconds", worker_count, run_seconds);
 	if (max_alloc_size)
 		printf(", max alloc %zu bytes", max_alloc_size);
+	if (use_huge_churn)
+		printf(", huge churn");
 	printf("\n");
 	fflush(stdout);
 
@@ -351,6 +433,13 @@ main(int argc, char** argv) {
 			++drained;
 		}
 	}
+	for (size_t slot = 0; slot < HUGE_POOL_SLOTS; ++slot) {
+		uintptr_t evicted = atomic_exchange_explicit(&huge_pool[slot], 0, memory_order_acq_rel);
+		if (evicted) {
+			block_free((void*)evicted, 1);
+			++drained;
+		}
+	}
 	rpmalloc_thread_finalize();
 
 	printf("rpmalloc stress: PASSED\n");
@@ -359,6 +448,8 @@ main(int argc, char** argv) {
 	printf("  local frees  = %llu\n", (unsigned long long)atomic_load(&total_local_frees));
 	printf("  cross frees  = %llu (drained %llu at exit)\n", (unsigned long long)atomic_load(&total_cross_frees), drained);
 	printf("  total bytes  = %llu\n", (unsigned long long)atomic_load(&total_bytes));
+	if (use_huge_churn)
+		printf("  huge churns  = %llu\n", (unsigned long long)atomic_load(&total_huge_churns));
 
 	rpmalloc_finalize();
 	return 0;

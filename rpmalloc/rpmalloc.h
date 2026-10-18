@@ -142,9 +142,12 @@ typedef struct rpmalloc_interface_t {
 	//! Map memory pages for the given number of bytes. The returned address MUST be aligned to the given alignment,
 	//! which will always be either 0 or the span size. The function can store an alignment offset in the offset
 	//! variable in case it performs alignment and the returned pointer is offset from the actual start of the memory
-	//! region due to this alignment. This alignment offset will be passed to the memory unmap function. The mapped size
-	//! can be stored in the mapped_size variable, which will also be passed to the memory unmap function as the release
-	//! parameter once the entire mapped region is ready to be released. If you set a memory_map function, you must also
+	//! region due to this alignment. This alignment offset will be passed to the memory unmap function. The function
+	//! must store the size of the mapped region in the mapped_size variable: the region starts offset bytes before the
+	//! returned pointer and spans at least offset plus size bytes. The whole region must be usable, as huge block
+	//! mappings are reused and grown in place within it, committing pages with the memory commit function. The mapped
+	//! size will also be passed to the memory unmap function as the release parameter once the entire mapped region is
+	//! ready to be released. If you set a memory_map function, you must also
 	//! set a memory_unmap function or else the default implementation will be used for both. This function must be
 	//! thread safe, it can be called by multiple threads simultaneously.
 	void* (*memory_map)(size_t size, size_t alignment, size_t* offset, size_t* mapped_size);

@@ -1949,6 +1949,336 @@ test_page_decommit(void) {
 	return 0;
 }
 
+#if !defined(_WIN32)
+
+// Memory interface failing the next commit or decommit when asked to, used by test_huge_cache. It keeps the
+// alignment padding mapped and reports it in the mapped size, so the mapped region extends beyond the requested size
+static int test_commit_fail_next;
+static int test_decommit_fail_next;
+static size_t test_commit_fail_maps;
+
+static void*
+test_commit_fail_map(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
+	size_t map_size = size + alignment;
+	void* ptr = mmap(0, map_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+	if (ptr == MAP_FAILED)
+		return 0;
+	uintptr_t unalign = alignment ? ((uintptr_t)ptr & (uintptr_t)(alignment - 1)) : 0;
+	*offset = unalign ? (alignment - unalign) : 0;
+	*mapped_size = map_size;
+	++test_commit_fail_maps;
+	return pointer_offset(ptr, *offset);
+}
+
+static void
+test_commit_fail_unmap(void* address, size_t offset, size_t mapped_size) {
+	munmap(pointer_offset(address, -(ptrdiff_t)offset), mapped_size);
+}
+
+static int
+test_commit_fail_commit(void* address, size_t size) {
+	(void)address;
+	(void)size;
+	if (!test_commit_fail_next)
+		return 0;
+	test_commit_fail_next = 0;
+	return 1;
+}
+
+static int
+test_commit_fail_decommit(void* address, size_t size) {
+	if (test_decommit_fail_next) {
+		test_decommit_fail_next = 0;
+		return 1;
+	}
+	return madvise(address, size, MADV_DONTNEED);
+}
+
+#endif
+
+//! Check the huge allocation statistics are back at the given value once the test has freed its huge blocks, so
+//  reuse, growth and shrinking in place account the same committed bytes as the free
+static int
+test_huge_alloc_restored(size_t huge_alloc) {
+	rpmalloc_global_statistics_t stats;
+	rpmalloc_global_statistics(&stats);
+	return stats.huge_alloc == huge_alloc;
+}
+
+static int
+test_huge_cache(void) {
+	// A freed huge block mapping is cached and reused for a smaller request (of at least a quarter of its size)
+	// with the requested usable size, the reused block grows in place within the mapping and is zeroed for calloc.
+	// A cached mapping is evicted when cached plus live huge bytes exceed the recent peak of live huge bytes plus
+	// the headroom or the cached bytes exceed the cached limit, and unmapped by a collect or the page refill path
+	// once idle for an epoch.
+	rpmalloc_initialize(0);
+	rpmalloc_global_statistics_t baseline;
+	rpmalloc_global_statistics(&baseline);
+	const size_t mib = 1024 * 1024;
+	const size_t page_size = rpmalloc_config()->page_size;
+
+	char* block = rpmalloc(48 * mib);
+	if (!block)
+		return test_fail("Huge allocation failed");
+	memset(block, 0x5a, 48 * mib);
+	rpfree(block);
+
+	char* reuse = rpmalloc(16 * mib);
+	if (reuse != block)
+		return test_fail("Cached huge mapping not reused for a smaller request");
+	size_t usable_size = rpmalloc_usable_size(reuse);
+	if ((usable_size < (16 * mib)) || (usable_size > ((16 * mib) + page_size)))
+		return test_fail("Reused huge mapping has bad usable size");
+	memset(reuse, 0x11, 16 * mib);
+
+	char* grown = rprealloc(reuse, 40 * mib);
+	if (grown != block)
+		return test_fail("Huge block not grown in place within its mapping");
+	if (rpmalloc_usable_size(grown) < (40 * mib))
+		return test_fail("Grown huge block has bad usable size");
+	for (size_t ibyte = 0; ibyte < (16 * mib); ibyte += 4093) {
+		if (grown[ibyte] != 0x11)
+			return test_fail("Data not preserved by in place huge block growth");
+	}
+	memset(grown, 0x22, 40 * mib);
+	rpfree(grown);
+
+	unsigned char* zeroed = rpcalloc(1, 30 * mib);
+	if ((void*)zeroed != (void*)block)
+		return test_fail("Cached huge mapping not reused for calloc");
+	for (size_t ibyte = 0; ibyte < (30 * mib); ibyte += 509) {
+		if (zeroed[ibyte])
+			return test_fail("Reused huge mapping not zeroed by calloc");
+	}
+	rpfree(zeroed);
+	if (!test_huge_alloc_restored(baseline.huge_alloc))
+		return test_fail("Huge allocation statistics not restored after freeing the reused and grown blocks");
+
+	// The cache holds both freed mappings (48MiB and 100MiB address range). The 300MiB block fits neither and
+	// raises live plus cached bytes over the peak plus headroom, so the least recently freed mappings are unmapped
+	char* first = rpmalloc(100 * mib);
+	if (!first)
+		return test_fail("Huge allocation failed");
+	memset(first, 0x33, 100 * mib);
+	rpfree(first);
+	rpmalloc_global_statistics_t before;
+	rpmalloc_global_statistics(&before);
+	char* second = rpmalloc(300 * mib);
+	if (!second)
+		return test_fail("Huge allocation failed");
+	rpmalloc_global_statistics_t after;
+	rpmalloc_global_statistics(&after);
+	if (before.mapped && (after.mapped > (before.mapped + (200 * mib))))
+		return test_fail("Cached huge mapping not evicted over the budget");
+	rpfree(second);
+
+	// Idle for an epoch, a collect unmaps the cached mappings
+	rpmalloc_global_statistics(&before);
+	thread_sleep(1100);
+	rpmalloc_thread_collect();
+	rpmalloc_global_statistics(&after);
+	if (before.mapped && ((after.mapped + (300 * mib)) > before.mapped))
+		return test_fail("Idle cached huge mapping not unmapped by collect");
+
+	// Idle for an epoch, the page refill path of small block allocations unmaps the cached mapping without a
+	// collect or a huge block allocation. The small block pages are mapped up front and freed, so the refills
+	// reuse them and the mapped size only changes by the unmapped huge mapping
+	enum { SMALL_COUNT = 4096 };
+	static void* small[SMALL_COUNT];
+	for (int pass = 0; pass < 2; ++pass) {
+		if (pass) {
+			block = rpmalloc(100 * mib);
+			if (!block)
+				return test_fail("Huge allocation failed");
+			rpfree(block);
+			rpmalloc_global_statistics(&before);
+			thread_sleep(1100);
+		}
+		for (size_t iblock = 0; iblock < SMALL_COUNT; ++iblock) {
+			small[iblock] = rpmalloc(1000);
+			if (!small[iblock])
+				return test_fail("Small allocation failed");
+		}
+		if (pass)
+			rpmalloc_global_statistics(&after);
+		for (size_t iblock = 0; iblock < SMALL_COUNT; ++iblock)
+			rpfree(small[iblock]);
+	}
+	if (before.mapped && ((after.mapped + (100 * mib)) > before.mapped))
+		return test_fail("Idle cached huge mapping not unmapped by the page refill path");
+
+	// A reused mapping decommits its tail beyond twice the request, a later calloc reusing it commits part of the
+	// tail again, which must read as zero along with the cleared previously committed pages
+	char* dirty = rpmalloc(64 * mib);
+	if (!dirty)
+		return test_fail("Huge allocation failed");
+	memset(dirty, 0x77, 64 * mib);
+	rpfree(dirty);
+	char* shrunk = rpmalloc(20 * mib);
+	if (shrunk != dirty)
+		return test_fail("Cached huge mapping not reused for a smaller request");
+	rpfree(shrunk);
+	zeroed = rpcalloc(1, 56 * mib);
+	if ((void*)zeroed != (void*)dirty)
+		return test_fail("Cached huge mapping not reused for calloc beyond its committed size");
+	for (size_t ibyte = 0; ibyte < (56 * mib); ibyte += 509) {
+		if (zeroed[ibyte])
+			return test_fail("Reused huge mapping not zeroed by calloc beyond its committed size");
+	}
+	rpfree(zeroed);
+
+	// A block held live through epochs without any huge block allocation or free counts in the peak when freed,
+	// and is cached (only the idle cached mappings are unmapped)
+	char* held = rpmalloc(200 * mib);
+	if (!held)
+		return test_fail("Huge allocation failed");
+	thread_sleep(2200);
+	rpmalloc_global_statistics(&before);
+	rpfree(held);
+	rpmalloc_global_statistics(&after);
+	if (before.mapped && ((after.mapped + (100 * mib)) < before.mapped))
+		return test_fail("Huge block held through idle epochs not cached when freed");
+
+	// Shrinking a huge block to less than half its size keeps the block in place with the requested usable size
+	// and its data, and decommits the committed pages beyond twice the new size
+	char* large = rpmalloc(120 * mib);
+	if (!large)
+		return test_fail("Huge allocation failed");
+	memset(large, 0x44, 120 * mib);
+	rpmalloc_global_statistics(&before);
+	char* shrunk_large = rprealloc(large, 20 * mib);
+	rpmalloc_global_statistics(&after);
+	if (shrunk_large != large)
+		return test_fail("Huge block not shrunk in place");
+	usable_size = rpmalloc_usable_size(shrunk_large);
+	if ((usable_size < (20 * mib)) || (usable_size > ((20 * mib) + page_size)))
+		return test_fail("Huge block shrunk in place has bad usable size");
+	for (size_t ibyte = 0; ibyte < (20 * mib); ibyte += 4093) {
+		if (shrunk_large[ibyte] != 0x44)
+			return test_fail("Data not preserved by in place huge block shrink");
+	}
+	if (before.huge_alloc && (after.huge_alloc > (before.huge_alloc - (60 * mib))))
+		return test_fail("Huge block shrunk in place did not decommit its tail");
+	rpfree(shrunk_large);
+	if (!test_huge_alloc_restored(baseline.huge_alloc))
+		return test_fail("Huge allocation statistics not restored after freeing the block shrunk in place");
+
+	// Freed mappings beyond the cached limit (HUGE_CACHE_CACHED_LIMIT, 1GiB by default) are unmapped even when
+	// within the demand budget. The blocks are not touched, so they only reserve address space
+	enum { LIMIT_COUNT = 5 };
+	char* limit_block[LIMIT_COUNT];
+	rpmalloc_global_statistics(&before);
+	for (size_t iblock = 0; iblock < LIMIT_COUNT; ++iblock) {
+		limit_block[iblock] = rpmalloc(256 * mib);
+		if (!limit_block[iblock])
+			return test_fail("Huge allocation failed");
+	}
+	for (size_t iblock = 0; iblock < LIMIT_COUNT; ++iblock)
+		rpfree(limit_block[iblock]);
+	rpmalloc_global_statistics(&after);
+	if (before.mapped && (after.mapped > (before.mapped + (1024 * mib))))
+		return test_fail("Cached huge mappings exceed the cached limit");
+	if (!test_huge_alloc_restored(baseline.huge_alloc))
+		return test_fail("Huge allocation statistics not restored after freeing the blocks beyond the cached limit");
+
+	rpmalloc_finalize();
+
+#if !defined(_WIN32)
+	// When committing a reused mapping up to the request fails, the allocation maps a fresh mapping instead of
+	// failing. Skipped when the interface is not in use (the allocator was initialized by another allocation)
+	rpmalloc_interface_t iface = {0};
+	iface.memory_map = test_commit_fail_map;
+	iface.memory_unmap = test_commit_fail_unmap;
+	iface.memory_commit = test_commit_fail_commit;
+	iface.memory_decommit = test_commit_fail_decommit;
+	test_commit_fail_next = 0;
+	test_commit_fail_maps = 0;
+	rpmalloc_initialize_config(&iface, 0);
+	block = rpmalloc(48 * mib);
+	if (!block)
+		return test_fail("Huge allocation failed");
+	if (test_commit_fail_maps) {
+		rpfree(block);
+		reuse = rpmalloc(16 * mib);
+		if (reuse != block)
+			return test_fail("Cached huge mapping not reused for a smaller request");
+		rpfree(reuse);
+		size_t maps_before = test_commit_fail_maps;
+		test_commit_fail_next = 1;
+		char* fallback = rpmalloc(40 * mib);
+		if (!fallback)
+			return test_fail("Huge allocation failed when committing a reused mapping failed");
+		if (test_commit_fail_next || (test_commit_fail_maps != (maps_before + 1)))
+			return test_fail("Failed commit of a reused mapping not replaced by a fresh mapping");
+		memset(fallback, 0x55, 40 * mib);
+
+		// When decommitting the tail of a reused mapping fails, the block keeps and accounts all its committed
+		// pages (the fallback block stays live, leaving the freed mapping the only one in the cache)
+		char* wide = rpmalloc(96 * mib);
+		if (!wide)
+			return test_fail("Huge allocation failed");
+		rpfree(wide);
+		rpmalloc_global_statistics(&before);
+		test_decommit_fail_next = 1;
+		char* narrow = rpmalloc(32 * mib);
+		rpmalloc_global_statistics(&after);
+		if (narrow != wide)
+			return test_fail("Cached huge mapping not reused for a smaller request");
+		if (test_decommit_fail_next)
+			return test_fail("Tail of a reused huge mapping not decommitted");
+		usable_size = rpmalloc_usable_size(narrow);
+		if ((usable_size < (32 * mib)) || (usable_size > ((32 * mib) + page_size)))
+			return test_fail("Reused huge mapping with a failed decommit has bad usable size");
+		if (before.huge_alloc && (after.huge_alloc < (before.huge_alloc + (96 * mib))))
+			return test_fail("Reused huge mapping with a failed decommit not accounted with all its pages");
+		memset(narrow, 0x66, 32 * mib);
+		rpfree(narrow);
+		rpfree(fallback);
+	} else {
+		rpfree(block);
+		printf("Huge cache commit failure test skipped\n");
+	}
+	rpmalloc_finalize();
+#endif
+
+	// A mapping that cannot decommit is reused only for requests of at least half its committed size and keeps all
+	// its committed pages. Skipped when the allocator was initialized by another allocation without the config
+	rpmalloc_config_t config = {0};
+	config.disable_decommit = 1;
+	rpmalloc_initialize_config(0, &config);
+	if (rpmalloc_config()->disable_decommit) {
+		block = rpmalloc(48 * mib);
+		if (!block)
+			return test_fail("Huge allocation failed");
+		rpfree(block);
+		reuse = rpmalloc(16 * mib);
+		if (!reuse)
+			return test_fail("Huge allocation failed");
+		if (reuse == block)
+			return test_fail("Huge mapping that cannot decommit reused for a request below half its size");
+		rpfree(reuse);
+		rpmalloc_global_statistics(&before);
+		char* half = rpmalloc(30 * mib);
+		rpmalloc_global_statistics(&after);
+		if (half != block)
+			return test_fail("Huge mapping that cannot decommit not reused for a request of half its size");
+		usable_size = rpmalloc_usable_size(half);
+		if ((usable_size < (30 * mib)) || (usable_size > ((30 * mib) + page_size)))
+			return test_fail("Reused huge mapping that cannot decommit has bad usable size");
+		if (after.huge_alloc && (after.huge_alloc < (before.huge_alloc + (48 * mib))))
+			return test_fail("Reused huge mapping that cannot decommit not accounted with all its pages");
+		memset(half, 0x77, 30 * mib);
+		rpfree(half);
+	} else {
+		printf("Huge cache decommit disabled test skipped\n");
+	}
+	rpmalloc_finalize();
+
+	printf("Huge cache tests passed\n");
+	return 0;
+}
+
 extern int
 test_malloc(int print_log);
 
@@ -2027,6 +2357,8 @@ test_run(int argc, char** argv) {
 	if (test_thread_statistics())
 		return -1;
 	if (test_page_decommit())
+		return -1;
+	if (test_huge_cache())
 		return -1;
 	printf("All tests passed\n");
 	return 0;
