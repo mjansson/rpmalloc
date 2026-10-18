@@ -1307,6 +1307,164 @@ test_heapless_free(void) {
 	return 0;
 }
 
+#if RPMALLOC_FIRST_CLASS_HEAPS
+typedef struct first_class_huge_free_arg_t {
+	rpmalloc_heap_t* heap;
+	void* block[2];
+	size_t huge_alloc[2];
+} first_class_huge_free_arg_t;
+
+static size_t
+first_class_huge_alloc(void) {
+	rpmalloc_global_statistics_t stats;
+	rpmalloc_global_statistics(&stats);
+	return stats.huge_alloc;
+}
+
+static void
+first_class_huge_free_thread(void* argp) {
+	// Free huge blocks of a first class heap from another thread, with the heap API while the heap is acquired
+	// and with rpfree once it is released
+	first_class_huge_free_arg_t* arg = argp;
+	for (unsigned int iblock = 0; iblock < 2; ++iblock) {
+		if (arg->heap)
+			rpmalloc_heap_free(arg->heap, arg->block[iblock]);
+		else
+			rpfree(arg->block[iblock]);
+	}
+}
+
+static void
+first_class_huge_current_thread(void* argp) {
+	// Free a huge block allocated before its heap became the thread heap, then free all memory of the heap
+	first_class_huge_free_arg_t* arg = argp;
+	rpmalloc_thread_initialize();
+	rpmalloc_heap_t* heap = rpmalloc_heap_acquire();
+	arg->huge_alloc[0] = first_class_huge_alloc();
+	arg->block[0] = rpmalloc_heap_alloc(heap, 6 * 1024 * 1024);
+	rpmalloc_heap_thread_set_current(heap);
+	rpfree(arg->block[0]);
+	rpmalloc_heap_free_all(heap);
+	arg->huge_alloc[1] = first_class_huge_alloc();
+}
+#endif
+
+static int
+test_first_class_huge_free(void) {
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	// Huge blocks of a first class heap are tracked in its span list for rpmalloc_heap_free_all. A huge block freed
+	// on its own must leave the list before its mapping is cached or unmapped, or free_all reads the span of an
+	// unmapped mapping, or unmaps a cached mapping that another heap may already have reused. The huge byte count
+	// must match the live huge blocks after each free_all. A huge block of the thread heap stays live throughout,
+	// so a freed block released a second time lowers the count
+	const size_t mib = 1024 * 1024;
+	first_class_huge_free_arg_t arg = {0};
+	thread_arg targ;
+	uintptr_t thread;
+
+	rpmalloc_initialize(0);
+	void* live = rpmalloc(3 * mib);
+	if (!live)
+		return test_fail("Huge allocation failed");
+	rpmalloc_heap_t* heap = rpmalloc_heap_acquire();
+
+	// A block whose mapping is cached when freed and reused by the thread heap before free_all
+	void* block = rpmalloc_heap_alloc(heap, 8 * mib);
+	if (!block)
+		return test_fail("First class heap huge allocation failed");
+	memset(block, 1, 8 * mib);
+	rpmalloc_heap_free(heap, block);
+	void* reuse = rpmalloc(8 * mib);
+	if (!reuse)
+		return test_fail("Huge allocation failed");
+	size_t huge_alloc = first_class_huge_alloc();
+	rpmalloc_heap_free_all(heap);
+	if (first_class_huge_alloc() != huge_alloc)
+		return test_fail("Free all released a huge block freed on its own");
+	memset(reuse, 2, 8 * mib);
+	rpfree(reuse);
+
+	// A block too large to be cached, unmapped when freed
+	block = rpmalloc_heap_alloc(heap, 64 * mib);
+	if (!block)
+		return test_fail("First class heap huge allocation failed");
+	memset(block, 3, mib);
+	rpmalloc_heap_free(heap, block);
+	huge_alloc = first_class_huge_alloc();
+	rpmalloc_heap_free_all(heap);
+	if (first_class_huge_alloc() != huge_alloc)
+		return test_fail("Free all released an unmapped huge block");
+
+	// Free from the middle, the head and the tail of the list, with aligned, reused and reallocated blocks, then free
+	// all with two blocks left in the list
+	void* tail = rpmalloc_heap_alloc(heap, 3 * mib);
+	void* middle = rpmalloc_heap_aligned_alloc(heap, 64 * 1024, 4 * mib);
+	void* head = rpmalloc_heap_alloc(heap, 5 * mib);
+	if (!tail || !middle || !head)
+		return test_fail("First class heap huge allocation failed");
+	rpmalloc_heap_free(heap, middle);
+	rpmalloc_heap_free(heap, head);
+	void* reused = rpmalloc_heap_alloc(heap, 4 * mib);
+	unsigned char* grown = rpmalloc_heap_alloc(heap, 3 * mib);
+	if (!reused || !grown)
+		return test_fail("First class heap huge allocation failed");
+	memset(grown, 4, 3 * mib);
+	grown = rpmalloc_heap_realloc(heap, grown, 12 * mib, 0);
+	if (!grown)
+		return test_fail("First class heap huge reallocation failed");
+	for (size_t ibyte = 0; ibyte < (3 * mib); ibyte += 4093) {
+		if (grown[ibyte] != 4)
+			return test_fail("Data not preserved by first class heap huge reallocation");
+	}
+	rpmalloc_heap_free(heap, tail);
+	rpmalloc_heap_free_all(heap);
+	if (first_class_huge_alloc() != huge_alloc)
+		return test_fail("Free all did not release exactly the huge blocks left in the heap");
+
+	// Free from another thread with the heap API, then free all
+	arg.heap = heap;
+	arg.block[0] = rpmalloc_heap_alloc(heap, 4 * mib);
+	arg.block[1] = rpmalloc_heap_alloc(heap, 6 * mib);
+	if (!arg.block[0] || !arg.block[1])
+		return test_fail("First class heap huge allocation failed");
+	targ.fn = first_class_huge_free_thread;
+	targ.arg = &arg;
+	thread = thread_run(&targ);
+	thread_join(thread);
+	rpmalloc_heap_free_all(heap);
+	if (first_class_huge_alloc() != huge_alloc)
+		return test_fail("Free all released a huge block freed by another thread");
+
+	// Release the heap with live huge blocks, freed later by another thread, which may adopt the heap
+	arg.heap = 0;
+	arg.block[0] = rpmalloc_heap_alloc(heap, 4 * mib);
+	arg.block[1] = rpmalloc_heap_alloc(heap, 6 * mib);
+	if (!arg.block[0] || !arg.block[1])
+		return test_fail("First class heap huge allocation failed");
+	rpmalloc_heap_release(heap);
+	thread = thread_run(&targ);
+	thread_join(thread);
+	if (first_class_huge_alloc() != huge_alloc)
+		return test_fail("Huge blocks of a released first class heap not released");
+
+	// A huge block allocated before its heap became the thread heap and freed after is not released again by
+	// free all
+	targ.fn = first_class_huge_current_thread;
+	thread = thread_run(&targ);
+	thread_join(thread);
+	if (!arg.block[0])
+		return test_fail("First class heap huge allocation failed");
+	if (arg.huge_alloc[1] != arg.huge_alloc[0])
+		return test_fail("Free all released a huge block freed after the heap became the thread heap");
+
+	rpfree(live);
+	rpmalloc_finalize();
+
+	printf("First class heap huge free tests passed\n");
+#endif
+	return 0;
+}
+
 static int
 test_large_pages(void) {
 	int ret = 0;
@@ -1853,6 +2011,8 @@ test_run(int argc, char** argv) {
 	if (test_first_class_heaps())
 		return -1;
 	if (test_heapless_free())
+		return -1;
+	if (test_first_class_huge_free())
 		return -1;
 	if (test_named_pages())
 		return -1;

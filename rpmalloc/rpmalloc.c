@@ -567,6 +567,8 @@ struct page_t {
 	uint32_t local_reuse : 1;
 	//! Set when the page received blocks freed by other threads
 	uint32_t remote_fed : 1;
+	//! Flag set if the page is the header of a huge block span in the huge span list of its heap
+	uint32_t is_tracked : 1;
 	//! Local free list
 	block_t* local_free;
 	//! Owning heap
@@ -1865,6 +1867,37 @@ huge_cache_pop(size_t alloc_size) {
 
 #endif
 
+//! Add a huge block span to the huge span list of its heap, which rpmalloc_heap_free_all releases. Only heaps
+//  without an owner thread keep the list, as the huge blocks of a thread heap are freed by any thread. The list
+//  links forward through the span next pointer and back through the prev pointer of the span page header, which
+//  is in no page list, so freeing the block removes the span without walking the list
+static void
+span_huge_track(span_t* span) {
+	heap_t* heap = span->heap;
+	span_t* head = heap->span_used[PAGE_HUGE];
+	span->next = head;
+	span->page.prev = 0;
+	if (head)
+		head->page.prev = &span->page;
+	heap->span_used[PAGE_HUGE] = span;
+	span->page.is_tracked = 1;
+}
+
+//! Remove a huge block span from the huge span list of its heap
+static void
+span_huge_untrack(span_t* span) {
+	heap_t* heap = span->heap;
+	page_t* prev = span->page.prev;
+	span_t* next = span->next;
+	if (prev)
+		page_get_span(prev)->next = next;
+	else
+		heap->span_used[PAGE_HUGE] = next;
+	if (next)
+		next->page.prev = prev;
+	span->page.is_tracked = 0;
+}
+
 //! Free a huge block by caching or unmapping its mapping. Kept out of line so the generic free path,
 //  taken by every cross-thread free, needs no stack frame
 static NOINLINE void
@@ -1882,6 +1915,10 @@ span_deallocate_huge(span_t* span) {
 #endif
 	}
 #endif
+	// Leave the heap span list before the mapping is cached for any heap to reuse or is unmapped, the list must
+	// only hold live blocks for rpmalloc_heap_free_all to release
+	if (span->page.is_tracked)
+		span_huge_untrack(span);
 #if HUGE_CACHE_SLOT_COUNT
 	if (huge_cache_push(span))
 		return;
@@ -2554,10 +2591,9 @@ heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
 		}
 #endif
 		// Keep track of span if first class heap
-		if (!heap->owner_thread) {
-			span->next = heap->span_used[PAGE_HUGE];
-			heap->span_used[PAGE_HUGE] = span;
-		}
+		span->page.is_tracked = 0;
+		if (!heap->owner_thread)
+			span_huge_track(span);
 		void* ptr = pointer_offset(block, SPAN_HEADER_SIZE);
 		// A fresh mapping from the default OS interface is already zero filled (anonymous mmap and
 		// VirtualAlloc both guarantee it), clearing it again would fault in and commit every page.
@@ -2687,8 +2723,7 @@ static void*
 span_huge_remap(span_t* span, size_t size) {
 	// Only plain mappings from the default OS interface can be moved: huge page (hugetlb) mappings have
 	// stricter remap rules, and spans tracked in a first class heap span list cannot change address
-	if ((global_memory_interface->memory_map != os_mmap) || os_huge_pages || span->offset ||
-	    !span->heap->owner_thread)
+	if ((global_memory_interface->memory_map != os_mmap) || os_huge_pages || span->offset || span->page.is_tracked)
 		return 0;
 	size_t alloc_size = get_page_aligned_size(size + SPAN_HEADER_SIZE);
 	size_t old_mapped_size = span->mapped_size;
@@ -3644,10 +3679,22 @@ rpmalloc_heap_acquire(void) {
 	return heap;
 }
 
+//! Stop tracking the huge blocks of a first class heap that is released or becomes the heap of a thread. Any thread
+//  can then free them, so the frees must not update the span list, and as for a thread heap rpmalloc_heap_free_all
+//  no longer releases them
+static void
+heap_untrack_huge_spans(heap_t* heap) {
+	for (span_t* span = heap->span_used[PAGE_HUGE]; span; span = span->next)
+		span->page.is_tracked = 0;
+	heap->span_used[PAGE_HUGE] = 0;
+}
+
 void
 rpmalloc_heap_release(rpmalloc_heap_t* heap) {
-	if (heap)
+	if (heap) {
+		heap_untrack_huge_spans(heap);
 		heap_release_trim(heap);
+	}
 }
 
 RPMALLOC_ALLOCATOR void*
@@ -3766,6 +3813,8 @@ extern inline void
 rpmalloc_heap_thread_set_current(rpmalloc_heap_t* heap) {
 	heap_t* prev_heap = get_thread_heap();
 	if (prev_heap != heap) {
+		if (heap)
+			heap_untrack_huge_spans(heap);
 		set_thread_heap(heap);
 		if (prev_heap)
 			heap_release(prev_heap);
