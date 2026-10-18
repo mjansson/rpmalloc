@@ -34,6 +34,10 @@ The size class computation no longer emits a redundant subtraction after the bit
 GCC builds now apply the malloc and alloc_size attributes to the allocation API, and the malloc
 attribute is no longer applied to the realloc style functions.
 
+A custom memory_map function must now store the size of the mapped region in mapped_size, covering
+at least the alignment offset plus the requested size. The whole region must be usable, huge block
+mappings are reused and grown in place within it. Builds with asserts enabled check the reported size.
+
 
 2.0.1
 
