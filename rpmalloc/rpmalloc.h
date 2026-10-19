@@ -261,11 +261,13 @@ rpmalloc_dump_statistics(void* file);
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
 rpmalloc(size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(1);
 
-//! Allocate a zero initialized memory block of at least the given size
+//! Allocate a memory block of at least the given size with the requested size zero initialized, the bytes beyond it
+//  up to the usable size of the block are not
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
 rpzalloc(size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(1);
 
-//! Allocate a memory block of at least the given size and zero initialize it
+//! Allocate a memory block of at least num times size bytes with the requested size zero initialized, the bytes
+//  beyond it up to the usable size of the block are not
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
 rpcalloc(size_t num, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE2(1, 2);
 
@@ -287,13 +289,15 @@ rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize, unsi
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
 rpaligned_alloc(size_t alignment, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(2);
 
-//! Allocate a memory block of at least the given size and alignment.
+//! Allocate a memory block of at least the given size and alignment with the requested size zero initialized, the
+//  bytes beyond it up to the usable size of the block are not.
 //  Alignment must be a power of two and a multiple of sizeof(void*),
 //  and should ideally be less than memory page size.
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
 rpaligned_zalloc(size_t alignment, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(2);
 
-//! Allocate a memory block of at least the given size and alignment, and zero initialize it.
+//! Allocate a memory block of at least num times size bytes and the given alignment with the requested size zero
+//  initialized, the bytes beyond it up to the usable size of the block are not.
 //  Alignment must be a power of two and a multiple of sizeof(void*),
 //  and should ideally be less than memory page size.
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
@@ -351,21 +355,24 @@ RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
 rpmalloc_heap_aligned_alloc(rpmalloc_heap_t* heap, size_t alignment, size_t size) RPMALLOC_ATTRIB_MALLOC
     RPMALLOC_ATTRIB_ALLOC_SIZE(3);
 
-//! Allocate a zero initialized memory block of at least the given size using the given heap. The returned
-//  block will have the requested alignment. Alignment must be a power of two and a multiple of sizeof(void*),
-//  and should ideally be less than memory page size.
+//! Allocate a memory block of at least the given size using the given heap with the requested size zero initialized,
+//  the bytes beyond it up to the usable size of the block are not. The returned block will have the requested
+//  alignment. Alignment must be a power of two and a multiple of sizeof(void*), and should ideally be less than
+//  memory page size.
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
 rpmalloc_heap_aligned_zalloc(rpmalloc_heap_t* heap, size_t alignment, size_t size) RPMALLOC_ATTRIB_MALLOC
     RPMALLOC_ATTRIB_ALLOC_SIZE(3);
 
-//! Allocate a memory block of at least the given size using the given heap and zero initialize it.
+//! Allocate a memory block of at least num times size bytes using the given heap with the requested size zero
+//  initialized, the bytes beyond it up to the usable size of the block are not.
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
 rpmalloc_heap_calloc(rpmalloc_heap_t* heap, size_t num, size_t size) RPMALLOC_ATTRIB_MALLOC
     RPMALLOC_ATTRIB_ALLOC_SIZE2(2, 3);
 
-//! Allocate a memory block of at least the given size using the given heap and zero initialize it. The returned
-//  block will have the requested alignment. Alignment must either be zero, or a power of two and a multiple of
-//  sizeof(void*), and should ideally be less than memory page size.
+//! Allocate a memory block of at least num times size bytes using the given heap with the requested size zero
+//  initialized, the bytes beyond it up to the usable size of the block are not. The returned block will have the
+//  requested alignment. Alignment must either be zero, or a power of two and a multiple of sizeof(void*), and
+//  should ideally be less than memory page size.
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
 rpmalloc_heap_aligned_calloc(rpmalloc_heap_t* heap, size_t alignment, size_t num, size_t size) RPMALLOC_ATTRIB_MALLOC
     RPMALLOC_ATTRIB_ALLOC_SIZE2(3, 4);
