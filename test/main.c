@@ -1142,6 +1142,57 @@ test_threadspam(void) {
 	return 0;
 }
 
+typedef struct thread_exit_heap_arg_t {
+	void* block;
+	int finalize;
+} thread_exit_heap_arg_t;
+
+static void
+thread_exit_heap_thread(void* argp) {
+	thread_exit_heap_arg_t* arg = argp;
+	void* block = rpmalloc(100);
+	arg->block = rpmalloc(1000);
+	rpfree(block);
+	if (arg->finalize)
+		rpmalloc_thread_finalize();
+}
+
+static int
+test_thread_exit_heap(void) {
+	// The thread exit destructor releases the heap of a thread that exits without finalizing, for the next
+	// thread to reuse. A thread that finalizes first leaves the fallback heap as the destructor value
+	rpmalloc_initialize(0);
+
+	rpmalloc_global_statistics_t stats;
+	rpmalloc_global_statistics(&stats);
+	size_t heap_count = stats.heap_count;
+
+	for (unsigned int ithread = 0; ithread < 16; ++ithread) {
+		thread_exit_heap_arg_t arg = {0};
+		arg.finalize = (ithread % 4) == 3;
+		thread_arg targ;
+		targ.fn = thread_exit_heap_thread;
+		targ.arg = &arg;
+		uintptr_t thread = thread_run(&targ);
+		if (!thread)
+			return test_fail("Unable to create thread");
+		thread_join(thread);
+		if (!arg.block)
+			return test_fail("Allocation failed");
+		rpfree(arg.block);
+	}
+
+	rpmalloc_global_statistics(&stats);
+	if (stats.heap_count != heap_count)
+		return test_fail("Heap of thread exiting without finalize was not released");
+
+	rpmalloc_finalize();
+
+	printf("Thread exit heap tests passed\n");
+
+	return 0;
+}
+
 static int
 test_first_class_heaps(void) {
 #if RPMALLOC_FIRST_CLASS_HEAPS
@@ -3048,6 +3099,8 @@ test_run(int argc, char** argv) {
 		return -1;
 #endif
 	if (test_threadspam())
+		return -1;
+	if (test_thread_exit_heap())
 		return -1;
 	if (test_large_pages())
 		return -1;

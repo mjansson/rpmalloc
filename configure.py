@@ -28,6 +28,10 @@ if not generator.target.is_android() and not generator.target.is_ios():
 	# are skipped and the unmap tests run.
 	generator.bin(module = 'test', sources = ['thread.c', 'main.c'], binname = 'rpmalloc-test-nooverride', implicit_deps = [rpmalloc_test_nooverride_lib], libs = ['rpmalloc-test-nooverride'], includepaths = ['rpmalloc', 'test'], variables = {'defines': ['ENABLE_ASSERTS=1', 'ENABLE_STATISTICS=1', 'RPMALLOC_FIRST_CLASS_HEAPS=1']})
 
+	# Thread exit key order test, the test binary loads the library built next to it
+	rpmalloc_test_keyorder_module = generator.sharedlib(module = 'test', libname = 'rpmalloc-test-keyorder-module', sources = ['keyorder-module.c'], includepaths = ['rpmalloc'])
+	generator.bin(module = 'test', sources = ['thread.c', 'keyorder.c'], binname = 'rpmalloc-test-keyorder', implicit_deps = [rpmalloc_test_keyorder_module], includepaths = ['test'])
+
 	# Long-running multithreaded stress harness. Built here so it keeps compiling, but it is meant
 	# to be run manually (ideally under a sanitizer), not as part of CI - see test/stress.c.
 	generator.bin(module = 'test', sources = ['thread.c', 'stress.c'], binname = 'rpmalloc-stress', implicit_deps = [rpmalloc_test_nooverride_lib], libs = ['rpmalloc-test-nooverride'], includepaths = ['rpmalloc', 'test'], variables = {'defines': ['ENABLE_ASSERTS=1', 'ENABLE_STATISTICS=1', 'RPMALLOC_FIRST_CLASS_HEAPS=1']})
