@@ -31,3 +31,7 @@ if not generator.target.is_android() and not generator.target.is_ios():
 	# Long-running multithreaded stress harness. Built here so it keeps compiling, but it is meant
 	# to be run manually (ideally under a sanitizer), not as part of CI - see test/stress.c.
 	generator.bin(module = 'test', sources = ['thread.c', 'stress.c'], binname = 'rpmalloc-stress', implicit_deps = [rpmalloc_test_nooverride_lib], libs = ['rpmalloc-test-nooverride'], includepaths = ['rpmalloc', 'test'], variables = {'defines': ['ENABLE_ASSERTS=1', 'ENABLE_STATISTICS=1', 'RPMALLOC_FIRST_CLASS_HEAPS=1']})
+
+	# Module unload test, the test binary loads the library built next to it
+	rpmalloc_test_unload_module = generator.sharedlib(module = 'test', libname = 'rpmalloc-test-unload-module', sources = ['unload-module.c'], includepaths = ['rpmalloc'])
+	generator.bin(module = 'test', sources = ['thread.c', 'unload.c'], binname = 'rpmalloc-test-unload', implicit_deps = [rpmalloc_test_unload_module], includepaths = ['test'])

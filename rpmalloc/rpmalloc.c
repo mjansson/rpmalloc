@@ -72,7 +72,7 @@
 #include <windows.h>
 #include <fibersapi.h>
 #include <intsafe.h>
-static DWORD fls_key;
+static DWORD fls_key = FLS_OUT_OF_INDEXES;
 //! VirtualAlloc2 (Windows 10+), resolved dynamically; null on older systems
 typedef PVOID(WINAPI* virtualalloc2_fn)(HANDLE, PVOID, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER*, ULONG);
 static virtualalloc2_fn os_virtualalloc2;
@@ -84,6 +84,7 @@ static virtualalloc2_fn os_virtualalloc2;
 #include <fcntl.h>
 #include <pthread.h>
 static pthread_key_t pthread_key;
+static int pthread_key_created;
 #ifdef __FreeBSD__
 #include <sys/sysctl.h>
 #define MAP_HUGETLB MAP_ALIGNED_SUPER
@@ -727,6 +728,8 @@ static rpmalloc_interface_t global_memory_interface_default;
 static rpmalloc_config_t global_config = {0};
 //! Main thread ID
 static uintptr_t global_main_thread_id;
+//! Set when the module is unloaded or the process exits, the thread destructor is not registered again
+static int global_module_detached;
 
 //! Size classes
 #define SCLASS(n) \
@@ -928,9 +931,11 @@ set_thread_heap(heap_t* heap) {
 		heap->owner_thread = get_thread_id();
 	}
 #if PLATFORM_WINDOWS
-	FlsSetValue(fls_key, heap);
+	if (fls_key != FLS_OUT_OF_INDEXES)
+		FlsSetValue(fls_key, heap);
 #else
-	pthread_setspecific(pthread_key, heap);
+	if (pthread_key_created)
+		pthread_setspecific(pthread_key, heap);
 #endif
 }
 
@@ -1734,18 +1739,23 @@ thread_free_chain_exit(void* context) {
 //  destructor with the fallback heap as value, the value a finalized thread leaves. Once the thread has
 //  finalized it stops batching until it has a heap again, the destructor may not run another time. On
 //  macOS thread local storage is reinitialized before the thread exit destructor runs, which then sees an
-//  empty chain, so every batching thread registers a thread local variable destructor instead
+//  empty chain, so every batching thread registers a thread local variable destructor instead. Once the
+//  module is unloaded the destructor is released and the thread does not batch
 static NOINLINE int
 thread_free_chain_register(thread_context_t* thread) {
 	if (thread->chain_exit == CHAIN_EXIT_UNREGISTERED) {
-		thread->chain_exit = CHAIN_EXIT_REGISTERED;
 #if defined(__APPLE__)
 		_tlv_atexit(thread_free_chain_exit, thread);
 #elif PLATFORM_WINDOWS
+		if (fls_key == FLS_OUT_OF_INDEXES)
+			return 0;
 		FlsSetValue(fls_key, &global_heap_fallback);
 #else
+		if (!pthread_key_created)
+			return 0;
 		pthread_setspecific(pthread_key, &global_heap_fallback);
 #endif
+		thread->chain_exit = CHAIN_EXIT_REGISTERED;
 	}
 	return (thread->chain_exit == CHAIN_EXIT_REGISTERED);
 }
@@ -3710,6 +3720,65 @@ rpmalloc_thread_destructor(void* value) {
 		rpmalloc_thread_finalize();
 }
 
+#if PLATFORM_WINDOWS
+//! FlsFree calls the destructor for every thread on the calling thread, which must do nothing once detached
+static void NTAPI
+rpmalloc_fls_destructor(void* value) {
+	if (!global_module_detached)
+		rpmalloc_thread_destructor(value);
+}
+#endif
+
+#if PLATFORM_WINDOWS && !ENABLE_DYNAMIC_LINK && (defined(_MSC_VER) || defined(__MINGW32__))
+//! Free the thread destructor slot when a DLL is unloaded, without finalizing as the DLL can still allocate
+static void NTAPI
+rpmalloc_tls_detach(PVOID module, DWORD reason, PVOID reserved) {
+	(void)sizeof(reserved);
+	if (reason != DLL_PROCESS_DETACH)
+		return;
+	global_module_detached = 1;
+	// An executable only detaches at process exit and stays mapped
+	const IMAGE_DOS_HEADER* dos_header = (const IMAGE_DOS_HEADER*)module;
+	const IMAGE_NT_HEADERS* nt_headers = (const IMAGE_NT_HEADERS*)pointer_offset(module, dos_header->e_lfanew);
+	if ((nt_headers->FileHeader.Characteristics & IMAGE_FILE_DLL) && (fls_key != FLS_OUT_OF_INDEXES)) {
+		FlsFree(fls_key);
+		fls_key = FLS_OUT_OF_INDEXES;
+	}
+}
+
+// TLS callbacks are called in section name order, .CRT$XLY runs after the C runtime callbacks
+#if defined(_MSC_VER)
+#if defined(_M_IX86)
+#pragma comment(linker, "/INCLUDE:__tls_used")
+#pragma comment(linker, "/INCLUDE:_rpmalloc_tls_detach_callback")
+#else
+#pragma comment(linker, "/INCLUDE:_tls_used")
+#pragma comment(linker, "/INCLUDE:rpmalloc_tls_detach_callback")
+#endif
+#pragma const_seg(".CRT$XLY")
+extern const PIMAGE_TLS_CALLBACK rpmalloc_tls_detach_callback;
+const PIMAGE_TLS_CALLBACK rpmalloc_tls_detach_callback = rpmalloc_tls_detach;
+#pragma const_seg()
+#else
+extern const IMAGE_TLS_DIRECTORY _tls_used;
+__attribute__((used)) static const void* const rpmalloc_tls_used_reference = &_tls_used;
+extern PIMAGE_TLS_CALLBACK rpmalloc_tls_detach_callback;
+__attribute__((used, section(".CRT$XLY"))) PIMAGE_TLS_CALLBACK rpmalloc_tls_detach_callback = rpmalloc_tls_detach;
+#endif
+#endif
+
+#if PLATFORM_POSIX && (defined(__GNUC__) || defined(__clang__))
+//! Delete the thread destructor key when the module is unloaded, without finalizing as the module can still allocate
+__attribute__((destructor)) static void
+rpmalloc_module_detach(void) {
+	global_module_detached = 1;
+	if (pthread_key_created) {
+		pthread_key_delete(pthread_key);
+		pthread_key_created = 0;
+	}
+}
+#endif
+
 #if defined(__linux__) || defined(__ANDROID__)
 //! Read a small (pseudo) file such as /proc/meminfo into a caller provided stack buffer
 //! using raw syscalls. This deliberately avoids stdio (fopen/fgets), which allocates an
@@ -3984,10 +4053,12 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 		global_page_free_overflow[itype] = page_can_decommit ? page_free_overflow_default[itype] : 0xFFFFFFFFU;
 	}
 
-#ifdef _WIN32
-	fls_key = FlsAlloc(&rpmalloc_thread_destructor);
+#if PLATFORM_WINDOWS
+	if (!global_module_detached)
+		fls_key = FlsAlloc(&rpmalloc_fls_destructor);
 #else
-	pthread_key_create(&pthread_key, rpmalloc_thread_destructor);
+	if (!global_module_detached)
+		pthread_key_created = (pthread_key_create(&pthread_key, rpmalloc_thread_destructor) == 0);
 #endif
 
 	global_main_thread_id = get_thread_id();
@@ -4133,12 +4204,16 @@ rpmalloc_finalize(void) {
 #endif
 	}
 
-#ifdef _WIN32
-	FlsFree(fls_key);
-	fls_key = 0;
+#if PLATFORM_WINDOWS
+	if (fls_key != FLS_OUT_OF_INDEXES) {
+		FlsFree(fls_key);
+		fls_key = FLS_OUT_OF_INDEXES;
+	}
 #else
-	pthread_key_delete(pthread_key);
-	pthread_key = 0;
+	if (pthread_key_created) {
+		pthread_key_delete(pthread_key);
+		pthread_key_created = 0;
+	}
 #endif
 
 	global_heap_creating = 0;
