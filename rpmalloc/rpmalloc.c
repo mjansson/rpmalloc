@@ -642,9 +642,16 @@ struct heap_t {
 	page_t* page_free_tail[4];
 	//! Free but still committed page count for each page tyoe
 	uint32_t page_free_commit_count[4];
-	//! Time (monotonic ms) the free committed page count first went over the overflow threshold
-	//  for each page type, zero while below the threshold
-	uint64_t page_free_overflow_ms[4];
+	//! Committed size of the pages in use, in small page units
+	uint32_t page_use_units;
+	//! Committed size of the free pages, in small page units
+	uint32_t page_free_units;
+	//! Peak of the committed size of the pages in use in the current decommit window
+	uint32_t page_use_peak;
+	//! Peak of the committed size of the pages in use in the previous decommit window
+	uint32_t page_use_peak_prev;
+	//! Start time (monotonic ms) of the current decommit window
+	uint64_t page_window_ms;
 	//! Available partially initialized spans for each page type
 	span_t* span_partial[4];
 	//! Spans in full use for each page type
@@ -765,22 +772,71 @@ static const size_class_t global_size_class[SIZE_CLASS_COUNT] = {
 #endif
 
 #ifndef PAGE_DECOMMIT_DELAY_MS
-//! Time in milliseconds the free committed pages of a page type must stay above the overflow
-//  threshold before the excess is decommitted. Delaying the decommit keeps memory committed across
-//  allocate/free phases that would otherwise decommit and page fault the same pages every cycle.
+//! Length in milliseconds of the decommit window. A heap keeps free pages committed up to the peak
+//  committed size of its pages in use within the current and the previous window, so a drop in use
+//  is decommitted after one to two windows, while allocate/free phases repeating within a window
+//  reuse the same pages instead of decommitting them and page faulting them back in every cycle.
 #define PAGE_DECOMMIT_DELAY_MS 250
 #endif
-#ifndef PAGE_DECOMMIT_LIMIT_FACTOR
-//! Multiple of the overflow threshold at which free pages are decommitted immediately regardless of
-//  the delay, bounding the committed memory a heap can hold in free pages
-#define PAGE_DECOMMIT_LIMIT_FACTOR 4
-#endif
 
-//! Threshold number of pages for when free pages are decommitted
+//! Threshold number of free committed pages of a page type for when a page free checks the demand
+//  budget. Free pages of a type below the threshold are never decommitted by the budget
 static uint32_t global_page_free_overflow[5] = {16, 8, 4, 2, 0};
 
-//! Number of pages to retain when free page threshold overflows
+//! Number of free pages of each page type to keep committed when a thread collects its heap
 static uint32_t global_page_free_retain[5] = {4, 2, 1, 1, 0};
+
+//! Size of each page type in small page units, the unit of the committed size accounting
+static const uint32_t global_page_units[4] = {1, MEDIUM_SMALL_PAGE_SIZE / SMALL_PAGE_SIZE,
+                                              MEDIUM_LARGE_PAGE_SIZE / SMALL_PAGE_SIZE,
+                                              LARGE_PAGE_SIZE / SMALL_PAGE_SIZE};
+
+//! Committed size of the pages in use of all heaps, in small page units
+static atomic_uint global_page_use_units;
+//! Committed size of the free pages of all heaps, in small page units
+static atomic_uint global_page_free_units;
+//! Peak of the committed size of the pages in use of all heaps in the current decommit window
+static atomic_uint global_page_use_peak;
+//! Peak of the committed size of the pages in use of all heaps in the previous decommit window
+static atomic_uint global_page_use_peak_prev;
+//! Start time (monotonic ms) of the current global decommit window
+static atomic_ullong global_page_window_ms;
+
+//! Account pages taken into use by a heap in the committed size of all heaps
+static inline void
+global_page_use_add(uint32_t units) {
+	uint32_t use = atomic_fetch_add_explicit(&global_page_use_units, units, memory_order_relaxed) + units;
+	uint32_t peak = atomic_load_explicit(&global_page_use_peak, memory_order_relaxed);
+	while (use > peak) {
+		if (atomic_compare_exchange_weak_explicit(&global_page_use_peak, &peak, use, memory_order_relaxed,
+		                                          memory_order_relaxed))
+			break;
+	}
+}
+
+//! Account pages a heap no longer uses in the committed size of all heaps
+static inline void
+global_page_use_sub(uint32_t units) {
+	atomic_fetch_sub_explicit(&global_page_use_units, units, memory_order_relaxed);
+}
+
+//! Account free committed pages of a heap in the committed size of all heaps
+static inline void
+global_page_free_add(uint32_t units) {
+	atomic_fetch_add_explicit(&global_page_free_units, units, memory_order_relaxed);
+}
+
+//! Account free pages of a heap reused or decommitted in the committed size of all heaps
+static inline void
+global_page_free_sub(uint32_t units) {
+	atomic_fetch_sub_explicit(&global_page_free_units, units, memory_order_relaxed);
+}
+
+#ifndef PAGE_DECOMMIT_LIMIT_FACTOR
+//! Multiple of the overflow threshold of free pages a heap keeps committed when the free pages of all heaps
+//  exceed how much the use of all heaps has dropped from its recent peak
+#define PAGE_DECOMMIT_LIMIT_FACTOR 4
+#endif
 
 //! OS huge page support
 static int os_huge_pages;
@@ -874,7 +930,7 @@ static void
 heap_release_free_pages(heap_t* heap);
 
 static NOINLINE void
-heap_page_free_overflow(heap_t* heap, uint32_t page_type);
+heap_page_free_trim(heap_t* heap, uint32_t page_type);
 
 //! Coarse monotonic time in milliseconds (no syscall on Linux/vDSO)
 static inline uint64_t
@@ -1512,8 +1568,13 @@ page_available_to_free(page_t* page) {
 	heap->page_free[page->page_type] = page;
 	if (!page->next)
 		heap->page_free_tail[page->page_type] = page;
+	rpmalloc_assert(heap->page_use_units >= global_page_units[page->page_type], "Page use accounting out of sync");
+	heap->page_use_units -= global_page_units[page->page_type];
+	heap->page_free_units += global_page_units[page->page_type];
+	global_page_use_sub(global_page_units[page->page_type]);
+	global_page_free_add(global_page_units[page->page_type]);
 	if (++heap->page_free_commit_count[page->page_type] >= global_page_free_overflow[page->page_type])
-		heap_page_free_overflow(heap, page->page_type);
+		heap_page_free_trim(heap, page->page_type);
 }
 
 static void
@@ -1541,14 +1602,18 @@ page_full_to_free_on_new_heap(page_t* page, heap_t* heap) {
 	rpmalloc_assert(page->is_decommitted == 0, "Page decommitted flag internal failure");
 	page->is_full = 0;
 	page->is_free = 1;
+	page->heap->page_use_units -= global_page_units[page->page_type];
+	global_page_use_sub(global_page_units[page->page_type]);
 	page->heap = heap;
 	atomic_store_explicit(&page->thread_free, 0, memory_order_release);
 	page->next = heap->page_free[page->page_type];
 	heap->page_free[page->page_type] = page;
 	if (!page->next)
 		heap->page_free_tail[page->page_type] = page;
+	heap->page_free_units += global_page_units[page->page_type];
+	global_page_free_add(global_page_units[page->page_type]);
 	if (++heap->page_free_commit_count[page->page_type] >= global_page_free_overflow[page->page_type])
-		heap_page_free_overflow(heap, page->page_type);
+		heap_page_free_trim(heap, page->page_type);
 }
 
 static void
@@ -2575,6 +2640,7 @@ heap_allocate_new(int first_class) {
 			heap_t* heap = global_heap_queue;
 			global_heap_queue = heap->next;
 			heap_lock_release();
+			global_page_free_add(heap->page_free_units);
 			if (heap->release_trim) {
 				heap->release_trim = 0;
 				heap_release_free_pages(heap);
@@ -2689,6 +2755,9 @@ heap_release(heap_t* heap) {
 #if ENABLE_STATISTICS
 	statistics_sub_saturating(&global_statistics.heap_count, 1);
 #endif
+	// The free pages of a released heap are not reused or decommitted until a thread adopts it, and other
+	// heaps cannot decommit them, so they are left out of the free pages of all heaps until then
+	global_page_free_sub(heap->page_free_units);
 	heap_lock_acquire();
 	if (heap->prev)
 		heap->prev->next = heap->next;
@@ -2716,66 +2785,106 @@ heap_page_free_decommit(heap_t* heap, uint32_t page_type, uint32_t page_retain_c
 		if (page->is_decommitted == 0)
 			break;
 		--heap->page_free_commit_count[page_type];
+		heap->page_free_units -= global_page_units[page_type];
+		global_page_free_sub(global_page_units[page_type]);
 		page = page->next;
 	}
 }
 
 //! Decommit the most recently freed page at the head of the free list and move it to the tail, behind the
-//  committed pages, so the list keeps its committed pages first
-static void
+//  committed pages, so the list keeps its committed pages first. Returns zero if no page was decommitted
+static int
 heap_page_free_decommit_head(heap_t* heap, uint32_t page_type) {
 	page_t* page = heap->page_free[page_type];
 	if (!page || page->is_decommitted)
-		return;
+		return 0;
 	page_decommit_memory_pages(page);
 	if (!page->is_decommitted)
-		return;
+		return 0;
 	--heap->page_free_commit_count[page_type];
+	heap->page_free_units -= global_page_units[page_type];
+	global_page_free_sub(global_page_units[page_type]);
 	if (page->next) {
 		heap->page_free[page_type] = page->next;
 		heap->page_free_tail[page_type]->next = page;
 		page->next = 0;
 		heap->page_free_tail[page_type] = page;
 	}
+	return 1;
 }
 
-//! Called when the free committed page count of a page type is at or above the overflow threshold.
-//  The excess is decommitted only once the count has stayed above the threshold for the decommit
-//  delay (the count dropping below the threshold restarts the delay). Within the delay a page freed
-//  with the count at the hard limit is decommitted right away, so the limit bounds the committed free
-//  pages without decommitting the pages kept for reuse. Decommitting on the count alone made every
-//  allocate/free phase larger than the threshold decommit its pages and page fault them back in on
-//  the next phase.
+//! Decommit the free pages the heap holds beyond its recent demand. The heap keeps free pages committed
+//  up to the peak committed size of its pages in use within the current and the previous decommit
+//  window, minus the size in use now, so its committed memory never exceeds what it used within the
+//  last one to two windows. A fixed limit on the free pages instead made every allocate/free phase
+//  larger than the limit decommit pages and page fault them back in on the next phase. Free pages of
+//  other page types than the given one are decommitted first, since only pages of the same type can
+//  be reused, which also keeps a heap moving between block sizes from holding the pages of both. Each
+//  page type keeps the free pages below its overflow threshold committed.
 static NOINLINE void
-heap_page_free_overflow(heap_t* heap, uint32_t page_type) {
-	uint64_t limit = (uint64_t)global_page_free_overflow[page_type] * PAGE_DECOMMIT_LIMIT_FACTOR;
+heap_page_free_trim(heap_t* heap, uint32_t page_type) {
 	uint64_t now = monotonic_time_ms();
 #if HUGE_CACHE_SLOT_COUNT
 	huge_cache_collect(now);
 #endif
-	uint64_t since = heap->page_free_overflow_ms[page_type];
-	if (!since) {
-		since = now ? now : 1;
-		heap->page_free_overflow_ms[page_type] = since;
+	if ((now - heap->page_window_ms) >= PAGE_DECOMMIT_DELAY_MS) {
+		heap->page_use_peak_prev = heap->page_use_peak;
+		heap->page_use_peak = heap->page_use_units;
+		heap->page_window_ms = now;
 	}
-	if ((now - since) < PAGE_DECOMMIT_DELAY_MS) {
-		// Within the delay only pages above the hard limit are decommitted, one at a time as they are
-		// freed, keeping the committed pages below the limit for reuse
-		if (heap->page_free_commit_count[page_type] >= limit)
-			heap_page_free_decommit_head(heap, page_type);
+	uint32_t peak = heap->page_use_peak;
+	if (heap->page_use_peak_prev > peak)
+		peak = heap->page_use_peak_prev;
+	uint32_t budget = peak - heap->page_use_units;
+	uint32_t excess = (heap->page_free_units > budget) ? (heap->page_free_units - budget) : 0;
+	// Heaps passing load between each other each see their own drop in use, which together can exceed the
+	// drop of the process. While the free pages of all heaps exceed how much the use of all heaps has
+	// dropped from its recent peak, a heap also decommits its free pages beyond a fixed limit per page type
+	unsigned long long window = atomic_load_explicit(&global_page_window_ms, memory_order_relaxed);
+	if (((now - window) >= PAGE_DECOMMIT_DELAY_MS) &&
+	    atomic_compare_exchange_strong_explicit(&global_page_window_ms, &window, now, memory_order_relaxed,
+	                                            memory_order_relaxed)) {
+		atomic_store_explicit(&global_page_use_peak_prev,
+		                      atomic_load_explicit(&global_page_use_peak, memory_order_relaxed), memory_order_relaxed);
+		atomic_store_explicit(&global_page_use_peak, atomic_load_explicit(&global_page_use_units, memory_order_relaxed),
+		                      memory_order_relaxed);
+	}
+	uint32_t global_use = atomic_load_explicit(&global_page_use_units, memory_order_relaxed);
+	uint32_t global_free = atomic_load_explicit(&global_page_free_units, memory_order_relaxed);
+	uint32_t global_peak = atomic_load_explicit(&global_page_use_peak, memory_order_relaxed);
+	uint32_t global_peak_prev = atomic_load_explicit(&global_page_use_peak_prev, memory_order_relaxed);
+	if (global_peak_prev > global_peak)
+		global_peak = global_peak_prev;
+	uint32_t global_budget = (global_peak > global_use) ? (global_peak - global_use) : 0;
+	uint32_t global_excess = (global_free > global_budget) ? (global_free - global_budget) : 0;
+	if (!excess && !global_excess)
 		return;
+	for (int itype = PAGE_LARGE; itype >= -1; --itype) {
+		uint32_t trim_type = (itype >= 0) ? (uint32_t)itype : page_type;
+		if (((itype >= 0) && (trim_type == page_type)) || (global_page_free_overflow[trim_type] == 0xFFFFFFFFU))
+			continue;
+		uint32_t limit = global_page_free_overflow[trim_type] * PAGE_DECOMMIT_LIMIT_FACTOR;
+		uint32_t units = global_page_units[trim_type];
+		while (heap->page_free_commit_count[trim_type] >= global_page_free_overflow[trim_type]) {
+			if (!excess && (!global_excess || (heap->page_free_commit_count[trim_type] <= limit)))
+				break;
+			if (!heap_page_free_decommit_head(heap, trim_type))
+				break;
+			excess = (excess > units) ? (excess - units) : 0;
+			global_excess = (global_excess > units) ? (global_excess - units) : 0;
+		}
+		if (!excess && !global_excess)
+			return;
 	}
-	heap->page_free_overflow_ms[page_type] = 0;
-	heap_page_free_decommit(heap, page_type, global_page_free_retain[page_type]);
 }
 
 //! Trims the memory a released heap holds for reuse. Until another thread adopts the heap nothing
 //  reuses that memory or runs the decommit delay, so a heap that many short lived threads pass along
 //  would otherwise keep it all. The empty medium-large and large pages kept as the last available
 //  page of their size class are retired, and free pages of those types are decommitted down to below
-//  the overflow threshold, the most the heap holds without a delay. Small and medium-small pages are
-//  cheap to keep and costly to fault back in, they are left to the decommit delay, which keeps
-//  running across heap owners
+//  the overflow threshold, the most the heap holds regardless of its demand. Small and medium-small
+//  pages are cheap to keep and costly to fault back in, they are left to the demand budget, whose
+//  decommit window keeps running across heap owners
 static void
 heap_release_free_pages(heap_t* heap) {
 	for (uint32_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
@@ -2789,10 +2898,14 @@ heap_release_free_pages(heap_t* heap) {
 		heap->page_free[page->page_type] = page;
 		if (!page->next)
 			heap->page_free_tail[page->page_type] = page;
+		rpmalloc_assert(heap->page_use_units >= global_page_units[page->page_type], "Page use accounting out of sync");
+		heap->page_use_units -= global_page_units[page->page_type];
+		heap->page_free_units += global_page_units[page->page_type];
+		global_page_use_sub(global_page_units[page->page_type]);
+		global_page_free_add(global_page_units[page->page_type]);
 		++heap->page_free_commit_count[page->page_type];
 	}
 	for (uint32_t itype = PAGE_MEDIUM_LARGE; itype <= PAGE_LARGE; ++itype) {
-		heap->page_free_overflow_ms[itype] = 0;
 		if (heap->page_free_commit_count[itype] >= global_page_free_overflow[itype])
 			heap_page_free_decommit(heap, itype, global_page_free_overflow[itype] - 1);
 	}
@@ -2842,6 +2955,10 @@ heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page) {
 	if (head)
 		head->prev = page;
 	heap->page_available[size_class] = page;
+	heap->page_use_units += global_page_units[page->page_type];
+	if (heap->page_use_units > heap->page_use_peak)
+		heap->page_use_peak = heap->page_use_units;
+	global_page_use_add(global_page_units[page->page_type]);
 	if (page->is_decommitted != 0)
 		return page_commit_memory_pages(page);
 	return 0;
@@ -2974,13 +3091,18 @@ heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 		heap->page_free[page_type] = page->next;
 		if (!page->next)
 			heap->page_free_tail[page_type] = 0;
-		if (page->is_decommitted == 0) {
+		int recommit = (page->is_decommitted != 0);
+		if (!recommit) {
 			rpmalloc_assert(heap->page_free_commit_count[page_type] > 0, "Free committed page count out of sync");
-			if (--heap->page_free_commit_count[page_type] < global_page_free_overflow[page_type])
-				heap->page_free_overflow_ms[page_type] = 0;
+			--heap->page_free_commit_count[page_type];
+			heap->page_free_units -= global_page_units[page_type];
+			global_page_free_sub(global_page_units[page_type]);
 		}
 		if (heap_make_free_page_available(heap, size_class, page) != 0)
 			return 0;
+		// Recommitting a page grows the committed memory of the heap, trim free pages beyond the demand budget
+		if (recommit && heap->page_free_units)
+			heap_page_free_trim(heap, page_type);
 		return page;
 	}
 	rpmalloc_assert(heap->page_free_commit_count[page_type] == 0, "Free committed page count out of sync");
@@ -2998,8 +3120,12 @@ heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 	span_t* span = heap_get_span(heap, page_type);
 	if (EXPECTED(span != 0)) {
 		page = span_allocate_page(span);
-		if (heap_make_free_page_available(page->heap, size_class, page) != 0)
+		heap = page->heap;
+		if (heap_make_free_page_available(heap, size_class, page) != 0)
 			return 0;
+		// A new page grows the committed memory of the heap, trim free pages beyond the demand budget
+		if (heap->page_free_units)
+			heap_page_free_trim(heap, page_type);
 	}
 
 	return page;
@@ -3546,9 +3672,15 @@ heap_free_all(heap_t* heap) {
 		heap->page_free[itype] = 0;
 		heap->page_free_tail[itype] = 0;
 		heap->page_free_commit_count[itype] = 0;
-		heap->page_free_overflow_ms[itype] = 0;
 		atomic_store_explicit(&heap->thread_free[itype], 0, memory_order_release);
 	}
+	global_page_use_sub(heap->page_use_units);
+	global_page_free_sub(heap->page_free_units);
+	heap->page_use_units = 0;
+	heap->page_free_units = 0;
+	heap->page_use_peak = 0;
+	heap->page_use_peak_prev = 0;
+	heap->page_window_ms = 0;
 	for (int itype = 0; itype < 5; ++itype) {
 		span_t* span = heap->span_used[itype];
 		while (span) {
@@ -4233,6 +4365,10 @@ rpmalloc_finalize(void) {
 			heap_unmap(owners);
 			owners = owner_next;
 		}
+		atomic_store_explicit(&global_page_use_units, 0, memory_order_relaxed);
+		atomic_store_explicit(&global_page_free_units, 0, memory_order_relaxed);
+		atomic_store_explicit(&global_page_use_peak, 0, memory_order_relaxed);
+		atomic_store_explicit(&global_page_use_peak_prev, 0, memory_order_relaxed);
 #if ENABLE_STATISTICS
 		memset(&global_statistics, 0, sizeof(global_statistics));
 #endif
@@ -4289,10 +4425,12 @@ rpmalloc_thread_collect(void) {
 	for (uint32_t itype = 0; itype < 4; ++itype) {
 		if (global_page_free_overflow[itype] == 0xFFFFFFFFU)
 			continue;
-		heap->page_free_overflow_ms[itype] = 0;
 		if (heap->page_free_commit_count[itype] > global_page_free_retain[itype])
 			heap_page_free_decommit(heap, itype, global_page_free_retain[itype]);
 	}
+	// Restart the demand budget from the current use
+	heap->page_use_peak = heap->page_use_units;
+	heap->page_use_peak_prev = heap->page_use_units;
 }
 
 void

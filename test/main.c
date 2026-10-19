@@ -3093,6 +3093,58 @@ test_huge_cache(void) {
 	return 0;
 }
 
+static int
+test_page_decommit_demand(void) {
+	// The free pages a heap keeps committed follow its recent peak use. An allocate/free loop larger than
+	// the free page overflow threshold reuses its pages every round without decommitting them, and moving
+	// on to blocks of another page type decommits the free pages of the first type, which cannot be reused
+	// for the new blocks, instead of holding the memory of both
+	rpmalloc_initialize(0);
+	const rpmalloc_config_t* config = rpmalloc_config();
+	int can_decommit = !config->disable_decommit && (config->page_size < (64 * 1024));
+	enum { BLOCKS = 100 * 15, LARGE_BLOCKS = 100 };
+	const size_t size = 4000;              // 4KiB size class, 15 blocks per 64KiB small page, 100 pages
+	const size_t large_size = 200 * 1024;  // 4MiB medium-large pages, 5 pages
+	static void* block[BLOCKS];
+	// Start from a collected heap so the free pages and peak use of earlier tests do not count
+	rpmalloc_thread_collect();
+	rpmalloc_global_statistics_t before;
+	rpmalloc_global_statistics_t after;
+	memset(&before, 0, sizeof(before));
+	for (unsigned int iloop = 0; iloop < 4; ++iloop) {
+		if (iloop == 1)
+			rpmalloc_global_statistics(&before);
+		for (unsigned int i = 0; i < BLOCKS; ++i) {
+			block[i] = rpmalloc(size);
+			if (!block[i])
+				return test_fail("Allocation failed");
+			memset(block[i], 0xcd, size);
+		}
+		for (unsigned int i = 0; i < BLOCKS; ++i)
+			rpfree(block[i]);
+	}
+	rpmalloc_global_statistics(&after);
+	if (can_decommit && before.mapped && (after.decommitted != before.decommitted))
+		return test_fail("Free pages reused every round were decommitted");
+
+	before = after;
+	for (unsigned int i = 0; i < LARGE_BLOCKS; ++i) {
+		block[i] = rpmalloc(large_size);
+		if (!block[i])
+			return test_fail("Allocation failed");
+		memset(block[i], 0xcd, large_size);
+	}
+	rpmalloc_global_statistics(&after);
+	for (unsigned int i = 0; i < LARGE_BLOCKS; ++i)
+		rpfree(block[i]);
+	if (can_decommit && before.mapped && (after.decommitted <= before.decommitted))
+		return test_fail("Free pages of another page type not decommitted");
+
+	rpmalloc_finalize();
+	printf("Page decommit demand tests passed\n");
+	return 0;
+}
+
 extern int
 test_malloc(int print_log);
 
@@ -3122,6 +3174,9 @@ test_run(int argc, char** argv) {
 				test_loop_scale = (unsigned int)value;
 		}
 	}
+	// Runs first, while no other heap holds free pages that count against the free pages of all heaps
+	if (test_page_decommit_demand())
+		return -1;
 	if (test_alloc())
 		return -1;
 	if (test_zero_alloc())
