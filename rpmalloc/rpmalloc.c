@@ -115,6 +115,7 @@ madvise(caddr_t, size_t, int);
 #include <mach/mach_vm.h>
 #include <mach/vm_statistics.h>
 #endif
+#include <mach-o/dyld.h>
 #include <pthread.h>
 #endif
 #if defined(__HAIKU__) || defined(__TINYC__)
@@ -569,6 +570,10 @@ struct page_t {
 	uint32_t remote_fed : 1;
 	//! Flag set if the page is the header of a huge block span in the huge span list of its heap
 	uint32_t is_tracked : 1;
+	//! Set if the heap was a first class heap when the page was initialized for its size class. Cross-thread
+	//  frees into the page are not chained, read from the flag word the free path reads instead of the remotely
+	//  written heap line. The heap flag is only ever cleared, so a stale page flag only stops chaining
+	uint32_t heap_first_class : 1;
 	//! Local free list
 	block_t* local_free;
 	//! Owning heap
@@ -653,6 +658,10 @@ struct heap_t {
 	uint32_t finalize;
 	//! Set when the heap was released without being trimmed, the thread adopting it trims it first
 	uint32_t release_trim;
+	//! Set for a first class heap, written before the heap has any page and cleared when a thread takes the
+	//  released heap over. Copied to the pages initialized for a size class, other threads never hold blocks of
+	//  such a page in their free chain, since rpmalloc_heap_free_all unmaps the pages regardless
+	uint32_t first_class;
 	//! Memory map region offset
 	uint32_t offset;
 	//! Memory map size
@@ -803,7 +812,51 @@ static size_t os_page_size;
 #define TLS_MODEL __attribute__((tls_model("initial-exec")))
 // #define TLS_MODEL
 #endif
-static _Thread_local heap_t* global_thread_heap TLS_MODEL = &global_heap_fallback;
+//! Per thread state. Besides the thread heap it holds a chain of blocks the thread freed into a page
+//  owned by another heap and has not pushed to the page yet. A cross-thread free into the same page as
+//  the previous one is linked into the chain without atomic operations, and the chain is pushed to the
+//  page with a single compare and swap when the thread frees into another page, when the chain holds
+//  THREAD_FREE_CHAIN_LIMIT_BYTES of blocks or at a flush point (its allocation slow path,
+//  rpmalloc_thread_collect or rpmalloc_thread_finalize, which also runs from the thread exit destructor).
+//  Chained blocks are still counted as used by the page, so the page cannot be retired while the chain holds
+//  them. The heap pointer and the chain share one thread local object so the cross-thread free path makes a
+//  single thread local access
+typedef struct thread_context_t {
+	//! Current thread heap
+	heap_t* heap;
+	//! Page of the previous cross-thread free, the page the chain blocks belong to. A chain begins with the
+	//  second free in a row into the page, which checks that the page can be batched, and the chained blocks
+	//  keep the page from being retired. The page is kept after the chain is pushed, and cleared after a free
+	//  into a page that cannot be batched
+	page_t* chain_page;
+	//! First block of the chain
+	block_t* chain_head;
+	//! Next pointer the following chained block is stored in, chain_head while the chain is empty
+	block_t** chain_link;
+	//! Number of blocks in the chain
+	uint32_t chain_count;
+	//! Thread exit push of the chain, see thread_free_chain_register
+	uint32_t chain_exit;
+} thread_context_t;
+
+//! Bytes of blocks a thread free chain holds before it is pushed, bounding the memory a thread that frees into a
+//  page of another heap and then stops at no flush point (a consumer thread blocking on a wait) keeps from the
+//  owner. The default is above the small page size, so a chain of small blocks is pushed whole when the thread
+//  leaves the page, handing the owner the page as one run, while a chain of medium small blocks (1MiB pages) is
+//  pushed in parts. Zero pushes the chain only when the thread frees into another page or reaches a flush point
+#ifndef THREAD_FREE_CHAIN_LIMIT_BYTES
+#define THREAD_FREE_CHAIN_LIMIT_BYTES (256 * 1024)
+#endif
+
+//! No thread exit push of the chain is registered
+#define CHAIN_EXIT_UNREGISTERED 0
+//! The chain is pushed when the thread exits
+#define CHAIN_EXIT_REGISTERED 1
+//! The thread has finalized (or exited, on macOS) and no longer batches unless it has a heap, since the
+//  thread exit destructor may not run another time
+#define CHAIN_EXIT_FINALIZED 2
+
+static _Thread_local thread_context_t global_thread TLS_MODEL = {&global_heap_fallback, 0, 0, 0, 0, 0};
 
 static heap_t*
 heap_allocate(int first_class);
@@ -860,7 +913,7 @@ get_thread_id(void) {
 	__asm__ volatile("mrs %0, tpidr_el0" : "=r"(tid));
 #endif
 #else
-	tid = (uintptr_t)&global_thread_heap;
+	tid = (uintptr_t)&global_thread;
 #endif
 	return tid;
 #endif
@@ -869,7 +922,7 @@ get_thread_id(void) {
 //! Set the current thread heap
 static void
 set_thread_heap(heap_t* heap) {
-	global_thread_heap = heap;
+	global_thread.heap = heap;
 	if (heap && (heap->id != 0)) {
 		rpmalloc_assert(heap->id != 0, "Default heap being used");
 		heap->owner_thread = get_thread_id();
@@ -891,7 +944,7 @@ get_thread_heap_allocate(void) {
 //! Get the current thread heap
 static inline heap_t*
 get_thread_heap(void) {
-	return global_thread_heap;
+	return global_thread.heap;
 }
 
 //! Get the size class from given size in bytes for tiny blocks (below 16 times the minimum granularity)
@@ -1505,6 +1558,23 @@ page_put_local_free_block(page_t* page, block_t* block) {
 	}
 }
 
+//! Put a run of count blocks of the page, linked from first to last, freed by other threads and taken from
+//  the heap level thread free list in the page free list at once. The freeing threads have already
+//  subtracted the blocks from the heap allocated size statistics
+static void
+page_put_thread_free_run(page_t* page, block_t* first, block_t* last, uint32_t count) {
+	last->next = page->local_free;
+	page->local_free = first;
+	page->remote_fed = 1;
+	_rpmalloc_stat_add_free(page->heap, page->size_class, count);
+	rpmalloc_assert(count <= page->block_used, "Page block use counter out of sync");
+	page->block_used -= count;
+	if (page->is_full)
+		page_full_to_available(page);
+	if (page->block_used == 0)
+		page_available_to_free(page);
+}
+
 static NOINLINE void
 page_adopt_thread_free_block_list(page_t* page) {
 	if (page->local_free)
@@ -1583,6 +1653,147 @@ page_put_thread_free_block(page_t* page, block_t* block) {
 	if (UNEXPECTED(!atomic_compare_exchange_weak_explicit(&page->thread_free, &prev_thread_free, thread_free,
 	                                                      memory_order_release, memory_order_relaxed)))
 		page_put_thread_free_block_retry(page, block, block_offset, prev_thread_free);
+}
+
+//! Push a chain of blocks freed into a full page to the heap level thread free list, the chain is spliced
+//  in front of the list by storing the list head in the next pointer of the last chained block
+static void
+heap_put_thread_free_chain(page_t* page, block_t* head, block_t** tail_link) {
+	atomic_uintptr_t* list = &page->heap->thread_free[page->page_type];
+	uintptr_t prev_head = atomic_load_explicit(list, memory_order_relaxed);
+	uint32_t spin = 0;
+	while (1) {
+		*tail_link = (void*)prev_head;
+		if (atomic_compare_exchange_weak_explicit(list, &prev_head, (uintptr_t)head, memory_order_release,
+		                                          memory_order_relaxed))
+			return;
+		wait_spin(&spin);
+	}
+}
+
+//! Push a chain of count blocks freed by this thread into a page owned by another heap with one compare
+//  and swap, to the page thread free list, or to the heap level list once the owner has flagged the page
+//  full. The list head is stored in the next pointer of the last chained block, and the token takes the
+//  chain head and the summed count
+static NOINLINE void
+page_put_thread_free_chain(page_t* page, block_t* head, block_t** tail_link, uint32_t count) {
+	unsigned long long prev_thread_free = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
+	uint32_t head_offset = page_block_offset(page, head);
+	uint32_t spin = 0;
+	while (1) {
+		if (prev_thread_free & THREAD_FREE_FULL) {
+			heap_put_thread_free_chain(page, head, tail_link);
+			return;
+		}
+		uint32_t list_size = page_block_from_thread_free_list(page, prev_thread_free, tail_link) + count;
+		uint64_t thread_free = page_block_to_thread_free_list(page, head_offset, list_size);
+		if (atomic_compare_exchange_weak_explicit(&page->thread_free, &prev_thread_free, thread_free,
+		                                          memory_order_release, memory_order_relaxed))
+			return;
+		wait_spin(&spin);
+	}
+}
+
+//! Push the blocks held in the calling thread's free chain to their page. The chain page is kept, a following
+//  free into the page begins a new chain
+static NOINLINE void
+thread_free_chain_flush(thread_context_t* thread) {
+	uint32_t count = thread->chain_count;
+	if (!count)
+		return;
+	block_t** tail_link = thread->chain_link;
+	thread->chain_count = 0;
+	thread->chain_link = &thread->chain_head;
+	page_put_thread_free_chain(thread->chain_page, thread->chain_head, tail_link, count);
+}
+
+//! Flush the calling thread's free chain and stop batching, for a thread leaving its heap
+static void
+thread_free_chain_release(void) {
+	thread_context_t* thread = &global_thread;
+	thread_free_chain_flush(thread);
+	thread->chain_page = 0;
+}
+
+#if defined(__APPLE__)
+//! Thread local variable destructor pushing the free chain of an exiting thread. Runs while the thread
+//  local storage is still valid, unlike the thread exit destructor
+static void
+thread_free_chain_exit(void* context) {
+	thread_context_t* thread = context;
+	thread_free_chain_flush(thread);
+	thread->chain_page = 0;
+	thread->chain_exit = CHAIN_EXIT_FINALIZED;
+}
+#endif
+
+//! Make sure the chain of the calling thread is pushed when the thread exits, returns non-zero if it is and
+//  the thread can batch. The thread exit destructor finalizes a thread with a heap, which pushes the chain.
+//  A thread that has not allocated has no heap and no allocation slow path, and the destructor only runs
+//  for a thread with a heap. Threads that only free are common (consumers), so such a thread registers the
+//  destructor with the fallback heap as value, the value a finalized thread leaves. Once the thread has
+//  finalized it stops batching until it has a heap again, the destructor may not run another time. On
+//  macOS thread local storage is reinitialized before the thread exit destructor runs, which then sees an
+//  empty chain, so every batching thread registers a thread local variable destructor instead
+static NOINLINE int
+thread_free_chain_register(thread_context_t* thread) {
+	if (thread->chain_exit == CHAIN_EXIT_UNREGISTERED) {
+		thread->chain_exit = CHAIN_EXIT_REGISTERED;
+#if defined(__APPLE__)
+		_tlv_atexit(thread_free_chain_exit, thread);
+#elif PLATFORM_WINDOWS
+		FlsSetValue(fls_key, &global_heap_fallback);
+#else
+		pthread_setspecific(pthread_key, &global_heap_fallback);
+#endif
+	}
+	return (thread->chain_exit == CHAIN_EXIT_REGISTERED);
+}
+
+//! Begin a chain with the second free in a row into the chain page, the first one was pushed at once and a run
+//  of one free is never delayed. Batching is limited to small and medium small pages to bound the memory a
+//  thread can hold back, and to pages of heaps that are not first class. A thread with a null heap does not
+//  batch, it has no flush points. Otherwise the chain page is cleared and the block pushed
+static NOINLINE void
+thread_free_chain_begin(page_t* page, block_t* block) {
+	thread_context_t* thread = &global_thread;
+	heap_t* heap = thread->heap;
+	int batch = (page->page_type <= PAGE_MEDIUM_SMALL) && heap;
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	batch = batch && !page->heap_first_class;
+#endif
+	if (batch) {
+#if defined(__APPLE__)
+		int exit_push = (thread->chain_exit == CHAIN_EXIT_REGISTERED);
+#else
+		int exit_push = heap->id || (thread->chain_exit == CHAIN_EXIT_REGISTERED);
+#endif
+		if (UNEXPECTED(!exit_push))
+			batch = thread_free_chain_register(thread);
+	}
+	if (!batch) {
+		thread->chain_page = 0;
+		page_put_thread_free_block(page, block);
+		return;
+	}
+	rpmalloc_assert(!((page_block_offset(page, block) - PAGE_HEADER_SIZE) % page->block_size),
+	                "Block pointer is not aligned to start of block");
+	thread->chain_head = block;
+	thread->chain_link = &block->next;
+	thread->chain_count = 1;
+#if THREAD_FREE_CHAIN_LIMIT_BYTES
+	if (UNEXPECTED(page->block_size >= THREAD_FREE_CHAIN_LIMIT_BYTES))
+		thread_free_chain_flush(thread);
+#endif
+}
+
+//! A cross-thread free into another page than the chain page ending a run of chained frees
+static NOINLINE void
+thread_free_chain_switch_flush(page_t* page, block_t* block) {
+	thread_context_t* thread = &global_thread;
+	thread_free_chain_flush(thread);
+	thread->chain_page = page;
+	page_put_thread_free_block(page, block);
 }
 
 static void
@@ -2188,7 +2399,38 @@ span_deallocate_block(span_t* span, page_t* page, void* block) {
 	if (EXPECTED(is_thread_local != 0)) {
 		page_put_local_free_block(page, block);
 	} else {
-		// Multithreaded deallocation, push to deferred deallocation list.
+		// Multithreaded deallocation. A free into the same page as the previous one is linked into the
+		// thread free chain, otherwise the chain is pushed to its page
+		thread_context_t* thread = &global_thread;
+		if (EXPECTED(thread->chain_page == page)) {
+			uint32_t chain_count = thread->chain_count;
+			if (UNEXPECTED(!chain_count)) {
+				thread_free_chain_begin(page, block);
+				return;
+			}
+			rpmalloc_assert(!((page_block_offset(page, block) - PAGE_HEADER_SIZE) % page->block_size),
+			                "Block pointer is not aligned to start of block");
+			rpmalloc_assert(page->page_type <= PAGE_MEDIUM_SMALL, "Chained free into a page type not batched");
+#if RPMALLOC_FIRST_CLASS_HEAPS
+			rpmalloc_assert(!page->heap_first_class, "Chained free into a page of a first class heap");
+#endif
+			*thread->chain_link = block;
+			thread->chain_link = &((block_t*)block)->next;
+			thread->chain_count = ++chain_count;
+#if THREAD_FREE_CHAIN_LIMIT_BYTES
+			// The block size is on the page header line the checks above read
+			if (UNEXPECTED((chain_count * page->block_size) >= THREAD_FREE_CHAIN_LIMIT_BYTES))
+				thread_free_chain_flush(thread);
+#endif
+			return;
+		}
+		// A free into another page is pushed at once and makes the page the chain page. Only the store is added
+		// to the plain push, random cross-thread frees rarely free into the same page twice in a row
+		if (UNEXPECTED(thread->chain_count != 0)) {
+			thread_free_chain_switch_flush(page, block);
+			return;
+		}
+		thread->chain_page = page;
 		page_put_thread_free_block(page, block);
 	}
 }
@@ -2311,6 +2553,10 @@ heap_allocate_new(int first_class) {
 				heap->release_trim = 0;
 				heap_release_free_pages(heap);
 			}
+			// A released first class heap becomes a thread heap, the first class heap functions must not be
+			// called on it once released, so cross-thread frees into its pages can be chained, into the pages
+			// it already has once they are initialized again for a size class
+			heap->first_class = 0;
 			return heap;
 		}
 		if (global_heap_pristine) {
@@ -2412,6 +2658,8 @@ heap_allocate(int first_class) {
 
 static inline void
 heap_release(heap_t* heap) {
+	if (heap == global_heap_default)
+		return;
 #if ENABLE_STATISTICS
 	statistics_sub_saturating(&global_statistics.heap_count, 1);
 #endif
@@ -2556,6 +2804,9 @@ heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page) {
 	page->has_aligned_block = 0;
 	page->local_reuse = 0;
 	page->remote_fed = 0;
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	page->heap_first_class = (heap->first_class != 0);
+#endif
 	page->heap = heap;
 	atomic_store_explicit(&page->heap_fast, (uintptr_t)heap, memory_order_relaxed);
 	page_t* head = heap->page_available[size_class];
@@ -2654,6 +2905,8 @@ block_deallocate(block_t* block);
 static page_t*
 heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 	page_type_t page_type = get_page_type(size_class);
+	if (UNEXPECTED(global_thread.chain_count != 0))
+		thread_free_chain_flush(&global_thread);
 #if HUGE_CACHE_SLOT_COUNT
 	// The page refill path is taken regularly by any allocating thread, release cached huge mappings gone idle
 	huge_cache_collect_idle();
@@ -2664,13 +2917,26 @@ heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 	if (UNEXPECTED(block_mt != 0)) {
 		// Claim the whole list in one exchange, concurrent pushes either land before (and are claimed) or after
 		block_mt = atomic_exchange_explicit(&heap->thread_free[page_type], 0, memory_order_acquire);
+		// A thread free chain is pushed as a run of blocks of one page, each run is put in the page free list
+		// at once. The blocks belong to pages of this heap and are block starts
 		block_t* block = (void*)block_mt;
+		page_t* block_page = block ? span_get_page_from_block(block_get_span(block), block) : 0;
 		while (block) {
+			block_t* last = block;
 			block_t* next_block = block->next;
-			page_t* block_page = span_get_page_from_block(block_get_span(block), block);
-			block_deallocate(block);
-			block_page->remote_fed = 1;
+			page_t* next_page = 0;
+			uint32_t count = 1;
+			while (next_block) {
+				next_page = span_get_page_from_block(block_get_span(next_block), next_block);
+				if (next_page != block_page)
+					break;
+				last = next_block;
+				next_block = next_block->next;
+				++count;
+			}
+			page_put_thread_free_run(block_page, block, last, count);
 			block = next_block;
+			block_page = next_page;
 		}
 		// Retry after processing deferred thread frees
 		return heap_get_page(heap, size_class);
@@ -2746,6 +3012,11 @@ heap_allocate_block_small_to_large(heap_t* heap, uint32_t size_class, unsigned i
 			_rpmalloc_stat_inc_alloc(page->heap, size_class);
 			return block;
 		}
+		// Running out of a page is a flush point of the thread free chain, bounding how long the blocks
+		// an allocating thread freed into other heaps stay hidden from their owner, at about one check per
+		// page of allocations
+		if (UNEXPECTED(global_thread.chain_count != 0))
+			thread_free_chain_flush(&global_thread);
 		// The page has no free block. Move it to the back of the list a limited number of times so it
 		// collects frees without leaving the list, then mark pages full
 		heap = page->heap;
@@ -2767,6 +3038,8 @@ heap_allocate_block_small_to_large(heap_t* heap, uint32_t size_class, unsigned i
 //! Generic allocation path from heap pages, spans or new mapping
 static NOINLINE RPMALLOC_ALLOCATOR void*
 heap_allocate_block_huge(heap_t* heap, size_t size, unsigned int zero) {
+	if (global_thread.chain_count != 0)
+		thread_free_chain_flush(&global_thread);
 	if (heap->id == 0) {
 		// Thread has not yet initialized, assign heap and try again
 		rpmalloc_initialize(0);
@@ -3792,6 +4065,8 @@ statistics_pending_deferred_blocks(void) {
 
 extern void
 rpmalloc_finalize(void) {
+	if (atomic_load_explicit(&global_rpmalloc_init_state, memory_order_acquire) != RPMALLOC_INIT_DONE)
+		return;
 	rpmalloc_thread_finalize();
 
 #if HUGE_CACHE_SLOT_COUNT
@@ -3879,6 +4154,11 @@ rpmalloc_thread_initialize(void) {
 
 extern void
 rpmalloc_thread_finalize(void) {
+	// Push the blocks this thread freed into other heaps, the thread has no flush point left
+	thread_free_chain_release();
+#if !defined(__APPLE__)
+	global_thread.chain_exit = CHAIN_EXIT_FINALIZED;
+#endif
 	heap_t* heap = get_thread_heap();
 	if (heap != global_heap_default) {
 		heap_release_trim(heap);
@@ -3888,8 +4168,9 @@ rpmalloc_thread_finalize(void) {
 
 extern void
 rpmalloc_thread_collect(void) {
-	// Decommit the free pages held above the retain count right away instead of waiting for the
-	// decommit delay
+	// Push the blocks this thread freed into other heaps, then decommit the free pages held above the
+	// retain count right away instead of waiting for the decommit delay
+	thread_free_chain_flush(&global_thread);
 	heap_t* heap = get_thread_heap();
 	if (heap == global_heap_default)
 		return;
@@ -4042,6 +4323,7 @@ rpmalloc_heap_acquire(void) {
 	heap_t* heap = heap_allocate(1);
 	rpmalloc_assume(heap != 0);
 	heap->owner_thread = 0;
+	heap->first_class = 1;
 	return heap;
 }
 
@@ -4179,6 +4461,8 @@ extern inline void
 rpmalloc_heap_thread_set_current(rpmalloc_heap_t* heap) {
 	heap_t* prev_heap = get_thread_heap();
 	if (prev_heap != heap) {
+		// The new heap can be null, which leaves the thread without flush points
+		thread_free_chain_release();
 		if (heap)
 			heap_untrack_huge_spans(heap);
 		set_thread_heap(heap);
