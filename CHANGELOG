@@ -38,6 +38,10 @@ A custom memory_map function must now store the size of the mapped region in map
 at least the alignment offset plus the requested size. The whole region must be usable, huge block
 mappings are reused and grown in place within it. Builds with asserts enabled check the reported size.
 
+Fixed a leak on macOS of the heap of every thread exiting without calling rpmalloc_thread_finalize,
+along with the memory it held. Thread local storage is usually freed before the thread exit destructor
+runs, so the destructor now releases the heap it is passed instead of the thread heap.
+
 
 2.0.1
 

@@ -3706,8 +3706,22 @@ rpmalloc_thread_destructor(void* value) {
 	// has not been called and shutdown is forced (through _exit) or unclean
 	if (get_thread_id() == global_main_thread_id)
 		return;
+#if defined(__APPLE__)
+	// dyld frees thread local storage in a key destructor that usually runs before this one, and touching it
+	// allocates it again holding the fallback heap. Release the heap from the value instead, which is the heap of
+	// the exiting thread as key destructors only run on the thread they belong to. Destructors run in key order,
+	// and this key runs first if it reused an index below the key dyld created for the image. Thread local storage
+	// then still holds the heap and is reset as in rpmalloc_thread_finalize, or destructors running later on this
+	// thread would allocate from the released heap while another thread adopts it
+	if (value && (value != global_heap_default)) {
+		if (get_thread_heap() == value)
+			set_thread_heap(global_heap_default);
+		heap_release_trim(value);
+	}
+#else
 	if (value)
 		rpmalloc_thread_finalize();
+#endif
 }
 
 #if defined(__linux__) || defined(__ANDROID__)
