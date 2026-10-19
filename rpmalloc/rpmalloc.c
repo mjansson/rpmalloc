@@ -197,8 +197,12 @@ madvise(caddr_t, size_t, int);
 ///
 //////
 
+//! Stride of the page structures packed in the span metadata
 #define PAGE_HEADER_SIZE 128
-#define SPAN_HEADER_SIZE PAGE_HEADER_SIZE
+//! Size of the span header, which overlays the first entries of the span slot table
+#define SPAN_HEADER_SIZE 128
+//! Offset of the block in a huge block span, past the span header and the page structure of the block
+#define HUGE_HEADER_SIZE (SPAN_HEADER_SIZE + PAGE_HEADER_SIZE)
 
 //! Alignment of each heap control structure within a shared mapping. Keeps adjacent
 //  heaps on separate cache lines so cross-thread writes to one heap (thread_free) do
@@ -235,6 +239,29 @@ madvise(caddr_t, size_t, int);
 
 #define SPAN_SIZE (256 * 1024 * 1024)
 #define SPAN_MASK (~((uintptr_t)(SPAN_SIZE - 1)))
+
+//! A span is divided in slots of the small page size. The slot table at the start of the span maps each slot to
+//  the page holding it, so the page of a block is found with one load from an address computed from the block
+//  address alone. A page larger than a slot is mapped by each of its slots
+#define SPAN_SLOT_SHIFT SMALL_PAGE_SIZE_SHIFT
+#define SPAN_SLOT_COUNT (SPAN_SIZE >> SPAN_SLOT_SHIFT)
+//! log2 of the slot table entry size
+#define SPAN_SLOT_ENTRY_SHIFT 4
+#define SPAN_SLOT_TABLE_SIZE (SPAN_SLOT_COUNT << SPAN_SLOT_ENTRY_SHIFT)
+//! Number of slot table entries at the start of a huge block span that map to the huge block page. A huge block
+//  starts at most RPMALLOC_MAX_ALIGNMENT from the span start
+#define SPAN_HEAD_SLOT_COUNT 4
+//! The page structures of a span of pages are packed after the slot table, indexed by page
+#define SPAN_PAGE_ARRAY_OFFSET SPAN_SLOT_TABLE_SIZE
+//! The slot table and page structures of a span of small pages cover its first pages, which are not used
+#define SPAN_SMALL_METADATA_SIZE (SPAN_PAGE_ARRAY_OFFSET + ((SPAN_SIZE / SMALL_PAGE_SIZE) * PAGE_HEADER_SIZE))
+#define SPAN_SMALL_FIRST_PAGE ((SPAN_SMALL_METADATA_SIZE + (SMALL_PAGE_SIZE - 1)) / SMALL_PAGE_SIZE)
+//! Spans of larger pages keep the metadata in the first page, which is not used
+#define SPAN_FIRST_PAGE 1
+//! Metadata of spans committing pages on demand is committed in chunks of this size, the slot table and the
+//  first chunk of page structures when the span is mapped
+#define SPAN_METADATA_COMMIT_CHUNK (64 * 1024)
+#define SPAN_METADATA_COMMIT_INITIAL (SPAN_PAGE_ARRAY_OFFSET + SPAN_METADATA_COMMIT_CHUNK)
 
 #if ENABLE_VALIDATE_ARGS
 //! Maximum allocation size to avoid integer overflow
@@ -527,11 +554,9 @@ struct block_t {
 	block_t* next;
 };
 
-//! Fast free heap of a page whose frees take the generic path. Heaps are HEAP_ALIGNMENT aligned, so it
-//  matches neither a heap nor the null heap of a thread without one
-#define PAGE_HEAP_FAST_GENERIC ((uintptr_t)1)
-
-//! A page contains blocks of a given size
+//! A page contains blocks of a given size. The page structures are packed in the metadata of the span holding the
+//  pages, not stored in the pages, so the structures of different pages do not map to the same cache sets and the
+//  blocks start at the page start
 struct page_t {
 	//! Size class of blocks
 	uint16_t size_class;
@@ -563,8 +588,8 @@ struct page_t {
 	//! Set if the span maps reserve-only (pages commit on demand, may be decommitted),
 	//  captured at map time so it survives a config change across a finalize/initialize
 	uint32_t commit_on_demand : 1;
-	//! log2 of the committed prefix (the page size at the span's map time)
-	uint32_t commit_prefix_shift : 6;
+	//! log2 of the commit granularity (the page size at the span's map time)
+	uint32_t commit_shift : 6;
 	//! Set when a refill took blocks freed by the owner thread from the page local free list
 	uint32_t local_reuse : 1;
 	//! Set when the page received blocks freed by other threads
@@ -579,31 +604,50 @@ struct page_t {
 	block_t* local_free;
 	//! Owning heap
 	heap_t* heap;
-	//! Owning heap while the page takes the fast free path, PAGE_HEAP_FAST_GENERIC for huge, full or aligned
-	//  block pages, so the free fast path checks ownership and eligibility with a single compare. Threads
-	//  freeing into the page read it while the owner updates it, and never find their own heap in it
-	atomic_uintptr_t heap_fast;
 	//! Next page in list
 	page_t* next;
 	//! Previous page in list
 	page_t* prev;
-	//! Multithreaded free list, block index is in low 32 bit, list count is high 32 bit
+	//! Multithreaded free list, block offset is in low 32 bit, list count is high 32 bit
 	atomic_ullong thread_free;
+	//! Start of the page memory, where the first block starts. Kept next to the thread free list, which is coded
+	//  with block offsets from it
+	block_t* block_start;
 };
 
-//! A span contains pages of a given type
+//! An entry of the span slot table
+typedef struct page_slot_t {
+	//! Page holding the slot. First in the entry, the page feeds the free list updates of a free while the key
+	//  only feeds a predicted branch, so its load gets the cheaper address computation
+	page_t* page;
+	//! Fast free key of the page holding the slot, the owning heap with the low bit set while the page takes the
+	//  fast free path (not full, not huge and holding no aligned blocks), and zero otherwise. Heaps are aligned,
+	//  so a key never equals the low bit set on another heap or on the null heap of a thread without one, and the
+	//  free fast path checks ownership and eligibility with a single compare. Threads freeing into the page read
+	//  it while the owner updates it, and never find their own heap in it
+	atomic_uintptr_t key;
+} page_slot_t;
+
+//! Fast free key of a page that takes the generic free path
+#define PAGE_KEY_GENERIC ((uintptr_t)0)
+
+//! A span contains pages of a given type, or a single huge block. The span starts with the slot table, followed
+//  by the page structures, both committed on demand. The span header overlays the first slot table entries, which
+//  in a span of pages map slots holding metadata and are never looked up. A huge block span holds the span header,
+//  the page structure of the huge block and the block, and the overlaid slot table entries map the huge block page
 struct span_t {
-	//! Page header
-	page_t page;
-	//! Owning heap (do not deduplicate into page.heap - that field is the
-	//! owner of page 0 as a memory page and changes if the page is adopted
-	//! by another heap, while the span owner must remain stable)
+	//! Slot table entries overlaid by the span header, only set in a huge block span
+	page_slot_t slot_head[SPAN_HEAD_SLOT_COUNT];
+	//! Owning heap
 	heap_t* heap;
-	//! Page address mask
-	uintptr_t page_address_mask;
-	//! Number of pages initialized
+	//! Mapped size
+	uint64_t mapped_size;
+	//! Next span in list
+	span_t* next;
+	//! Number of pages initialized, including the pages holding metadata
 	uint32_t page_initialized;
-	//! Number of pages in use
+	//! Number of pages in the span. For a huge block span the committed pages, which include the slack kept
+	//  from a reused mapping
 	uint32_t page_count;
 	//! Number of bytes per page
 	uint32_t page_size;
@@ -611,13 +655,15 @@ struct span_t {
 	page_type_t page_type;
 	//! Offset to start of mapped memory region
 	uint32_t offset;
-	//! Number of pages requested for a huge block, its usable size. The page count holds the committed pages,
-	//  which include the slack kept from a reused mapping
+	//! Number of pages requested for a huge block, its usable size
 	uint32_t page_request;
-	//! Mapped size
-	uint64_t mapped_size;
-	//! Next span in list
-	span_t* next;
+	//! Number of bytes of metadata committed, for spans committing on demand
+	uint32_t metadata_commit;
+	//! Set if the span maps reserve-only (pages commit on demand, may be decommitted). A huge block span never
+	//  takes the per page commit path, the flag tells whether the huge block cache can commit and decommit its tail
+	uint32_t commit_on_demand : 1;
+	//! log2 of the commit granularity (the page size at map time)
+	uint32_t commit_shift : 6;
 };
 
 // Control structure for a heap, either a thread heap or a first class heap if enabled
@@ -680,6 +726,26 @@ struct heap_t {
 
 _Static_assert(sizeof(page_t) <= PAGE_HEADER_SIZE, "Invalid page header size");
 _Static_assert(sizeof(span_t) <= SPAN_HEADER_SIZE, "Invalid span header size");
+_Static_assert(sizeof(page_slot_t) == (1 << SPAN_SLOT_ENTRY_SHIFT), "Invalid slot table entry size");
+_Static_assert((SPAN_HEADER_SIZE >> SPAN_SLOT_ENTRY_SHIFT) <= SPAN_SMALL_FIRST_PAGE,
+               "Span header overlays the slot table entries of used small pages");
+_Static_assert((SPAN_HEADER_SIZE >> SPAN_SLOT_ENTRY_SHIFT) <=
+                   ((SPAN_FIRST_PAGE * MEDIUM_SMALL_PAGE_SIZE) >> SPAN_SLOT_SHIFT),
+               "Span header overlays the slot table entries of used pages");
+_Static_assert(SPAN_SMALL_METADATA_SIZE <= (SPAN_SMALL_FIRST_PAGE * SMALL_PAGE_SIZE),
+               "Small span metadata overlaps pages");
+_Static_assert((SPAN_PAGE_ARRAY_OFFSET + ((SPAN_SIZE / MEDIUM_SMALL_PAGE_SIZE) * PAGE_HEADER_SIZE)) <=
+                   (SPAN_FIRST_PAGE * MEDIUM_SMALL_PAGE_SIZE),
+               "Span metadata overlaps pages");
+// An aligned huge block starts at the first multiple of the alignment past the header, below the maximum alignment
+_Static_assert((RPMALLOC_MAX_ALIGNMENT <= (SPAN_HEAD_SLOT_COUNT << SPAN_SLOT_SHIFT)),
+               "Huge block span head slots do not cover the largest alignment");
+_Static_assert(HUGE_HEADER_SIZE <= (SPAN_HEAD_SLOT_COUNT << SPAN_SLOT_SHIFT), "Huge block span header too large");
+_Static_assert(((SMALL_PAGE_SIZE >> SPAN_SLOT_SHIFT) == 1) &&
+                   ((MEDIUM_SMALL_PAGE_SIZE >> SPAN_SLOT_SHIFT) == (1 << (2 + (2 * PAGE_MEDIUM_SMALL)))) &&
+                   ((MEDIUM_LARGE_PAGE_SIZE >> SPAN_SLOT_SHIFT) == (1 << (2 + (2 * PAGE_MEDIUM_LARGE)))) &&
+                   ((LARGE_PAGE_SIZE >> SPAN_SLOT_SHIFT) == (1 << (2 + (2 * PAGE_LARGE)))),
+               "Slot count per page does not match page_set_key");
 _Static_assert(sizeof(heap_t) <= 4096, "Invalid heap size");
 _Static_assert(offsetof(heap_t, local_free) == HEAP_ALIGNMENT, "Remotely accessed heap fields must fill one line");
 
@@ -733,13 +799,13 @@ static int global_module_detached;
 
 //! Size classes
 #define SCLASS(n) \
-	{ (n * SMALL_GRANULARITY), (SMALL_PAGE_SIZE - PAGE_HEADER_SIZE) / (n * SMALL_GRANULARITY) }
+	{ (n * SMALL_GRANULARITY), SMALL_PAGE_SIZE / (n * SMALL_GRANULARITY) }
 #define MSCLASS(n) \
-	{ (n * SMALL_GRANULARITY), (MEDIUM_SMALL_PAGE_SIZE - PAGE_HEADER_SIZE) / (n * SMALL_GRANULARITY) }
+	{ (n * SMALL_GRANULARITY), MEDIUM_SMALL_PAGE_SIZE / (n * SMALL_GRANULARITY) }
 #define MLCLASS(n) \
-	{ (n * SMALL_GRANULARITY), (MEDIUM_LARGE_PAGE_SIZE - PAGE_HEADER_SIZE) / (n * SMALL_GRANULARITY) }
+	{ (n * SMALL_GRANULARITY), MEDIUM_LARGE_PAGE_SIZE / (n * SMALL_GRANULARITY) }
 #define LCLASS(n) \
-	{ (n * SMALL_GRANULARITY), (LARGE_PAGE_SIZE - PAGE_HEADER_SIZE) / (n * SMALL_GRANULARITY) }
+	{ (n * SMALL_GRANULARITY), LARGE_PAGE_SIZE / (n * SMALL_GRANULARITY) }
 static const size_class_t global_size_class[SIZE_CLASS_COUNT] = {
     SCLASS(1),      SCLASS(1),      SCLASS(2),      SCLASS(3),      SCLASS(4),      SCLASS(5),      SCLASS(6),
     SCLASS(7),      SCLASS(8),      SCLASS(9),      SCLASS(10),     SCLASS(11),     SCLASS(12),     SCLASS(13),
@@ -1338,6 +1404,72 @@ page_get_span(page_t* page) {
 	return (span_t*)((uintptr_t)page & SPAN_MASK);
 }
 
+//! Get the slot table entry of the slot holding the given address, computed from the address alone
+static inline page_slot_t*
+block_get_slot(const void* block) {
+	page_slot_t* slot_table = (page_slot_t*)((uintptr_t)block & SPAN_MASK);
+#if defined(__GNUC__) || defined(__clang__)
+	// Keep the compiler from merging the span start and the entry offset into one bitwise or, a four
+	// instruction sequence the AArch64 machine outliner moves out of the free fast path into a call
+	__asm__("" : "+r"(slot_table));
+#endif
+	return slot_table + (((uintptr_t)block >> SPAN_SLOT_SHIFT) & (SPAN_SLOT_COUNT - 1));
+}
+
+//! Get the page holding the given block
+static inline page_t*
+block_get_page(const void* block) {
+	return block_get_slot(block)->page;
+}
+
+//! Get the page structure of the page with the given index in a span of pages
+static inline page_t*
+span_get_page(span_t* span, uint32_t page_index) {
+	return (page_t*)pointer_offset(span, SPAN_PAGE_ARRAY_OFFSET + ((size_t)page_index * PAGE_HEADER_SIZE));
+}
+
+//! Get the index of the first page of a span of pages, the pages before it hold the span metadata
+static inline uint32_t
+span_first_page(span_t* span) {
+	return (span->page_type == PAGE_SMALL) ? SPAN_SMALL_FIRST_PAGE : SPAN_FIRST_PAGE;
+}
+
+//! Get the page structure of a huge block span, which follows the span header
+static inline page_t*
+span_get_huge_page(span_t* span) {
+	return (page_t*)pointer_offset(span, SPAN_HEADER_SIZE);
+}
+
+//! Map the slots a huge block can start in to the huge block page, which takes the generic free path
+static inline void
+span_set_huge_slots(span_t* span) {
+	page_t* page = span_get_huge_page(span);
+	for (uint32_t islot = 0; islot < SPAN_HEAD_SLOT_COUNT; ++islot) {
+		span->slot_head[islot].page = page;
+		atomic_store_explicit(&span->slot_head[islot].key, PAGE_KEY_GENERIC, memory_order_relaxed);
+	}
+}
+
+//! Fast free key of a page owned by the given heap
+static inline uintptr_t
+page_key(heap_t* heap) {
+	return (uintptr_t)heap | 1;
+}
+
+//! Set the fast free key in the slot table entries of every slot of the page. A small page has a single slot,
+//  the larger page types 16, 64 and 256
+static inline void
+page_set_key(page_t* page, uintptr_t key) {
+	page_slot_t* slot = block_get_slot(page->block_start);
+	if (EXPECTED(page->page_type == PAGE_SMALL)) {
+		atomic_store_explicit(&slot->key, key, memory_order_relaxed);
+		return;
+	}
+	uint32_t slot_count = 1U << (2 + (2 * (uint32_t)page->page_type));
+	for (uint32_t islot = 0; islot < slot_count; ++islot)
+		atomic_store_explicit(&slot[islot].key, key, memory_order_relaxed);
+}
+
 static inline size_t
 page_get_size(page_t* page) {
 	if (page->page_type == PAGE_SMALL)
@@ -1366,33 +1498,28 @@ page_is_thread_heap(page_t* page) {
 }
 
 static inline block_t*
-page_block_start(page_t* page) {
-	return pointer_offset(page, PAGE_HEADER_SIZE);
-}
-
-static inline block_t*
 page_block(page_t* page, uint32_t block_index) {
-	return pointer_offset(page, PAGE_HEADER_SIZE + (page->block_size * block_index));
+	return pointer_offset(page->block_start, page->block_size * block_index);
 }
 
-//! Byte offset of a block from the start of its page. Pages are at most LARGE_PAGE_SIZE (16MiB), so
-//  the offset always fits in 32 bits.
+//! Byte offset of a block from the start of the first block of its page. Pages are at most LARGE_PAGE_SIZE
+//  (16MiB), so the offset always fits in 32 bits.
 static inline uint32_t
 page_block_offset(page_t* page, block_t* block) {
-	return (uint32_t)pointer_diff(block, page);
+	return (uint32_t)pointer_diff(block, page->block_start);
 }
 
 //! Set in the thread free token of a full page, whose list is empty
 #define THREAD_FREE_FULL (1ULL << 63ULL)
 
-//! The thread free list token holds the list head as a byte offset from the page start in the low
+//! The thread free list token holds the list head as a byte offset from the first block in the low
 //  32 bits (a block index would cost a division on every cross-thread free and a multiplication
 //  on every decode), the list count in the next 31 bits and the full page flag in the top bit
 static inline uint32_t
 page_block_from_thread_free_list(page_t* page, uint64_t token, block_t** block) {
 	uint32_t block_offset = (uint32_t)(token & 0xFFFFFFFFULL);
 	uint32_t list_count = (uint32_t)((token >> 32ULL) & 0x7FFFFFFFULL);
-	*block = list_count ? (block_t*)pointer_offset(page, block_offset) : 0;
+	*block = list_count ? (block_t*)pointer_offset(page->block_start, block_offset) : 0;
 	return list_count;
 }
 
@@ -1404,8 +1531,7 @@ page_block_to_thread_free_list(page_t* page, uint32_t block_offset, uint32_t lis
 
 static inline block_t*
 page_block_realign(page_t* page, block_t* block) {
-	void* blocks_start = page_block_start(page);
-	uint32_t block_offset = (uint32_t)pointer_diff(block, blocks_start);
+	uint32_t block_offset = page_block_offset(page, block);
 	return pointer_offset(block, -(int32_t)(block_offset % page->block_size));
 }
 
@@ -1424,19 +1550,16 @@ page_decommit_memory_pages(page_t* page) {
 	// Only reserve-only spans support decommit
 	if (!page->commit_on_demand)
 		return;
-	// Keep the prefix (holding the page header) committed and decommit the rest. The prefix
-	// is the span's fixed map-time page size, so commit and decommit always use the same one.
-	size_t commit_prefix = (size_t)1 << page->commit_prefix_shift;
+	// The page structure is kept in the span metadata, so all of the page memory is decommitted. The page
+	// must be a whole number of commit units, the span's fixed map-time page size
 	size_t page_size = page_get_size(page);
-	if (page_size <= commit_prefix)
+	if (page_size < ((size_t)1 << page->commit_shift))
 		return;
-	void* extra_page = pointer_offset(page, commit_prefix);
-	size_t extra_page_size = page_size - commit_prefix;
-	if (global_memory_interface->memory_decommit(extra_page, extra_page_size) != 0)
+	if (global_memory_interface->memory_decommit(page->block_start, page_size) != 0)
 		return;
 #if RPMALLOC_HEAP_STATISTICS && ENABLE_DECOMMIT
 	if (page->heap)
-		page->heap->stats.committed_size -= extra_page_size;
+		page->heap->stats.committed_size -= page_size;
 #endif
 	page->is_decommitted = 1;
 }
@@ -1445,23 +1568,18 @@ static inline int
 page_commit_memory_pages(page_t* page) {
 	if (!page->is_decommitted)
 		return 0;
-	size_t commit_prefix = (size_t)1 << page->commit_prefix_shift;
-	void* extra_page = pointer_offset(page, commit_prefix);
-	size_t extra_page_size = page_get_size(page) - commit_prefix;
-	if (global_memory_interface->memory_commit(extra_page, extra_page_size) != 0)
+	size_t page_size = page_get_size(page);
+	if (global_memory_interface->memory_commit(page->block_start, page_size) != 0)
 		return 1;
 	page->is_decommitted = 0;
 #if ENABLE_DECOMMIT
 #if RPMALLOC_HEAP_STATISTICS
 	if (page->heap)
-		page->heap->stats.committed_size += extra_page_size;
+		page->heap->stats.committed_size += page_size;
 #endif
 #if !defined(__APPLE__)
-	// When page is recommitted, the blocks in the second memory page and forward
-	// will be zeroed out by OS - take advantage in zalloc/calloc calls and make sure
-	// blocks in first page is zeroed out
-	void* first_page = pointer_offset(page, PAGE_HEADER_SIZE);
-	memset(first_page, 0, commit_prefix - PAGE_HEADER_SIZE);
+	// All of the page memory was decommitted, so the OS zero fills it when recommitted - take advantage in
+	// zalloc/calloc calls
 	page->is_zero = 1;
 #endif
 #endif
@@ -1529,7 +1647,7 @@ page_full_to_available(page_t* page) {
 	heap->page_available[page->size_class] = page;
 	page->is_full = 0;
 	if (page->has_aligned_block == 0)
-		atomic_store_explicit(&page->heap_fast, (uintptr_t)heap, memory_order_relaxed);
+		page_set_key(page, page_key(heap));
 	// Other threads do not modify the token of a page flagged full, it holds only the flag
 	atomic_store_explicit(&page->thread_free, 0, memory_order_release);
 }
@@ -1563,7 +1681,7 @@ page_available_to_full(page_t* page) {
 	}
 	page->is_full = 1;
 	page->is_zero = 0;
-	atomic_store_explicit(&page->heap_fast, PAGE_HEAP_FAST_GENERIC, memory_order_relaxed);
+	page_set_key(page, PAGE_KEY_GENERIC);
 }
 
 static inline void
@@ -1666,8 +1784,7 @@ page_put_thread_free_block(page_t* page, block_t* block) {
 		return;
 	}
 	uint32_t block_offset = page_block_offset(page, block);
-	rpmalloc_assert(!((block_offset - PAGE_HEADER_SIZE) % page->block_size),
-	                "Block pointer is not aligned to start of block");
+	rpmalloc_assert(!(block_offset % page->block_size), "Block pointer is not aligned to start of block");
 	uint32_t list_size = page_block_from_thread_free_list(page, prev_thread_free, &block->next) + 1;
 	uint64_t thread_free = page_block_to_thread_free_list(page, block_offset, list_size);
 	if (UNEXPECTED(!atomic_compare_exchange_weak_explicit(&page->thread_free, &prev_thread_free, thread_free,
@@ -1801,7 +1918,7 @@ thread_free_chain_begin(page_t* page, block_t* block) {
 		page_put_thread_free_block(page, block);
 		return;
 	}
-	rpmalloc_assert(!((page_block_offset(page, block) - PAGE_HEADER_SIZE) % page->block_size),
+	rpmalloc_assert(!(page_block_offset(page, block) % page->block_size),
 	                "Block pointer is not aligned to start of block");
 	thread->chain_head = block;
 	thread->chain_link = &block->next;
@@ -1923,10 +2040,23 @@ span_is_thread_heap(span_t* span) {
 #endif
 }
 
-static inline page_t*
-span_get_page_from_block(span_t* span, void* block) {
-	return (page_t*)((uintptr_t)block & span->page_address_mask);
+#if ENABLE_DECOMMIT
+//! Commit the span metadata up to the given offset, for spans committing on demand
+static int
+span_commit_metadata(span_t* span, size_t metadata_end) {
+	if (metadata_end <= span->metadata_commit)
+		return 0;
+	size_t commit_end = (metadata_end + (SPAN_METADATA_COMMIT_CHUNK - 1)) & ~(size_t)(SPAN_METADATA_COMMIT_CHUNK - 1);
+	size_t commit_size = commit_end - span->metadata_commit;
+	if (global_memory_interface->memory_commit(pointer_offset(span, span->metadata_commit), commit_size) != 0)
+		return 1;
+#if RPMALLOC_HEAP_STATISTICS
+	span->heap->stats.committed_size += commit_size;
+#endif
+	span->metadata_commit = (uint32_t)commit_end;
+	return 0;
 }
+#endif
 
 //! Find or allocate a page from the given span
 static inline page_t*
@@ -1934,13 +2064,17 @@ span_allocate_page(span_t* span) {
 	// Allocate path, initialize a new chunk of memory for a page in the given span
 	rpmalloc_assert(span->page_initialized < span->page_count, "Page initialization internal failure");
 	heap_t* heap = span->heap;
-	page_t* page = pointer_offset(span, span->page_size * span->page_initialized);
+	uint32_t page_index = span->page_initialized;
+	page_t* page = span_get_page(span, page_index);
+	void* page_memory = pointer_offset(span, (size_t)span->page_size * page_index);
 
 #if ENABLE_DECOMMIT
-	// Reserve-only spans commit later pages on demand; fully committed spans are already
-	// committed from the map and must not be committed per page
-	if (span->page_initialized && span->page.commit_on_demand) {
-		if (global_memory_interface->memory_commit(page, span->page_size) != 0)
+	// Reserve-only spans commit the page structure and the page on demand; fully committed spans are
+	// already committed from the map and must not be committed per page
+	if (span->commit_on_demand) {
+		if (span_commit_metadata(span, (size_t)pointer_diff(page, span) + PAGE_HEADER_SIZE) != 0)
+			return 0;
+		if (global_memory_interface->memory_commit(page_memory, span->page_size) != 0)
 			return 0;
 #if RPMALLOC_HEAP_STATISTICS
 		heap->stats.committed_size += span->page_size;
@@ -1950,11 +2084,19 @@ span_allocate_page(span_t* span) {
 	++span->page_initialized;
 
 	page->page_type = (uint16_t)span->page_type;
-	page->commit_on_demand = span->page.commit_on_demand;
-	page->commit_prefix_shift = span->page.commit_prefix_shift;
+	page->commit_on_demand = span->commit_on_demand;
+	page->commit_shift = span->commit_shift;
 	page->is_zero = 1;
+	page->is_decommitted = 0;
 	page->heap = heap;
+	page->block_start = page_memory;
 	rpmalloc_assert(page_is_thread_heap(page), "Page owner thread mismatch");
+
+	// Map the slots of the page to the page structure
+	size_t slot_count = (size_t)span->page_size >> SPAN_SLOT_SHIFT;
+	page_slot_t* slot = block_get_slot(page_memory);
+	for (size_t islot = 0; islot < slot_count; ++islot)
+		slot[islot].page = page;
 
 	if (span->page_initialized == span->page_count) {
 		// Span fully utilized
@@ -2288,7 +2430,7 @@ huge_cache_pop(size_t alloc_size, size_t* commit_size) {
 			continue;
 		size_t committed = span_huge_committed(span);
 		size_t cost = 0;
-		if (span->page.commit_on_demand) {
+		if (span->commit_on_demand) {
 			if ((((size_t)span->mapped_size - span->offset) < alloc_size) || (committed > reuse_limit))
 				continue;
 			if (committed < alloc_size)
@@ -2313,7 +2455,7 @@ huge_cache_pop(size_t alloc_size, size_t* commit_size) {
 		if (best_committed > alloc_size)
 			spare = ((best_committed > slack_limit) ? slack_limit : best_committed) - alloc_size;
 		// A mapping that cannot decommit keeps all its committed pages
-		if (!best->page.commit_on_demand) {
+		if (!best->commit_on_demand) {
 			commit += spare;
 			spare = 0;
 		}
@@ -2341,33 +2483,35 @@ huge_cache_pop(size_t alloc_size, size_t* commit_size) {
 
 //! Add a huge block span to the huge span list of its heap, which rpmalloc_heap_free_all releases. Only heaps
 //  without an owner thread keep the list, as the huge blocks of a thread heap are freed by any thread. The list
-//  links forward through the span next pointer and back through the prev pointer of the span page header, which
+//  links forward through the span next pointer and back through the prev pointer of the huge block page, which
 //  is in no page list, so freeing the block removes the span without walking the list
 static void
 span_huge_track(span_t* span) {
 	heap_t* heap = span->heap;
+	page_t* page = span_get_huge_page(span);
 	span_t* head = heap->span_used[PAGE_HUGE];
 	span->next = head;
-	span->page.prev = 0;
+	page->prev = 0;
 	if (head)
-		head->page.prev = &span->page;
+		span_get_huge_page(head)->prev = page;
 	heap->span_used[PAGE_HUGE] = span;
-	span->page.is_tracked = 1;
+	page->is_tracked = 1;
 }
 
 //! Remove a huge block span from the huge span list of its heap
 static void
 span_huge_untrack(span_t* span) {
 	heap_t* heap = span->heap;
-	page_t* prev = span->page.prev;
+	page_t* page = span_get_huge_page(span);
+	page_t* prev = page->prev;
 	span_t* next = span->next;
 	if (prev)
 		page_get_span(prev)->next = next;
 	else
 		heap->span_used[PAGE_HUGE] = next;
 	if (next)
-		next->page.prev = prev;
-	span->page.is_tracked = 0;
+		span_get_huge_page(next)->prev = prev;
+	page->is_tracked = 0;
 }
 
 //! Free a huge block by caching or unmapping its mapping. Kept out of line so the generic free path,
@@ -2389,7 +2533,7 @@ span_deallocate_huge(span_t* span) {
 #endif
 	// Leave the heap span list before the mapping is cached for any heap to reuse or is unmapped, the list must
 	// only hold live blocks for rpmalloc_heap_free_all to release
-	if (span->page.is_tracked)
+	if (span_get_huge_page(span)->is_tracked)
 		span_huge_untrack(span);
 #if HUGE_CACHE_SLOT_COUNT
 	if (huge_cache_push(span))
@@ -2410,9 +2554,9 @@ span_deallocate_aligned_block(page_t* page, void* block) {
 }
 
 static NOINLINE void
-span_deallocate_block(span_t* span, page_t* page, void* block) {
+span_deallocate_block(page_t* page, void* block) {
 	if (UNEXPECTED(page->page_type == PAGE_HUGE)) {
-		span_deallocate_huge(span);
+		span_deallocate_huge(page_get_span(page));
 		return;
 	}
 
@@ -2434,7 +2578,7 @@ span_deallocate_block(span_t* span, page_t* page, void* block) {
 				thread_free_chain_begin(page, block);
 				return;
 			}
-			rpmalloc_assert(!((page_block_offset(page, block) - PAGE_HEADER_SIZE) % page->block_size),
+			rpmalloc_assert(!(page_block_offset(page, block) % page->block_size),
 			                "Block pointer is not aligned to start of block");
 			rpmalloc_assert(page->page_type <= PAGE_MEDIUM_SMALL, "Chained free into a page type not batched");
 #if RPMALLOC_FIRST_CLASS_HEAPS
@@ -2472,49 +2616,64 @@ block_get_span(block_t* block) {
 	return (span_t*)((uintptr_t)block & SPAN_MASK);
 }
 
-//! Deallocate a block, taking the fast path for a block in a page whose heap_fast is the given heap. The
-//  caller owns that heap, it is the thread heap or the first class heap the block was allocated from
+//! Deallocate a block, taking the fast path for a block in a page whose fast free key is the key of the owned
+//  heap. The caller owns that heap, it is the first class heap the block was allocated from, or the thread heap
+//  if the given heap is null
 static inline void
 block_deallocate_heap(block_t* block, heap_t* owned_heap) {
-	span_t* span = (span_t*)((uintptr_t)block & SPAN_MASK);
-	page_t* page = span_get_page_from_block(span, block);
+	// The key and the page are loaded from the same slot table entry, so the ownership and eligibility check
+	// does not wait on a load of the page structure
+	page_slot_t* slot = block_get_slot(block);
+	page_t* page = slot->page;
+	uintptr_t key = atomic_load_explicit(&slot->key, memory_order_relaxed);
+#if defined(__GNUC__) || defined(__clang__)
+	// Keep the AArch64 machine outliner from moving the compare out of the free fast path into a call
+	__asm__("" : "+r"(key));
+#endif
+	// The thread heap is read after the slot table entry loads are issued, the thread local storage access is
+	// a call on some platforms and loads are not moved across it
+	if (!owned_heap)
+		owned_heap = get_thread_heap();
+
 #if RPMALLOC_HEAP_STATISTICS
-	heap_t* heap = span->heap;
+	heap_t* heap = page->heap;
 	if (heap) {
-		if (span->page_type <= PAGE_LARGE)
+		if (page->page_type <= PAGE_LARGE) {
 			heap->stats.allocated_size -= page->block_size;
-		else
+		} else {
+			span_t* span = block_get_span(block);
 			heap->stats.allocated_size -= ((size_t)span->page_size * (size_t)span->page_request);
+		}
 	}
 #endif
 
 	// Optimized path for a free by the heap owner with non-huge block in page that is not full and has
-	// no aligned blocks, all of which heap_fast encodes by matching the owned heap
-	if (EXPECTED(atomic_load_explicit(&page->heap_fast, memory_order_relaxed) == (uintptr_t)owned_heap)) {
+	// no aligned blocks, all of which the key encodes by matching the owned heap
+	if (EXPECTED(key == page_key(owned_heap))) {
 		block->next = page->local_free;
 		page->local_free = block;
 		_rpmalloc_stat_add_free(page->heap, page->size_class, 1);
 		if (UNEXPECTED(--page->block_used == 0))
 			page_available_to_free(page);
 	} else {
-		span_deallocate_block(span, page, block);
+		span_deallocate_block(page, block);
 	}
 }
 
 static inline void
 block_deallocate(block_t* block) {
-	block_deallocate_heap(block, get_thread_heap());
+	block_deallocate_heap(block, 0);
 }
 
 static inline size_t
 block_usable_size(block_t* block) {
-	span_t* span = (span_t*)((uintptr_t)block & SPAN_MASK);
-	if (EXPECTED(span->page_type <= PAGE_LARGE)) {
-		page_t* page = span_get_page_from_block(span, block);
+	page_t* page = block_get_page(block);
+	if (EXPECTED(page->page_type <= PAGE_LARGE)) {
 		// Offset within a page is below 2^32, a 32-bit modulo is several times cheaper than a 64-bit one
-		uint32_t block_offset = (uint32_t)pointer_diff(block, page) - PAGE_HEADER_SIZE;
+		uint32_t block_offset = page_block_offset(page, block);
 		return page->block_size - (block_offset % page->block_size);
 	} else {
+		span_t* span = block_get_span(block);
 		return ((size_t)span->page_size * (size_t)span->page_request) - (size_t)pointer_diff(block, span);
 	}
 }
@@ -2834,7 +2993,7 @@ heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page) {
 	page->heap_first_class = (heap->first_class != 0);
 #endif
 	page->heap = heap;
-	atomic_store_explicit(&page->heap_fast, (uintptr_t)heap, memory_order_relaxed);
+	page_set_key(page, page_key(heap));
 	page_t* head = heap->page_available[size_class];
 	page->next = head;
 	page->prev = head ? head->prev : page;
@@ -2867,43 +3026,40 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 		_rpmalloc_stat_inc_span_map(heap, page_type);
 		uint32_t page_count = 0;
 		uint32_t page_size = 0;
-		uintptr_t page_address_mask = 0;
 		if (page_type == PAGE_SMALL) {
 			page_count = SPAN_SIZE / SMALL_PAGE_SIZE;
 			page_size = SMALL_PAGE_SIZE;
-			page_address_mask = SMALL_PAGE_MASK;
 		} else if (page_type == PAGE_MEDIUM_SMALL) {
 			page_count = SPAN_SIZE / MEDIUM_SMALL_PAGE_SIZE;
 			page_size = MEDIUM_SMALL_PAGE_SIZE;
-			page_address_mask = MEDIUM_SMALL_PAGE_MASK;
 		} else if (page_type == PAGE_MEDIUM_LARGE) {
 			page_count = SPAN_SIZE / MEDIUM_LARGE_PAGE_SIZE;
 			page_size = MEDIUM_LARGE_PAGE_SIZE;
-			page_address_mask = MEDIUM_LARGE_PAGE_MASK;
 		} else {
 			page_count = SPAN_SIZE / LARGE_PAGE_SIZE;
 			page_size = LARGE_PAGE_SIZE;
-			page_address_mask = LARGE_PAGE_MASK;
 		}
-		// Commit the first page for reserve-only spans (fully committed spans commit nothing
-		// here); record the commit model on the span only after its header is committed
+		// Commit the span header, the slot table and the first page structures for reserve-only spans
+		// (fully committed spans commit nothing here); record the commit model on the span only after its
+		// header is committed
 		int commit_on_demand = os_commit_on_demand();
 #if ENABLE_DECOMMIT
 		if (commit_on_demand) {
-			if (global_memory_interface->memory_commit(span, page_size) != 0) {
+			if (global_memory_interface->memory_commit(span, SPAN_METADATA_COMMIT_INITIAL) != 0) {
 				global_memory_interface->memory_unmap(span, offset, mapped_size);
 				return 0;
 			}
 		}
 #endif
-		span->page.commit_on_demand = (uint32_t)commit_on_demand;
-		uint32_t commit_prefix_shift = 0;
-		while (((size_t)1 << commit_prefix_shift) < global_config.page_size)
-			++commit_prefix_shift;
-		span->page.commit_prefix_shift = commit_prefix_shift;
+		span->commit_on_demand = (uint32_t)commit_on_demand;
+		uint32_t commit_shift = 0;
+		while (((size_t)1 << commit_shift) < global_config.page_size)
+			++commit_shift;
+		span->commit_shift = commit_shift;
+		span->metadata_commit = SPAN_METADATA_COMMIT_INITIAL;
 #if RPMALLOC_HEAP_STATISTICS
 #if ENABLE_DECOMMIT
-		heap->stats.committed_size += page_size;
+		heap->stats.committed_size += SPAN_METADATA_COMMIT_INITIAL;
 #else
 		heap->stats.committed_size += mapped_size;
 #endif
@@ -2912,9 +3068,10 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 		span->page_type = page_type;
 		span->page_count = page_count;
 		span->page_size = page_size;
-		span->page_address_mask = page_address_mask;
 		span->offset = (uint32_t)offset;
 		span->mapped_size = mapped_size;
+		// The first pages hold the span metadata
+		span->page_initialized = span_first_page(span);
 
 		heap->span_partial[page_type] = span;
 	}
@@ -2951,14 +3108,14 @@ heap_collect_thread_free(heap_t* heap) {
 		block_t* block = (block_t*)atomic_exchange_explicit(&heap->thread_free[itype], 0, memory_order_acquire);
 		// A thread free chain is pushed as a run of blocks of one page, each run is put in the page free list
 		// at once. The blocks belong to pages of this heap and are block starts
-		page_t* block_page = block ? span_get_page_from_block(block_get_span(block), block) : 0;
+		page_t* block_page = block ? block_get_page(block) : 0;
 		while (block) {
 			block_t* last = block;
 			block_t* next_block = block->next;
 			page_t* next_page = 0;
 			uint32_t count = 1;
 			while (next_block) {
-				next_page = span_get_page_from_block(block_get_span(next_block), next_block);
+				next_page = block_get_page(next_block);
 				if (next_page != block_page)
 					break;
 				last = next_block;
@@ -3023,7 +3180,7 @@ heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 	span_t* span = heap_get_span(heap, page_type);
 	if (EXPECTED(span != 0)) {
 		page = span_allocate_page(span);
-		if (heap_make_free_page_available(page->heap, size_class, page) != 0)
+		if (!page || (heap_make_free_page_available(page->heap, size_class, page) != 0))
 			return 0;
 	}
 
@@ -3096,7 +3253,7 @@ heap_allocate_block_huge(heap_t* heap, size_t size, size_t zero_size) {
 		rpmalloc_initialize(0);
 		heap = get_thread_heap();
 	}
-	size_t alloc_size = get_page_aligned_size(size + SPAN_HEADER_SIZE);
+	size_t alloc_size = get_page_aligned_size(size + HUGE_HEADER_SIZE);
 	size_t commit_size = alloc_size;
 	size_t clear_size = zero_size;
 	span_t* span = 0;
@@ -3110,7 +3267,7 @@ heap_allocate_block_huge(heap_t* heap, size_t size, size_t zero_size) {
 #if OS_DECOMMIT_ZEROES
 		// The pages of the mapping beyond its committed size were decommitted, or never committed, and read as
 		// zero once committed, only the committed pages can hold old content
-		size_t dirty_size = span_huge_committed(span) - SPAN_HEADER_SIZE;
+		size_t dirty_size = span_huge_committed(span) - HUGE_HEADER_SIZE;
 		if ((global_memory_interface->memory_map == os_mmap) && (dirty_size < clear_size))
 			clear_size = dirty_size;
 #endif
@@ -3159,20 +3316,23 @@ heap_allocate_block_huge(heap_t* heap, size_t size, size_t zero_size) {
 		_rpmalloc_stat_inc_span_map(heap, PAGE_HUGE);
 		// Huge blocks never use the per-page commit path, the flag records whether the mapping is reserve-only
 		// so the cache can commit and decommit its tail
-		span->page.commit_on_demand = (uint32_t)commit_on_demand;
+		span->commit_on_demand = (uint32_t)commit_on_demand;
 		span->page_size = (uint32_t)global_config.page_size;
 		span->offset = (uint32_t)offset;
 		span->mapped_size = mapped_size;
 	}
 	span->heap = heap;
 	span->page_type = PAGE_HUGE;
-	span->page_address_mask = LARGE_PAGE_MASK;
 	span->page_count = (uint32_t)(commit_size / span->page_size);
 	span->page_request = (uint32_t)(alloc_size / span->page_size);
-	span->page.heap = heap;
-	span->page.is_full = 1;
-	atomic_store_explicit(&span->page.heap_fast, PAGE_HEAP_FAST_GENERIC, memory_order_relaxed);
-	span->page.page_type = PAGE_HUGE;
+	// The huge block page always takes the generic free path, which releases the span
+	page_t* page = span_get_huge_page(span);
+	memset(page, 0, sizeof(page_t));
+	page->heap = heap;
+	page->is_full = 1;
+	page->page_type = PAGE_HUGE;
+	page->block_start = pointer_offset(span, HUGE_HEADER_SIZE);
+	span_set_huge_slots(span);
 #if RPMALLOC_HEAP_STATISTICS
 	heap->stats.mapped_size += span->mapped_size;
 #if ENABLE_DECOMMIT
@@ -3186,10 +3346,9 @@ heap_allocate_block_huge(heap_t* heap, size_t size, size_t zero_size) {
 	statistics_add_huge_alloc(commit_size);
 #endif
 	// Keep track of span if first class heap
-	span->page.is_tracked = 0;
 	if (!heap->owner_thread)
 		span_huge_track(span);
-	void* ptr = pointer_offset(span, SPAN_HEADER_SIZE);
+	void* ptr = pointer_offset(span, HUGE_HEADER_SIZE);
 	// A fresh mapping from the default OS interface is already zero filled (anonymous mmap and
 	// VirtualAlloc both guarantee it), clearing it again would fault in and commit every page.
 	// Reused cached mappings and custom memory interfaces give no such guarantee, but the pages a
@@ -3273,32 +3432,32 @@ heap_allocate_block_aligned(heap_t* heap, size_t alignment, size_t size, unsigne
 	}
 
 	size_t align_mask = alignment - 1;
-	if (alignment <= PAGE_HEADER_SIZE) {
-		// Blocks start at a page header size offset from a page (or span) start, which is aligned to at
-		// least the page size. Rounding the size up to a multiple of the alignment (and at least the
-		// alignment) selects a size class whose block size is a multiple of the alignment: up to 1KiB
-		// every multiple of the granularity is a class, above that all class sizes are multiples of
-		// 256. Every block of that class is then naturally aligned, so there is no need to over-allocate
-		// and realign, and the page keeps the fast free path.
-		size_t aligned_size = (size + align_mask) & ~align_mask;
-		if (aligned_size < alignment)
-			aligned_size = alignment;
-		if (aligned_size >= size) {
-			block_t* block = heap_allocate_block(heap, aligned_size, zero ? size : 0);
-			rpmalloc_assert(!((uintptr_t)block & align_mask), "Natural block alignment internal failure");
-			return block;
-		}
+	// Blocks start at the page start, which is aligned to the page size. Rounding the size up to a multiple of
+	// the alignment (and at least the alignment) selects a size class whose block size is a multiple of the
+	// alignment: up to 1KiB every multiple of the granularity is a class, above that the classes of each power
+	// of two range are multiples of a quarter of its lower bound, and the multiple of the alignment is in the
+	// range or at its lower bound. The page size of the class is at least the block size, so every block of
+	// that class is naturally aligned, there is no need to over-allocate and realign, and the page keeps the
+	// fast free path. A huge block starts at the huge block header size offset from the span start
+	size_t aligned_size = (size + align_mask) & ~align_mask;
+	if (aligned_size < alignment)
+		aligned_size = alignment;
+	if ((aligned_size >= size) && ((aligned_size <= LARGE_BLOCK_SIZE_LIMIT) || (alignment <= HUGE_HEADER_SIZE))) {
+		block_t* block = heap_allocate_block(heap, aligned_size, zero ? size : 0);
+		rpmalloc_assert(!((uintptr_t)block & align_mask), "Natural block alignment internal failure");
+		return block;
 	}
 	// The block is realigned by up to the alignment after allocation, zeroing the whole request from the
 	// block start covers the realigned range and keeps fresh pages and mappings untouched
 	block_t* block = heap_allocate_block(heap, size + alignment, zero ? (size + alignment) : 0);
 	if ((uintptr_t)block & align_mask) {
 		block = (void*)(((uintptr_t)block & ~(uintptr_t)align_mask) + alignment);
-		// Mark as having aligned blocks
-		span_t* span = block_get_span(block);
-		page_t* page = span_get_page_from_block(span, block);
-		page->has_aligned_block = 1;
-		atomic_store_explicit(&page->heap_fast, PAGE_HEAP_FAST_GENERIC, memory_order_relaxed);
+		// Mark as having aligned blocks, a huge block always takes the generic free path
+		page_t* page = block_get_page(block);
+		if (page->page_type != PAGE_HUGE) {
+			page->has_aligned_block = 1;
+			page_set_key(page, PAGE_KEY_GENERIC);
+		}
 	}
 	return block;
 }
@@ -3308,7 +3467,7 @@ heap_allocate_block_aligned(heap_t* heap, size_t alignment, size_t size, unsigne
 //  block, or 0 if the mapping is too small.
 static void*
 span_huge_grow(span_t* span, size_t size) {
-	size_t alloc_size = get_page_aligned_size(size + SPAN_HEADER_SIZE);
+	size_t alloc_size = get_page_aligned_size(size + HUGE_HEADER_SIZE);
 	size_t old_request = (size_t)span->page_request * span->page_size;
 	size_t old_committed = span_huge_committed(span);
 	if ((alloc_size <= old_request) || (alloc_size > ((size_t)span->mapped_size - span->offset)) ||
@@ -3318,8 +3477,7 @@ span_huge_grow(span_t* span, size_t size) {
 	if (alloc_size > old_committed) {
 #if ENABLE_DECOMMIT
 		void* tail = pointer_offset(span, old_committed);
-		if (span->page.commit_on_demand &&
-		    (global_memory_interface->memory_commit(tail, alloc_size - old_committed) != 0))
+		if (span->commit_on_demand && (global_memory_interface->memory_commit(tail, alloc_size - old_committed) != 0))
 			return 0;
 #endif
 		committed = alloc_size;
@@ -3341,7 +3499,7 @@ span_huge_grow(span_t* span, size_t size) {
 #endif
 	span->heap->stats.allocated_size += alloc_size - old_request;
 #endif
-	return pointer_offset(span, SPAN_HEADER_SIZE);
+	return pointer_offset(span, HUGE_HEADER_SIZE);
 }
 
 //! Shrink a huge block in place to a smaller huge size. The committed pages beyond twice the new size are
@@ -3349,7 +3507,7 @@ span_huge_grow(span_t* span, size_t size) {
 //  before a reinitialization with another page size.
 static void*
 span_huge_shrink(span_t* span, size_t size) {
-	size_t alloc_size = get_page_aligned_size(size + SPAN_HEADER_SIZE);
+	size_t alloc_size = get_page_aligned_size(size + HUGE_HEADER_SIZE);
 	size_t old_request = (size_t)span->page_request * span->page_size;
 	size_t old_committed = span_huge_committed(span);
 	if ((alloc_size >= old_request) || (span->page_size != global_config.page_size))
@@ -3357,7 +3515,7 @@ span_huge_shrink(span_t* span, size_t size) {
 	size_t committed = old_committed;
 #if ENABLE_DECOMMIT
 	size_t slack_limit = alloc_size * 2;
-	if (span->page.commit_on_demand && (old_committed > slack_limit)) {
+	if (span->commit_on_demand && (old_committed > slack_limit)) {
 		void* tail = pointer_offset(span, slack_limit);
 		if (global_memory_interface->memory_decommit(tail, old_committed - slack_limit) == 0) {
 			committed = slack_limit;
@@ -3381,7 +3539,7 @@ span_huge_shrink(span_t* span, size_t size) {
 #endif
 	span->heap->stats.allocated_size -= old_request - alloc_size;
 #endif
-	return pointer_offset(span, SPAN_HEADER_SIZE);
+	return pointer_offset(span, HUGE_HEADER_SIZE);
 }
 
 #if defined(__linux__) && defined(MREMAP_MAYMOVE) && defined(MREMAP_FIXED)
@@ -3399,9 +3557,10 @@ static void*
 span_huge_remap(span_t* span, size_t size) {
 	// Only plain mappings from the default OS interface can be moved: huge page (hugetlb) mappings have
 	// stricter remap rules, and spans tracked in a first class heap span list cannot change address
-	if ((global_memory_interface->memory_map != os_mmap) || os_huge_pages || span->offset || span->page.is_tracked)
+	if ((global_memory_interface->memory_map != os_mmap) || os_huge_pages || span->offset ||
+	    span_get_huge_page(span)->is_tracked)
 		return 0;
-	size_t alloc_size = get_page_aligned_size(size + SPAN_HEADER_SIZE);
+	size_t alloc_size = get_page_aligned_size(size + HUGE_HEADER_SIZE);
 	size_t old_mapped_size = span->mapped_size;
 	if (alloc_size <= old_mapped_size)
 		return 0;
@@ -3416,6 +3575,9 @@ span_huge_remap(span_t* span, size_t size) {
 		return 0;
 	}
 	span = target;
+	// The slot table entries and the page hold addresses in the old mapping
+	span_get_huge_page(span)->block_start = pointer_offset(span, HUGE_HEADER_SIZE);
+	span_set_huge_slots(span);
 #if ENABLE_DECOMMIT
 	if (os_commit_on_demand())
 		global_memory_interface->memory_commit(span, alloc_size);
@@ -3448,18 +3610,16 @@ span_huge_remap(span_t* span, size_t size) {
 	(void)sizeof(old_committed);
 	(void)sizeof(new_committed);
 #endif
-	return pointer_offset(span, SPAN_HEADER_SIZE);
+	return pointer_offset(span, HUGE_HEADER_SIZE);
 }
 #endif
 
 static NOINLINE void*
 heap_reallocate_block(heap_t* heap, void* block, size_t size, size_t old_size, unsigned int flags) {
 	if (block) {
-		// Grab the span using guaranteed span alignment
-		span_t* span = block_get_span(block);
-		if (EXPECTED(span->page_type <= PAGE_LARGE)) {
+		page_t* page = block_get_page(block);
+		if (EXPECTED(page->page_type <= PAGE_LARGE)) {
 			// Normal sized block
-			page_t* page = span_get_page_from_block(span, block);
 			// A pointer from the allocator is at its block start unless the page holds aligned blocks,
 			// so the division locating the block start is only needed for those pages
 			void* block_origin = block;
@@ -3475,7 +3635,8 @@ heap_reallocate_block(heap_t* heap, void* block, size_t size, size_t old_size, u
 			}
 		} else {
 			// Huge block
-			void* block_start = pointer_offset(span, SPAN_HEADER_SIZE);
+			span_t* span = block_get_span(block);
+			void* block_start = pointer_offset(span, HUGE_HEADER_SIZE);
 			if (!old_size)
 				old_size = ((size_t)span->page_size * (size_t)span->page_request) - (size_t)pointer_diff(block, span);
 			if ((size < old_size) && (size > LARGE_BLOCK_SIZE_LIMIT)) {
@@ -3508,7 +3669,7 @@ heap_reallocate_block(heap_t* heap, void* block, size_t size, size_t old_size, u
 	size_t new_size = (size > lower_bound) ? size : ((size > old_size) ? lower_bound : size);
 	if (block && (new_size > old_size) && (new_size > LARGE_BLOCK_SIZE_LIMIT)) {
 		span_t* span = block_get_span(block);
-		if ((span->page_type == PAGE_HUGE) && (block == pointer_offset(span, SPAN_HEADER_SIZE))) {
+		if ((span->page_type == PAGE_HUGE) && (block == pointer_offset(span, HUGE_HEADER_SIZE))) {
 			void* grown_block = span_huge_grow(span, new_size);
 			if (!grown_block && (size < new_size))
 				grown_block = span_huge_grow(span, size);
@@ -3672,12 +3833,9 @@ rprealloc(void* ptr, size_t size) {
 #endif
 	if (EXPECTED(ptr != 0)) {
 		// Fast path, a block from a page without aligned blocks that still fits the size is kept as is
-		span_t* span = block_get_span(ptr);
-		if (EXPECTED(span->page_type <= PAGE_LARGE)) {
-			page_t* page = span_get_page_from_block(span, ptr);
-			if (EXPECTED(!page->has_aligned_block && ((size_t)page->block_size >= size)))
-				return ptr;
-		}
+		page_t* page = block_get_page(ptr);
+		if (EXPECTED((page->page_type <= PAGE_LARGE) && !page->has_aligned_block && ((size_t)page->block_size >= size)))
+			return ptr;
 	}
 	heap_t* heap = get_thread_heap();
 	return heap_reallocate_block(heap, ptr, size, 0, 0);
@@ -4157,8 +4315,8 @@ statistics_outstanding_blocks(void) {
 static long long
 span_deferred_block_count(span_t* span) {
 	long long deferred = 0;
-	for (uint32_t ipage = 0; ipage < span->page_initialized; ++ipage) {
-		page_t* page = (page_t*)pointer_offset(span, (size_t)span->page_size * ipage);
+	for (uint32_t ipage = span_first_page(span); ipage < span->page_initialized; ++ipage) {
+		page_t* page = span_get_page(span, ipage);
 		uint64_t token = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
 		deferred += (long long)(uint32_t)((token >> 32ULL) & 0x7FFFFFFFULL);
 	}
@@ -4469,7 +4627,7 @@ rpmalloc_heap_acquire(void) {
 static void
 heap_untrack_huge_spans(heap_t* heap) {
 	for (span_t* span = heap->span_used[PAGE_HUGE]; span; span = span->next)
-		span->page.is_tracked = 0;
+		span_get_huge_page(span)->is_tracked = 0;
 	heap->span_used[PAGE_HUGE] = 0;
 }
 
@@ -4572,7 +4730,7 @@ void
 rpmalloc_heap_free(rpmalloc_heap_t* heap, void* ptr) {
 	// A first class heap without an owner thread is owned by the caller. A heap that is the current heap of
 	// a thread is owned by that thread only, so it and a null heap compare against the calling thread heap
-	block_deallocate_heap(ptr, (heap && !heap->owner_thread) ? heap : get_thread_heap());
+	block_deallocate_heap(ptr, (heap && !heap->owner_thread) ? heap : 0);
 }
 
 //! Free all memory allocated by the heap
@@ -4611,7 +4769,7 @@ rpmalloc_heap_t*
 rpmalloc_get_heap_for_ptr(void* ptr) {
 	span_t* span = (span_t*)((uintptr_t)ptr & SPAN_MASK);
 	if (span)
-		return span_get_page_from_block(span, ptr)->heap;
+		return block_get_page(ptr)->heap;
 	return 0;
 }
 
