@@ -22,6 +22,11 @@ initial-exec, and the model can be overridden by defining TLS_MODEL.
 calloc, its aligned and heap variants and reallocarray now always check the size multiplication for
 overflow and fail with ENOMEM, instead of only when argument validation is enabled.
 
+calloc, zalloc and their aligned and heap variants zero only the requested size instead of the whole
+block, which can be up to a size class larger. The bytes beyond the request up to the usable size of
+the block are no longer zeroed: the C standard only defines the requested size, and the bytes realloc
+adds beyond the old size are indeterminate.
+
 Free pages are decommitted after a delay (PAGE_DECOMMIT_DELAY_MS, 250 ms by default) instead of as
 soon as a fixed page count is exceeded, avoiding decommit and page fault cycles in workloads that
 allocate and free in phases. There is no background thread, the owning thread checks the delay when
