@@ -35,6 +35,7 @@
 #include <string.h>
 #include <math.h>
 #include <time.h>
+#include <stdatomic.h>
 
 #ifndef _MSC_VER
 #include <unistd.h>
@@ -42,6 +43,7 @@
 
 #if !defined(_WIN32)
 #include <sys/mman.h>
+#include <pthread.h>
 #endif
 
 // Set to 1 for the test binary built against the rpmalloc library with ENABLE_OVERRIDE=1 (runs the
@@ -1900,6 +1902,707 @@ test_thread_statistics(void) {
 	return 0;
 }
 
+//! Blocks allocated and not freed, or freed but not yet pushed to their owner, as reported by leak
+//  detection (allocated blocks minus the blocks waiting in the deferred cross-thread free lists). Exact
+//  while no other thread uses the allocator. Returns -1 when leak detection is not built in
+static long long
+test_outstanding_blocks(void) {
+	long long outstanding = -1;
+	FILE* file = tmpfile();
+	if (!file)
+		return -1;
+	rpmalloc_dump_statistics(file);
+	fflush(file);
+	rewind(file);
+	char line[256];
+	while (fgets(line, sizeof(line), file)) {
+		if (sscanf(line, "Outstanding blocks: %lld", &outstanding) == 1)
+			break;
+	}
+	fclose(file);
+	return outstanding;
+}
+
+#define REMOTE_FREE_EXIT 0
+#define REMOTE_FREE_FINALIZE 1
+#define REMOTE_FREE_COLLECT 2
+
+// Bytes of blocks a thread free chain holds before it is pushed, as the library is built (256KiB by default)
+#ifndef THREAD_FREE_CHAIN_LIMIT_BYTES
+#define THREAD_FREE_CHAIN_LIMIT_BYTES (256 * 1024)
+#endif
+// Length of the run of frees into one page that ends the frees in collect mode
+#define REMOTE_FREE_RUN 96
+
+typedef struct remote_free_arg_t {
+	void** blocks;
+	size_t count;
+	int mode;
+	atomic_int state;
+} remote_free_arg_t;
+
+static void
+remote_free_thread(void* argp) {
+	remote_free_arg_t* arg = argp;
+	// In exit mode the thread calls nothing but rpfree, so it has no heap (unless the runtime allocates
+	// on its behalf) and its free chain is pushed by the thread exit destructor
+	if (arg->mode != REMOTE_FREE_EXIT)
+		rpmalloc_thread_initialize();
+	for (size_t iblock = 0; iblock < arg->count; ++iblock)
+		rpfree(arg->blocks[iblock]);
+	if (arg->mode == REMOTE_FREE_COLLECT) {
+		atomic_store(&arg->state, 1);
+		while (atomic_load(&arg->state) != 2)
+			thread_yield();
+		rpmalloc_thread_collect();
+		atomic_store(&arg->state, 3);
+		while (atomic_load(&arg->state) != 4)
+			thread_yield();
+	}
+	if (arg->mode != REMOTE_FREE_EXIT)
+		rpmalloc_thread_finalize();
+	thread_exit(0);
+}
+
+static int
+test_remote_free_flush(void) {
+	// A thread freeing blocks into pages of another heap links consecutive frees into the same page in a
+	// thread local chain, invisible to the owner until pushed. Verify the chain is pushed at the thread
+	// exit destructor (for a thread without a heap), at rpmalloc_thread_finalize and at
+	// rpmalloc_thread_collect, that a chain is pushed once it holds THREAD_FREE_CHAIN_LIMIT_BYTES of blocks,
+	// that frees into medium large pages are not chained and that the owner reuses the blocks. The
+	// outstanding block count is only available with leak detection, otherwise only the free paths are
+	// exercised
+	// Start from unmapped heaps and pages, so no page holds aligned blocks from earlier tests, which take
+	// the aligned free path instead of being chained. The override build cannot unmap at finalize, and it
+	// has no outstanding block count to check either
+	rpmalloc_config_t config = {0};
+	config.unmap_on_finalize = 1;
+	rpmalloc_initialize_config(0, &config);
+	rpmalloc_finalize();
+	rpmalloc_initialize(0);
+
+	enum { BLOCKS = 4000 };
+	static void* block[BLOCKS];
+	static void* ordered[BLOCKS];
+	const size_t block_size[3] = {64, 6000, 33000};
+	// Blocks of 64 bytes are in small pages (64KiB), blocks of 6000 bytes in medium small pages (1MiB) and
+	// blocks of 33000 bytes in medium large pages (4MiB), all aligned to their size
+	const uintptr_t page_mask[3] = {~(uintptr_t)(64 * 1024 - 1), ~(uintptr_t)(1024 * 1024 - 1),
+	                                ~(uintptr_t)(4 * 1024 * 1024 - 1)};
+	for (int mode = REMOTE_FREE_EXIT; mode <= REMOTE_FREE_COLLECT; ++mode) {
+		for (unsigned int isize = 0; isize < 3; ++isize) {
+			// Several pages of each size, so the frees switch pages and the owner marks pages full
+			size_t count = (isize == 0) ? BLOCKS : (BLOCKS / 16);
+			long long baseline = test_outstanding_blocks();
+			for (size_t iblock = 0; iblock < count; ++iblock) {
+				block[iblock] = rpmalloc(block_size[isize]);
+				if (!block[iblock])
+					return test_fail("Allocation failed in remote free test");
+				memset(block[iblock], 0x5a, block_size[isize]);
+			}
+			if ((baseline >= 0) && (test_outstanding_blocks() != (baseline + (long long)count)))
+				return test_fail("Outstanding block count does not include allocations");
+
+			long long held = 0;
+			if (mode == REMOTE_FREE_COLLECT) {
+				// End the frees with a run of REMOTE_FREE_RUN frees into one page. The other blocks of that
+				// page are freed first and the blocks of the other pages in between, so the run starts a new
+				// chain after its first block and leaves a known number of blocks in the chain
+				uintptr_t run_page = 0;
+				for (size_t iblock = 0; (iblock < count) && !run_page; ++iblock) {
+					uintptr_t page = (uintptr_t)block[iblock] & page_mask[isize];
+					size_t in_page = 0;
+					for (size_t jblock = 0; jblock < count; ++jblock)
+						in_page += (((uintptr_t)block[jblock] & page_mask[isize]) == page) ? 1 : 0;
+					if ((in_page >= REMOTE_FREE_RUN) && (in_page < count))
+						run_page = page;
+				}
+				if (!run_page)
+					return test_fail("No page holds a run of blocks in remote free test");
+				size_t ordered_count = 0;
+				for (int pass = 0; pass < 3; ++pass) {
+					size_t in_page = 0;
+					for (size_t iblock = 0; iblock < count; ++iblock) {
+						int is_run_page = (((uintptr_t)block[iblock] & page_mask[isize]) == run_page);
+						int in_run = is_run_page && (in_page++ < REMOTE_FREE_RUN);
+						if (((pass == 0) && is_run_page && !in_run) || ((pass == 1) && !is_run_page) ||
+						    ((pass == 2) && in_run))
+							ordered[ordered_count++] = block[iblock];
+					}
+				}
+				memcpy(block, ordered, count * sizeof(void*));
+				// The first block of the run is pushed at once, the rest are chained and pushed whenever the
+				// chain holds THREAD_FREE_CHAIN_LIMIT_BYTES of blocks, which a small page never fills. Frees into
+				// a medium large page are all pushed at once
+				held = (isize < 2) ? (REMOTE_FREE_RUN - 1) : 0;
+#if THREAD_FREE_CHAIN_LIMIT_BYTES
+				long long class_size = (long long)rpmalloc_usable_size(block[0]);
+				long long chain_max = (THREAD_FREE_CHAIN_LIMIT_BYTES + class_size - 1) / class_size;
+				held %= chain_max;
+#endif
+			}
+
+			remote_free_arg_t arg;
+			arg.blocks = block;
+			arg.count = count;
+			arg.mode = mode;
+			atomic_init(&arg.state, 0);
+			thread_arg targ;
+			targ.fn = remote_free_thread;
+			targ.arg = &arg;
+			uintptr_t thread = thread_run(&targ);
+			if (!thread)
+				return test_fail("Failed to start thread in remote free test");
+			if (mode == REMOTE_FREE_COLLECT) {
+				while (atomic_load(&arg.state) != 1)
+					thread_yield();
+				// The end of the run of frees into the last page is held in the freeing thread's chain
+				if ((baseline >= 0) && (test_outstanding_blocks() != (baseline + held)))
+					return test_fail("Remote free chain does not hold the expected blocks before collect");
+				atomic_store(&arg.state, 2);
+				while (atomic_load(&arg.state) != 3)
+					thread_yield();
+				if ((baseline >= 0) && (test_outstanding_blocks() != baseline))
+					return test_fail("Remote free chain not pushed by thread collect");
+				atomic_store(&arg.state, 4);
+			}
+			if (thread_join(thread) != 0)
+				return test_fail("Thread failed in remote free test");
+			if ((baseline >= 0) && (test_outstanding_blocks() != baseline))
+				return test_fail("Remote free chain not pushed at thread exit or finalize");
+
+			// The owner picks the blocks up again
+			for (size_t iblock = 0; iblock < count; ++iblock) {
+				block[iblock] = rpmalloc(block_size[isize]);
+				if (!block[iblock])
+					return test_fail("Allocation failed in remote free test");
+			}
+			for (size_t iblock = 0; iblock < count; ++iblock)
+				rpfree(block[iblock]);
+			if ((baseline >= 0) && (test_outstanding_blocks() != baseline))
+				return test_fail("Outstanding block count does not match after local frees");
+		}
+	}
+
+	rpmalloc_finalize();
+	printf("Remote free flush tests passed\n");
+	return 0;
+}
+
+#if RPMALLOC_FIRST_CLASS_HEAPS
+
+typedef struct released_heap_arg_t {
+	void** blocks;
+	size_t count;
+	atomic_int state;
+} released_heap_arg_t;
+
+static void
+released_heap_thread(void* argp) {
+	released_heap_arg_t* arg = argp;
+	// The thread takes the released first class heap from the heap queue as its thread heap
+	rpmalloc_thread_initialize();
+	for (size_t iblock = 0; iblock < arg->count; ++iblock)
+		arg->blocks[iblock] = rpmalloc(64);
+	atomic_store(&arg->state, 1);
+	while (atomic_load(&arg->state) != 2)
+		thread_yield();
+	rpmalloc_thread_finalize();
+	thread_exit(0);
+}
+
+#endif
+
+static int
+test_released_heap_batching(void) {
+	// A released first class heap is taken over as the heap of the next thread that needs one. The first class
+	// heap functions must not be called on it once released, so cross-thread frees into its pages are chained as
+	// for any thread heap. Starts from unmapped heaps so the released heap is the only one in the heap queue,
+	// skipped when another heap is taken over (the override build cannot unmap at finalize)
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	rpmalloc_config_t config = {0};
+	config.unmap_on_finalize = 1;
+	rpmalloc_initialize_config(0, &config);
+	rpmalloc_finalize();
+	rpmalloc_initialize(0);
+
+	// The first class heap allocates from another size class than the thread taking it over, a page initialized
+	// while the heap was first class keeps its frees unchained until it is initialized again
+	rpmalloc_heap_t* heap = rpmalloc_heap_acquire();
+	rpmalloc_heap_free(heap, rpmalloc_heap_alloc(heap, 1000));
+	rpmalloc_heap_release(heap);
+
+	enum { BLOCKS = 1000 };
+	static void* block[BLOCKS];
+	released_heap_arg_t arg;
+	arg.blocks = block;
+	arg.count = BLOCKS;
+	atomic_init(&arg.state, 0);
+	thread_arg targ;
+	targ.fn = released_heap_thread;
+	targ.arg = &arg;
+	uintptr_t thread = thread_run(&targ);
+	if (!thread)
+		return test_fail("Failed to start thread in released heap test");
+	while (atomic_load(&arg.state) != 1)
+		thread_yield();
+
+	int taken_over = (rpmalloc_get_heap_for_ptr(block[0]) == heap);
+	long long baseline = test_outstanding_blocks();
+	for (size_t iblock = 0; iblock < BLOCKS; ++iblock)
+		rpfree(block[iblock]);
+	// The frees after the first one into the page of the last block are held in the chain of this thread, a
+	// small page never fills the chain limit
+	const uintptr_t page_mask = ~(uintptr_t)(64 * 1024 - 1);
+	long long run = 0;
+	for (size_t iblock = BLOCKS;
+	     (iblock > 0) && (((uintptr_t)block[iblock - 1] & page_mask) == ((uintptr_t)block[BLOCKS - 1] & page_mask));
+	     --iblock)
+		++run;
+	long long outstanding = test_outstanding_blocks();
+	rpmalloc_thread_collect();
+	long long collected = test_outstanding_blocks();
+
+	atomic_store(&arg.state, 2);
+	if (thread_join(thread) != 0)
+		return test_fail("Thread failed in released heap test");
+
+	if (!taken_over) {
+		printf("Released heap batching test skipped (another heap taken over)\n");
+	} else if (baseline >= 0) {
+		if (outstanding != (baseline - BLOCKS + run - 1))
+			return test_fail("Cross-thread frees into a released first class heap taken over by a thread not chained");
+		if (collected != (baseline - BLOCKS))
+			return test_fail("Chain of frees into a released first class heap not pushed by thread collect");
+	}
+	rpmalloc_finalize();
+	printf("Released heap batching tests passed\n");
+#endif
+	return 0;
+}
+
+typedef struct chain_test_arg_t {
+	void** blocks;
+	size_t count;
+	int result;
+	atomic_int state;
+} chain_test_arg_t;
+
+static void
+chain_test_wait(atomic_int* state, int value) {
+	while (atomic_load(state) != value)
+		thread_yield();
+}
+
+//! Check that the blocks are all in one small page (64KiB), as blocks allocated in a row from a heap with no
+//  page of their size class yet are
+static int
+chain_test_one_page(void** block, size_t count) {
+	const uintptr_t page_mask = ~(uintptr_t)(64 * 1024 - 1);
+	for (size_t iblock = 0; iblock < count; ++iblock) {
+		if (!block[iblock] || (((uintptr_t)block[iblock] & page_mask) != ((uintptr_t)block[0] & page_mask)))
+			return 0;
+	}
+	return 1;
+}
+
+#if RPMALLOC_FIRST_CLASS_HEAPS
+
+static void
+heap_switch_thread(void* argp) {
+	chain_test_arg_t* arg = argp;
+	rpmalloc_thread_initialize();
+	for (size_t iblock = 0; iblock < arg->count; ++iblock)
+		rpfree(arg->blocks[iblock]);
+	atomic_store(&arg->state, 1);
+	chain_test_wait(&arg->state, 2);
+	rpmalloc_heap_thread_set_current(rpmalloc_heap_acquire());
+	atomic_store(&arg->state, 3);
+	chain_test_wait(&arg->state, 4);
+	rpmalloc_heap_thread_set_current(0);
+	for (size_t iblock = 0; iblock < arg->count; ++iblock)
+		rpfree(arg->blocks[arg->count + iblock]);
+	atomic_store(&arg->state, 5);
+	chain_test_wait(&arg->state, 6);
+	// Finalizing needs a heap
+	rpmalloc_heap_thread_set_current(rpmalloc_heap_acquire());
+	rpmalloc_thread_finalize();
+	thread_exit(0);
+}
+
+static void
+first_class_owner_thread(void* argp) {
+	chain_test_arg_t* arg = argp;
+	// A first class heap set as the heap of a thread is owned by that thread, frees from other threads into its
+	// pages are cross-thread frees. Without an owner thread every free into its pages is a local free
+	rpmalloc_thread_initialize();
+	rpmalloc_heap_thread_set_current(rpmalloc_heap_acquire());
+	for (size_t iblock = 0; iblock < arg->count; ++iblock)
+		arg->blocks[iblock] = rpmalloc(64);
+	atomic_store(&arg->state, 1);
+	chain_test_wait(&arg->state, 2);
+	// The heap picks the blocks up again
+	for (size_t iblock = 0; iblock < arg->count; ++iblock) {
+		arg->blocks[iblock] = rpmalloc(64);
+		if (!arg->blocks[iblock])
+			arg->result = -1;
+	}
+	for (size_t iblock = 0; iblock < arg->count; ++iblock)
+		rpfree(arg->blocks[iblock]);
+	rpmalloc_thread_finalize();
+	thread_exit(0);
+}
+
+#endif
+
+static int
+test_heap_switch_flush(void) {
+	// A thread switching heap with rpmalloc_heap_thread_set_current pushes its free chain, and a thread with a
+	// null heap has no flush points and does not chain. Starts from unmapped heaps so the blocks the main
+	// thread allocates are in one page (the override build cannot unmap at finalize)
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	rpmalloc_config_t config = {0};
+	config.unmap_on_finalize = 1;
+	rpmalloc_initialize_config(0, &config);
+	rpmalloc_finalize();
+	rpmalloc_initialize(0);
+
+	enum { RUN = 96 };
+	static void* block[2 * RUN];
+	long long baseline = test_outstanding_blocks();
+	for (size_t iblock = 0; iblock < 2 * RUN; ++iblock)
+		block[iblock] = rpmalloc(64);
+	if ((baseline >= 0) && !chain_test_one_page(block, 2 * RUN))
+		return test_fail("Blocks not allocated in one page in heap switch test");
+
+	chain_test_arg_t arg;
+	arg.blocks = block;
+	arg.count = RUN;
+	arg.result = 0;
+	atomic_init(&arg.state, 0);
+	thread_arg targ;
+	targ.fn = heap_switch_thread;
+	targ.arg = &arg;
+	uintptr_t thread = thread_run(&targ);
+	if (!thread)
+		return test_fail("Failed to start thread in heap switch test");
+	// The first free of the run is pushed at once, the rest are held in the chain
+	chain_test_wait(&arg.state, 1);
+	long long held = test_outstanding_blocks();
+	atomic_store(&arg.state, 2);
+	chain_test_wait(&arg.state, 3);
+	long long switched = test_outstanding_blocks();
+	atomic_store(&arg.state, 4);
+	chain_test_wait(&arg.state, 5);
+	long long unbatched = test_outstanding_blocks();
+	atomic_store(&arg.state, 6);
+	if (thread_join(thread) != 0)
+		return test_fail("Thread failed in heap switch test");
+
+	if (baseline >= 0) {
+		if (held != (baseline + (2 * RUN) - 1))
+			return test_fail("Cross-thread frees into one page not held in the free chain");
+		if (switched != (baseline + RUN))
+			return test_fail("Free chain not pushed when switching the thread heap");
+		if (unbatched != baseline)
+			return test_fail("Cross-thread frees chained by a thread with a null heap");
+	}
+	rpmalloc_finalize();
+	printf("Heap switch chain flush tests passed\n");
+#endif
+	return 0;
+}
+
+static int
+test_first_class_unbatched(void) {
+	// Cross-thread frees into the pages of a first class heap are not chained, rpmalloc_heap_free_all unmaps the
+	// pages regardless of the blocks other threads hold. Starts from unmapped heaps so the first class heap is
+	// pristine and gives one page to the blocks (the override build cannot unmap at finalize)
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	rpmalloc_config_t config = {0};
+	config.unmap_on_finalize = 1;
+	rpmalloc_initialize_config(0, &config);
+	rpmalloc_finalize();
+	rpmalloc_initialize(0);
+
+	enum { RUN = 96 };
+	static void* block[RUN];
+	chain_test_arg_t arg;
+	arg.blocks = block;
+	arg.count = RUN;
+	arg.result = 0;
+	atomic_init(&arg.state, 0);
+	long long baseline = test_outstanding_blocks();
+	thread_arg targ;
+	targ.fn = first_class_owner_thread;
+	targ.arg = &arg;
+	uintptr_t thread = thread_run(&targ);
+	if (!thread)
+		return test_fail("Failed to start thread in first class heap free test");
+	chain_test_wait(&arg.state, 1);
+	if ((baseline >= 0) && !chain_test_one_page(block, RUN))
+		return test_fail("Blocks not allocated in one page in first class heap free test");
+	long long allocated = test_outstanding_blocks();
+	for (size_t iblock = 0; iblock < RUN; ++iblock)
+		rpfree(block[iblock]);
+	long long freed = test_outstanding_blocks();
+	atomic_store(&arg.state, 2);
+	if (thread_join(thread) != 0)
+		return test_fail("Thread failed in first class heap free test");
+	long long reused = test_outstanding_blocks();
+
+	if (arg.result)
+		return test_fail("Allocation failed in first class heap free test");
+	if (baseline >= 0) {
+		if (allocated != (baseline + RUN))
+			return test_fail("Outstanding block count does not include first class heap allocations");
+		if (freed != baseline)
+			return test_fail("Cross-thread frees into a first class heap page held in a free chain");
+		if (reused != baseline)
+			return test_fail("Outstanding block count does not match after first class heap reuse");
+	}
+	rpmalloc_finalize();
+	printf("First class heap unbatched free tests passed\n");
+#endif
+	return 0;
+}
+
+static void
+takeover_owner_thread(void* argp) {
+	chain_test_arg_t* arg = argp;
+	rpmalloc_thread_initialize();
+	for (size_t iblock = 0; iblock < 2 * arg->count; ++iblock)
+		arg->blocks[iblock] = rpmalloc(64);
+	atomic_store(&arg->state, 1);
+	chain_test_wait(&arg->state, 2);
+	rpmalloc_thread_finalize();
+	thread_exit(0);
+}
+
+static void
+takeover_free_thread(void* argp) {
+	chain_test_arg_t* arg = argp;
+	// Frees without a heap, holding all but the first block of the run in the chain
+	for (size_t iblock = 0; iblock < arg->count; ++iblock)
+		rpfree(arg->blocks[iblock]);
+	atomic_store(&arg->state, 3);
+	chain_test_wait(&arg->state, 4);
+	// Takes over the heap the owner released, which holds the chain page, so the following frees into the page
+	// are frees into the own heap
+	rpmalloc_thread_initialize();
+	for (size_t iblock = 0; iblock < arg->count; ++iblock)
+		rpfree(arg->blocks[arg->count + iblock]);
+	atomic_store(&arg->state, 5);
+	chain_test_wait(&arg->state, 6);
+	rpmalloc_thread_collect();
+	atomic_store(&arg->state, 7);
+	chain_test_wait(&arg->state, 8);
+	// Every block is handed out once, a block handed out twice has its index overwritten
+	size_t total = 2 * arg->count;
+	for (size_t iblock = 0; iblock < total; ++iblock) {
+		arg->blocks[iblock] = rpmalloc(64);
+		if (arg->blocks[iblock])
+			*(size_t*)arg->blocks[iblock] = iblock;
+	}
+	for (size_t iblock = 0; iblock < total; ++iblock) {
+		if (!arg->blocks[iblock] || (*(size_t*)arg->blocks[iblock] != iblock))
+			arg->result = -1;
+	}
+	for (size_t iblock = 0; iblock < total; ++iblock)
+		rpfree(arg->blocks[iblock]);
+	rpmalloc_thread_finalize();
+	thread_exit(0);
+}
+
+static int
+test_heap_takeover_held_chain(void) {
+	// A thread without a heap holds blocks of a page of another thread heap in its free chain when the owner
+	// thread exits and the freeing thread takes the released heap over. The chained blocks are still counted
+	// as used by the page, now of the own heap, and are pushed to it at the next flush point. Starts from
+	// unmapped heaps so the released heap is the only one in the heap queue, skipped when another heap is taken
+	// over (the override build cannot unmap at finalize)
+	rpmalloc_config_t config = {0};
+	config.unmap_on_finalize = 1;
+	rpmalloc_initialize_config(0, &config);
+	rpmalloc_finalize();
+	rpmalloc_initialize(0);
+
+	enum { RUN = 96 };
+	static void* block[2 * RUN];
+	chain_test_arg_t arg;
+	arg.blocks = block;
+	arg.count = RUN;
+	arg.result = 0;
+	atomic_init(&arg.state, 0);
+	long long baseline = test_outstanding_blocks();
+	thread_arg owner_targ;
+	owner_targ.fn = takeover_owner_thread;
+	owner_targ.arg = &arg;
+	uintptr_t owner = thread_run(&owner_targ);
+	if (!owner)
+		return test_fail("Failed to start owner thread in heap takeover test");
+	chain_test_wait(&arg.state, 1);
+	if ((baseline >= 0) && !chain_test_one_page(block, 2 * RUN))
+		return test_fail("Blocks not allocated in one page in heap takeover test");
+
+	thread_arg free_targ;
+	free_targ.fn = takeover_free_thread;
+	free_targ.arg = &arg;
+	uintptr_t freer = thread_run(&free_targ);
+	if (!freer)
+		return test_fail("Failed to start freeing thread in heap takeover test");
+	chain_test_wait(&arg.state, 3);
+	long long held = test_outstanding_blocks();
+	atomic_store(&arg.state, 2);
+	if (thread_join(owner) != 0)
+		return test_fail("Owner thread failed in heap takeover test");
+	atomic_store(&arg.state, 4);
+	chain_test_wait(&arg.state, 5);
+	long long taken = test_outstanding_blocks();
+	atomic_store(&arg.state, 6);
+	chain_test_wait(&arg.state, 7);
+	long long collected = test_outstanding_blocks();
+	atomic_store(&arg.state, 8);
+	if (thread_join(freer) != 0)
+		return test_fail("Freeing thread failed in heap takeover test");
+	long long reused = test_outstanding_blocks();
+
+	if (arg.result)
+		return test_fail("Block handed out twice after a heap takeover with a held free chain");
+	// Without the takeover the frees after it are chained as well, and the outstanding count does not change
+	int taken_over = (taken != held);
+	if (baseline >= 0) {
+		if (held != (baseline + (2 * RUN) - 1))
+			return test_fail("Cross-thread frees of a thread without a heap not held in the free chain");
+		if (taken_over && (taken != (baseline + RUN - 1)))
+			return test_fail("Frees into a page of a heap taken over not freed locally");
+		if (collected != baseline)
+			return test_fail("Free chain held across a heap takeover not pushed by thread collect");
+		if (reused != baseline)
+			return test_fail("Outstanding block count does not match after a heap takeover");
+	}
+	rpmalloc_finalize();
+	if ((baseline >= 0) && !taken_over)
+		printf("Heap takeover with held chain test skipped (another heap taken over)\n");
+	else
+		printf("Heap takeover with held chain tests passed\n");
+	return 0;
+}
+
+#if RPMALLOC_FIRST_CLASS_HEAPS
+
+static void
+set_current_unallocated_thread(void* argp) {
+	(void)argp;
+	rpmalloc_heap_thread_set_current(rpmalloc_heap_acquire());
+	rpmalloc_thread_finalize();
+	thread_exit(0);
+}
+
+typedef struct heap_queue_arg_t {
+	int initialized;
+	atomic_int* release;
+	atomic_int ready;
+} heap_queue_arg_t;
+
+static void
+heap_queue_thread(void* argp) {
+	heap_queue_arg_t* arg = argp;
+	rpmalloc_thread_initialize();
+	arg->initialized = rpmalloc_is_thread_initialized();
+	atomic_store(&arg->ready, 1);
+	while (!atomic_load(arg->release))
+		thread_yield();
+	rpmalloc_thread_finalize();
+	thread_exit(0);
+}
+
+#endif
+
+static int
+test_heap_set_current_unallocated(void) {
+	// A thread that has not allocated has the default heap as its heap. Changing its heap with
+	// rpmalloc_heap_thread_set_current must not release the default heap to the heap queue, where threads
+	// take their heap from. Starts from unmapped heaps so the heap queue is empty (the override build cannot
+	// unmap at finalize)
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	rpmalloc_config_t config = {0};
+	config.unmap_on_finalize = 1;
+	rpmalloc_initialize_config(0, &config);
+	rpmalloc_finalize();
+	rpmalloc_initialize(0);
+
+	thread_arg targ;
+	targ.fn = set_current_unallocated_thread;
+	targ.arg = 0;
+	uintptr_t thread = thread_run(&targ);
+	if (!thread)
+		return test_fail("Failed to start thread in heap set current test");
+	if (thread_join(thread) != 0)
+		return test_fail("Thread failed in heap set current test");
+
+	// The heap queue holds the first class heap the thread released at finalize, and the default heap had it
+	// been released too. Threads alive at the same time take one heap each
+	enum { THREADS = 2 };
+	atomic_int release;
+	atomic_init(&release, 0);
+	heap_queue_arg_t arg[THREADS];
+	thread_arg queue_targ[THREADS];
+	uintptr_t queue_thread[THREADS];
+	for (int ithread = 0; ithread < THREADS; ++ithread) {
+		arg[ithread].initialized = 0;
+		arg[ithread].release = &release;
+		atomic_init(&arg[ithread].ready, 0);
+		queue_targ[ithread].fn = heap_queue_thread;
+		queue_targ[ithread].arg = &arg[ithread];
+		queue_thread[ithread] = thread_run(&queue_targ[ithread]);
+		if (!queue_thread[ithread])
+			return test_fail("Failed to start thread in heap set current test");
+		while (!atomic_load(&arg[ithread].ready))
+			thread_yield();
+	}
+	atomic_store(&release, 1);
+	for (int ithread = 0; ithread < THREADS; ++ithread) {
+		if (thread_join(queue_thread[ithread]) != 0)
+			return test_fail("Thread failed in heap set current test");
+	}
+	for (int ithread = 0; ithread < THREADS; ++ithread) {
+		if (!arg[ithread].initialized)
+			return test_fail("Thread took the default heap from the heap queue");
+	}
+	rpmalloc_finalize();
+	printf("Heap set current without allocation tests passed\n");
+#endif
+	return 0;
+}
+
+static int
+test_finalize_twice(void) {
+	// Finalizing when not initialized does nothing. A second finalize deleted the thread local key the first one
+	// left, zero, which can be the key of another library by then. Only detected when the key created between the
+	// two takes slot zero
+#if !defined(_WIN32)
+	rpmalloc_initialize(0);
+	rpmalloc_finalize();
+	pthread_key_t other;
+	if (pthread_key_create(&other, 0) != 0)
+		return test_fail("Failed to create thread local key in finalize test");
+	int value = 0;
+	pthread_setspecific(other, &value);
+	rpmalloc_finalize();
+	int intact = (pthread_getspecific(other) == &value) && (pthread_setspecific(other, 0) == 0);
+	pthread_key_delete(other);
+	if (!intact)
+		return test_fail("Finalize when not initialized deleted another thread local key");
+	if (other != 0)
+		printf("Finalize when not initialized test skipped (key slot zero taken)\n");
+	else
+		printf("Finalize when not initialized tests passed\n");
+#endif
+	return 0;
+}
+
 static int
 test_page_decommit(void) {
 	// Free pages above the overflow threshold are decommitted after a delay rather than immediately,
@@ -2317,6 +3020,20 @@ test_run(int argc, char** argv) {
 	if (test_superalign())
 		return -1;
 	if (test_crossthread())
+		return -1;
+	if (test_remote_free_flush())
+		return -1;
+	if (test_released_heap_batching())
+		return -1;
+	if (test_heap_switch_flush())
+		return -1;
+	if (test_first_class_unbatched())
+		return -1;
+	if (test_heap_takeover_held_chain())
+		return -1;
+	if (test_heap_set_current_unallocated())
+		return -1;
+	if (test_finalize_twice())
 		return -1;
 	if (test_threaded())
 		return -1;
