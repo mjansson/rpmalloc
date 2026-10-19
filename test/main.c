@@ -3153,6 +3153,47 @@ test_collect_crossthread(void) {
 	return 0;
 }
 
+static int
+test_page_decommit_other_type(void) {
+	// Committing pages of one page type decommits the free pages of another type held above the overflow
+	// threshold, which cannot be reused for the new pages, instead of holding the memory of both
+	rpmalloc_initialize(0);
+	const rpmalloc_config_t* config = rpmalloc_config();
+	int can_decommit = !config->disable_decommit && (config->page_size < (64 * 1024));
+	enum { BLOCKS = 40 * 16, LARGE_BLOCKS = 100 };
+	const size_t size = 4000;  // 4KiB size class, 16 blocks per 64KiB small page, 40 pages
+	const size_t large_size = 200 * 1024;  // 4MiB medium-large pages, 5 pages
+	static void* block[BLOCKS];
+	// Start from a collected heap, without free pages from earlier tests above the threshold
+	rpmalloc_thread_collect();
+	rpmalloc_global_statistics_t before;
+	rpmalloc_global_statistics_t after;
+	rpmalloc_global_statistics(&before);
+	for (unsigned int i = 0; i < BLOCKS; ++i) {
+		block[i] = rpmalloc(size);
+		if (!block[i])
+			return test_fail("Allocation failed");
+		memset(block[i], 0xcd, size);
+	}
+	for (unsigned int i = 0; i < BLOCKS; ++i)
+		rpfree(block[i]);
+	for (unsigned int i = 0; i < LARGE_BLOCKS; ++i) {
+		block[i] = rpmalloc(large_size);
+		if (!block[i])
+			return test_fail("Allocation failed");
+		memset(block[i], 0xcd, large_size);
+	}
+	rpmalloc_global_statistics(&after);
+	for (unsigned int i = 0; i < LARGE_BLOCKS; ++i)
+		rpfree(block[i]);
+	if (can_decommit && before.mapped && (after.decommitted <= before.decommitted))
+		return test_fail("Free pages of another page type not decommitted");
+
+	rpmalloc_finalize();
+	printf("Page decommit other type tests passed\n");
+	return 0;
+}
+
 extern int
 test_malloc(int print_log);
 
@@ -3182,6 +3223,9 @@ test_run(int argc, char** argv) {
 				test_loop_scale = (unsigned int)value;
 		}
 	}
+	// Runs first, while the heap has no free pages of the medium-large page type left by other tests
+	if (test_page_decommit_other_type())
+		return -1;
 	if (test_alloc())
 		return -1;
 	if (test_zero_alloc())
