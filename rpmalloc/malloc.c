@@ -117,7 +117,7 @@ rpmalloc_good_size(size_t size) {
 	uint32_t size_class = get_size_class(size);
 	if (size_class < SIZE_CLASS_COUNT)
 		return global_size_class[size_class].block_size;
-	return get_page_aligned_size(size + SPAN_HEADER_SIZE) - SPAN_HEADER_SIZE;
+	return get_page_aligned_size(size + HUGE_HEADER_SIZE) - HUGE_HEADER_SIZE;
 }
 
 extern inline int RPMALLOC_CDECL
