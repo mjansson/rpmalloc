@@ -48,7 +48,7 @@
 #define TEST_MODULE_NOT_DETACHED 3
 #define TEST_MODULE_REGISTERED 4
 
-// Windows and glibc load and unload the module, elsewhere (macOS, musl) the test is skipped if they do not
+// Windows and glibc unload the module, elsewhere (macOS, musl) the test is skipped if it stays loaded
 #if defined(_WIN32) || defined(__GLIBC__)
 #define TEST_UNLOAD_REQUIRED 1
 #else
@@ -222,7 +222,7 @@ static int
 test_unload_running_thread(const char* path) {
 	module_t module = test_module_load(path);
 	if (!module)
-		return test_unload_skip("unable to load test module");
+		return test_unload_fail("Unable to load test module");
 
 	if (allocate_through_module() != 0)
 		return test_unload_fail("Allocation through test module failed");
