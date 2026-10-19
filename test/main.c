@@ -1329,8 +1329,7 @@ test_first_class_heaps(void) {
 
 #if RPMALLOC_FIRST_CLASS_HEAPS
 typedef struct heapless_free_arg_t {
-	void* aligned_block;
-	void* huge_block;
+	void* block[4];
 } heapless_free_arg_t;
 
 static void
@@ -1339,22 +1338,25 @@ heapless_free_thread(void* argp) {
 	// Without a current heap every free is a cross-thread free into pages of other heaps
 	rpmalloc_thread_initialize();
 	rpmalloc_heap_thread_set_current(0);
-	rpfree(arg->aligned_block);
-	rpfree(arg->huge_block);
+	for (unsigned int iblock = 0; iblock < 4; ++iblock)
+		rpfree(arg->block[iblock]);
 }
 #endif
 
 static int
 test_heapless_free(void) {
 #if RPMALLOC_FIRST_CLASS_HEAPS
-	// Blocks freed by a thread without a heap must take the generic cross-thread path. An aligned block
-	// pushed as is to the local free list of its page would later be handed out from inside the block,
-	// overlapping the next block, and a huge block would never be released
-	enum { BLOCK_COUNT = 512 };
-	const size_t block_size = 556;
+	// Blocks freed by a thread without a heap must take the generic cross-thread path. The free fast path
+	// compares the page key with a key made from the thread heap, which for a null heap must match no page,
+	// neither the pages of other heaps nor the full and huge block pages taking the generic path. A block
+	// pushed as is to the local free list of a page of another heap would later be handed out twice, and a
+	// huge block would never be released
+	enum { BLOCK_COUNT = 256 };
+	const size_t block_size = 4000;  // 4KiB size class, 16 blocks per small page
 	void* blocks[BLOCK_COUNT];
 	unsigned int block_used = 0;
-	heapless_free_arg_t arg = {0};
+	heapless_free_arg_t arg;
+	memset(&arg, 0, sizeof(arg));
 
 	rpmalloc_initialize(0);
 
@@ -1362,26 +1364,23 @@ test_heapless_free(void) {
 	rpmalloc_global_statistics(&stats);
 	size_t huge_alloc = stats.huge_alloc;
 
-	// Plain blocks of the size class the aligned block comes from keep its page in use. Retry until the
-	// aligned block starts inside its block, which is what marks the page as holding aligned blocks
-	for (unsigned int iblock = 0; iblock < 8; ++iblock)
+	// The first page of the size class fills up and is marked full by the refill finding it without free
+	// blocks, the second page has free blocks. Free a block of each, replaced by new blocks from the second page
+	for (unsigned int iblock = 0; iblock < 24; ++iblock)
 		blocks[block_used++] = rpmalloc(block_size);
-	size_t plain_usable = rpmalloc_usable_size(blocks[0]);
-	for (unsigned int itry = 0; (itry < 16) && !arg.aligned_block; ++itry) {
-		void* block = rpaligned_alloc(256, block_size - 256);
-		if (!block)
-			return test_fail("Aligned allocation failed");
-		if (rpmalloc_usable_size(block) < plain_usable)
-			arg.aligned_block = block;
-		else
-			blocks[block_used++] = block;
-		blocks[block_used++] = rpmalloc(block_size);
+	arg.block[0] = blocks[0];
+	arg.block[1] = blocks[23];
+	blocks[0] = rpmalloc(block_size);
+	blocks[23] = rpmalloc(block_size);
+	// A huge block and an aligned huge block, which starts past the first slot of its span
+	arg.block[2] = rpmalloc(4 * 1024 * 1024);
+	arg.block[3] = rpaligned_alloc(64 * 1024, 3 * 1024 * 1024);
+	for (unsigned int iblock = 0; iblock < 4; ++iblock) {
+		if (!arg.block[iblock])
+			return test_fail("Allocation failed before free from thread without heap");
 	}
-	if (!arg.aligned_block)
-		return test_fail("Aligned allocation never started inside its block");
-	arg.huge_block = rpmalloc(4 * 1024 * 1024);
-	if (!arg.huge_block)
-		return test_fail("Huge allocation failed");
+	if ((uintptr_t)arg.block[3] & (64 * 1024 - 1))
+		return test_fail("Aligned huge allocation not aligned");
 
 	thread_arg targ;
 	targ.fn = heapless_free_thread;
@@ -1389,7 +1388,8 @@ test_heapless_free(void) {
 	uintptr_t thread = thread_run(&targ);
 	thread_join(thread);
 
-	// Fill the page the aligned block was freed into, and more, then check that no blocks overlap
+	// Allocate more blocks of the size class than the pages of the freed blocks hold, then check that no
+	// blocks overlap
 	while (block_used < BLOCK_COUNT) {
 		blocks[block_used] = rpmalloc(block_size);
 		if (!blocks[block_used])
@@ -2723,7 +2723,7 @@ test_page_decommit(void) {
 	// pages are still zeroed by rpcalloc.
 	rpmalloc_initialize(0);
 	enum { BLOCKS = 48 * 16 };
-	const size_t size = 4000;  // 4KiB size class, 15 blocks per 64KiB small page, about 50 pages
+	const size_t size = 4000;  // 4KiB size class, 16 blocks per 64KiB small page, 48 pages
 	static void* block[BLOCKS];
 	for (unsigned int i = 0; i < BLOCKS; ++i) {
 		block[i] = rpmalloc(size);
