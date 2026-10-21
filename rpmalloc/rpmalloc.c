@@ -175,6 +175,12 @@ madvise(caddr_t, size_t, int);
 //! Enable statistics
 #define ENABLE_STATISTICS 0
 #endif
+#ifndef ENABLE_8_BYTE_CLASS
+//! Enable an 8 byte size class for blocks of 8 bytes or less, aligned to 8 bytes instead of the 16 byte alignment of
+//  all other blocks. The alignment is enough for any object of that size, and programs making many allocations of
+//  8 bytes or less use less memory, but programs relying on the 16 byte alignment of every block break
+#define ENABLE_8_BYTE_CLASS 0
+#endif
 #ifndef ENABLE_LEAK_DETECTION
 //! Enable detection of allocations still outstanding at rpmalloc_finalize. Requires ENABLE_STATISTICS
 //  for the allocation counters, and follows it by default - except under ENABLE_OVERRIDE, where it
@@ -809,8 +815,14 @@ static int global_module_detached;
 	{ (n * SMALL_GRANULARITY), MEDIUM_LARGE_PAGE_SIZE / (n * SMALL_GRANULARITY) }
 #define LCLASS(n) \
 	{ (n * SMALL_GRANULARITY), LARGE_PAGE_SIZE / (n * SMALL_GRANULARITY) }
+#if ENABLE_8_BYTE_CLASS
+#define SCLASS_ZERO \
+	{ 8, SMALL_PAGE_SIZE / 8 }
+#else
+#define SCLASS_ZERO SCLASS(1)
+#endif
 static const size_class_t global_size_class[SIZE_CLASS_COUNT] = {
-    SCLASS(1),      SCLASS(1),      SCLASS(2),      SCLASS(3),      SCLASS(4),      SCLASS(5),      SCLASS(6),
+    SCLASS_ZERO,    SCLASS(1),      SCLASS(2),      SCLASS(3),      SCLASS(4),      SCLASS(5),      SCLASS(6),
     SCLASS(7),      SCLASS(8),      SCLASS(9),      SCLASS(10),     SCLASS(11),     SCLASS(12),     SCLASS(13),
     SCLASS(14),     SCLASS(15),     SCLASS(16),     SCLASS(17),     SCLASS(18),     SCLASS(19),     SCLASS(20),
     SCLASS(21),     SCLASS(22),     SCLASS(23),     SCLASS(24),     SCLASS(25),     SCLASS(26),     SCLASS(27),
@@ -1047,7 +1059,13 @@ get_thread_heap(void) {
 //! Get the size class from given size in bytes for tiny blocks (below 16 times the minimum granularity)
 static inline uint32_t
 get_size_class_tiny(size_t size) {
+#if ENABLE_8_BYTE_CLASS
+	// Sizes up to 8 bytes map to the 8 byte class zero
+	uint32_t size32 = (uint32_t)size;
+	return ((size32 + (SMALL_GRANULARITY - 1)) / SMALL_GRANULARITY) - ((size32 - 1) < 8);
+#else
 	return (((uint32_t)size + (SMALL_GRANULARITY - 1)) / SMALL_GRANULARITY);
+#endif
 }
 
 //! Get the size class from given size in bytes
@@ -1057,6 +1075,10 @@ get_size_class(size_t size) {
 	// For sizes up to 64 times the minimum granularity (i.e 1024 bytes) the size class is equal to number of such
 	// blocks
 	if (size <= (SMALL_GRANULARITY * 64)) {
+#if ENABLE_8_BYTE_CLASS
+		if (size <= 8)
+			return 0;
+#endif
 		rpmalloc_assert(global_size_class[minblock_count].block_size >= size, "Size class misconfiguration");
 		return (uint32_t)(minblock_count ? minblock_count : 1);
 	}
@@ -3508,8 +3530,14 @@ heap_allocate_block(heap_t* heap, size_t size, size_t zero_size) {
 
 static RPMALLOC_ALLOCATOR void*
 heap_allocate_block_aligned(heap_t* heap, size_t alignment, size_t size, unsigned int zero) {
-	if (alignment <= SMALL_GRANULARITY)
+	if (alignment <= SMALL_GRANULARITY) {
+#if ENABLE_8_BYTE_CLASS
+		// Blocks of the 8 byte class are only aligned to 8 bytes
+		if ((alignment > 8) && (size <= 8))
+			size = 9;
+#endif
 		return heap_allocate_block(heap, size, zero ? size : 0);
+	}
 
 #if ENABLE_VALIDATE_ARGS
 	if ((size + alignment) < size) {
@@ -3790,8 +3818,13 @@ heap_reallocate_block(heap_t* heap, void* block, size_t size, size_t old_size, u
 static void*
 heap_reallocate_block_aligned(heap_t* heap, void* block, size_t alignment, size_t size, size_t old_size,
                               unsigned int flags) {
-	if (alignment <= SMALL_GRANULARITY)
+	if (alignment <= SMALL_GRANULARITY) {
+#if ENABLE_8_BYTE_CLASS
+		if ((alignment > 8) && (size <= 8))
+			size = 9;
+#endif
 		return heap_reallocate_block(heap, block, size, old_size, flags);
+	}
 
 	int no_alloc = !!(flags & RPMALLOC_GROW_OR_FAIL);
 	size_t usable_size = (block ? block_usable_size(block) : 0);
