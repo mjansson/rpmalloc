@@ -3153,6 +3153,62 @@ test_collect_crossthread(void) {
 	return 0;
 }
 
+enum { RETIRE_PAGES = 40, RETIRE_BLOCKS_PER_PAGE = 16, RETIRE_BLOCKS = RETIRE_PAGES * RETIRE_BLOCKS_PER_PAGE };
+
+static void
+retire_free_thread(void* arg) {
+	void** block = arg;
+	for (unsigned int i = 0; i < RETIRE_BLOCKS; ++i) {
+		if (i % RETIRE_BLOCKS_PER_PAGE)
+			rpfree(block[i]);
+	}
+	thread_exit(0);
+}
+
+static int
+test_remote_free_retire(void) {
+	// A page whose used blocks are all freed by another thread is queued to its heap, which retires it at its next
+	// allocation slow path without allocating from the page again, so a block of another size class reuses it
+	rpmalloc_initialize(0);
+	const size_t size = 4000;  // 4KiB size class, 16 blocks per 64KiB small page
+	static void* block[RETIRE_BLOCKS];
+	for (unsigned int i = 0; i < RETIRE_BLOCKS; ++i) {
+		block[i] = rpmalloc(size);
+		if (!block[i])
+			return test_fail("Allocation failed");
+		memset(block[i], 0xcd, size);
+	}
+	// Free one block of each page locally so the pages are available, not full, then the rest in another thread
+	for (unsigned int i = 0; i < RETIRE_BLOCKS; i += RETIRE_BLOCKS_PER_PAGE)
+		rpfree(block[i]);
+	thread_arg targ;
+	targ.fn = retire_free_thread;
+	targ.arg = block;
+	if (thread_join(thread_run(&targ)) != 0)
+		return test_fail("Free thread failed");
+
+	// 2KiB size class, 32 blocks per page, more blocks than pages of the class left by earlier tests hold
+	enum { OTHER_BLOCKS = 32 * 8 };
+	static void* other[OTHER_BLOCKS];
+	int reused = 0;
+	for (unsigned int iother = 0; iother < OTHER_BLOCKS; ++iother) {
+		other[iother] = rpmalloc(2000);
+		if (!other[iother])
+			return test_fail("Allocation failed");
+		uintptr_t other_page = (uintptr_t)other[iother] & ~(uintptr_t)(64 * 1024 - 1);
+		for (unsigned int i = 0; i < RETIRE_BLOCKS; ++i)
+			reused |= (((uintptr_t)block[i] & ~(uintptr_t)(64 * 1024 - 1)) == other_page);
+	}
+	for (unsigned int iother = 0; iother < OTHER_BLOCKS; ++iother)
+		rpfree(other[iother]);
+	if (!reused)
+		return test_fail("Page freed by another thread not retired and reused for another size class");
+
+	rpmalloc_finalize();
+	printf("Remote free retire tests passed\n");
+	return 0;
+}
+
 static int
 test_page_decommit_other_type(void) {
 	// Committing pages of one page type decommits the free pages of another type held above the overflow
@@ -3225,6 +3281,8 @@ test_run(int argc, char** argv) {
 	}
 	// Runs first, while the heap has no free pages of the medium-large page type left by other tests
 	if (test_page_decommit_other_type())
+		return -1;
+	if (test_remote_free_retire())
 		return -1;
 	if (test_alloc())
 		return -1;

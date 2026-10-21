@@ -1,5 +1,9 @@
 2.0.2
 
+A page whose used blocks are all freed by other threads is queued to its heap, which retires it at its next
+allocation slow path, at rpmalloc_thread_collect or when the thread exits, instead of keeping the memory until it
+allocates from the page again.
+
 Unloading a DLL or shared object that has rpmalloc compiled in no longer leaves the thread exit
 destructor (a fiber local storage slot on Windows, a pthread key elsewhere) registered in unmapped
 code, which crashed the next exit of a thread that had allocated through the module, and on Windows
