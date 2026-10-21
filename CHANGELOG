@@ -22,6 +22,10 @@ freed pages are decommitted within the delay is unchanged. With more heaps in us
 on, the decommit delay is scaled down by the ratio, to at least a quarter, as the free pages a heap keeps for reuse
 sit unused while its thread waits for a processor.
 
+Defining ENABLE_8_BYTE_CLASS to 1 adds an 8 byte size class for blocks of 8 bytes or less, which are then aligned
+to 8 bytes instead of 16, enough for any object of that size. Programs making many allocations of 8 bytes or less
+use less memory. The default stays off, as code may rely on every block being aligned to 16 bytes.
+
 Unloading a DLL or shared object that has rpmalloc compiled in no longer leaves the thread exit
 destructor (a fiber local storage slot on Windows, a pthread key elsewhere) registered in unmapped
 code, which crashed the next exit of a thread that had allocated through the module, and on Windows

@@ -101,7 +101,11 @@ test_alloc(void) {
 
 	void* zero_alloc = rpmalloc(0);
 	size_t small_granularity = rpmalloc_usable_size(zero_alloc);
+#if defined(ENABLE_8_BYTE_CLASS) && ENABLE_8_BYTE_CLASS
+	if (small_granularity != 8)
+#else
 	if (small_granularity != 16)
+#endif
 		return test_fail("Unexpected block granularity");
 	rpfree(zero_alloc);
 
