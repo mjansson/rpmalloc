@@ -1,8 +1,19 @@
 2.0.2
 
+Blocks above 32KiB are allocated from a few heaps shared by all threads, one per 16 processors and at least two,
+instead of from the thread heap. Each thread heap held a partly used page of up to 16MiB for each of these size
+classes it used, and the free pages left of them, so the memory grew with the thread count. A thread allocates
+from the first shared heap that is not locked, and any thread frees blocks into them through the cross-thread
+free path without a lock.
+
+Thread heaps take their pages from spans shared by the process, in chunks of up to 64 pages, instead of mapping a
+256MiB span of their own for each page type. A program with many threads maps and touches the metadata of a few
+spans instead of one per page type and thread, and with transparent huge pages the pages of many heaps share the
+huge pages. First class heaps keep mapping their own spans, rpmalloc_heap_free_all unmaps them.
+
 A page whose used blocks are all freed by other threads is queued to its heap, which retires it at its next
 allocation slow path, at rpmalloc_thread_collect or when the thread exits, instead of keeping the memory until it
-allocates from the page again.
+allocates from the page again. A page of a shared heap is retired by the freeing thread.
 
 Unloading a DLL or shared object that has rpmalloc compiled in no longer leaves the thread exit
 destructor (a fiber local storage slot on Windows, a pthread key elsewhere) registered in unmapped

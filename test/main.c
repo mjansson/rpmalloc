@@ -3210,15 +3210,52 @@ test_remote_free_retire(void) {
 }
 
 static int
+test_shared_heap_retire(void) {
+	// Blocks of the larger size classes come from heaps shared by the threads. Freeing every block of a page retires
+	// the page right away, without another allocation from the shared heap, so blocks of another size class reuse it
+	rpmalloc_initialize(0);
+	enum { SHARED_BLOCKS = 72 };
+	static void* block[SHARED_BLOCKS];
+	static void* other[SHARED_BLOCKS];
+	const size_t page_mask = ~(uintptr_t)(4 * 1024 * 1024 - 1);  // 4MiB medium-large pages
+	for (unsigned int i = 0; i < SHARED_BLOCKS; ++i) {
+		block[i] = rpmalloc(100 * 1024);
+		if (!block[i])
+			return test_fail("Allocation failed");
+		memset(block[i], 0xcd, 100 * 1024);
+	}
+	for (unsigned int i = 0; i < SHARED_BLOCKS; ++i)
+		rpfree(block[i]);
+	int reused = 0;
+	for (unsigned int iother = 0; iother < SHARED_BLOCKS; ++iother) {
+		other[iother] = rpmalloc(200 * 1024);
+		if (!other[iother])
+			return test_fail("Allocation failed");
+		for (unsigned int i = 0; i < SHARED_BLOCKS; ++i)
+			reused |= (((uintptr_t)block[i] & page_mask) == ((uintptr_t)other[iother] & page_mask));
+	}
+	for (unsigned int iother = 0; iother < SHARED_BLOCKS; ++iother)
+		rpfree(other[iother]);
+	if (!reused)
+		return test_fail("Freed page of a shared heap not retired and reused for another size class");
+
+	rpmalloc_finalize();
+	printf("Shared heap retire tests passed\n");
+	return 0;
+}
+
+static int
 test_page_decommit_other_type(void) {
 	// Committing pages of one page type decommits the free pages of another type held above the overflow
 	// threshold, which cannot be reused for the new pages, instead of holding the memory of both
 	rpmalloc_initialize(0);
 	const rpmalloc_config_t* config = rpmalloc_config();
 	int can_decommit = !config->disable_decommit && (config->page_size < (64 * 1024));
-	enum { BLOCKS = 40 * 16, LARGE_BLOCKS = 100 };
+	enum { BLOCKS = 40 * 16, LARGE_BLOCKS = 200 };
 	const size_t size = 4000;  // 4KiB size class, 16 blocks per 64KiB small page, 40 pages
-	const size_t large_size = 200 * 1024;  // 4MiB medium-large pages, 5 pages
+	// 24KiB size class, 1MiB medium-small pages of the thread heap, 5 pages. The larger size classes are allocated
+	// from the shared heaps
+	const size_t large_size = 24 * 1024;
 	static void* block[BLOCKS];
 	// Start from a collected heap, without free pages from earlier tests above the threshold
 	rpmalloc_thread_collect();
@@ -3283,6 +3320,8 @@ test_run(int argc, char** argv) {
 	if (test_page_decommit_other_type())
 		return -1;
 	if (test_remote_free_retire())
+		return -1;
+	if (test_shared_heap_retire())
 		return -1;
 	if (test_alloc())
 		return -1;
