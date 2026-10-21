@@ -1,5 +1,10 @@
 2.0.2
 
+The page structure keeps the fields the owning thread writes on every free in a cache line apart from the cross-thread
+free list and the fields threads freeing into the page read, and the malloc, free, calloc, realloc and usable size
+entry points are aligned to a cache line, removing up to 12% swings in the speed of allocation heavy loops from the
+placement of unrelated code.
+
 Unloading a DLL or shared object that has rpmalloc compiled in no longer leaves the thread exit
 destructor (a fiber local storage slot on Windows, a pthread key elsewhere) registered in unmapped
 code, which crashed the next exit of a thread that had allocated through the module, and on Windows
