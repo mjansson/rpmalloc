@@ -636,6 +636,8 @@ struct page_t {
 	//  frees into the page are not chained, read from the flag word the free path reads instead of the remotely
 	//  written heap line. The heap flag is only ever cleared, so a stale page flag only stops chaining
 	uint32_t heap_first_class : 1;
+	//! Next page in the pending page list of the heap
+	page_t* pending_next;
 };
 
 //! An entry of the span slot table
@@ -653,6 +655,12 @@ typedef struct page_slot_t {
 
 //! Fast free key of a page that takes the generic free path
 #define PAGE_KEY_GENERIC ((uintptr_t)0)
+
+//! Owner thread of a shared heap, which is never the heap of a thread and never takes the local free path
+#define SHARED_HEAP_OWNER ((uintptr_t)1)
+
+//! Owner thread of the orphan heap holding the orphan pages, which no thread owns
+#define ORPHAN_HEAP_OWNER ((uintptr_t)2)
 
 //! A span contains pages of a given type, or a single huge block. The span starts with the slot table, followed
 //  by the page structures, both committed on demand. The span header overlays the first slot table entries, which
@@ -699,8 +707,10 @@ struct heap_t {
 	uintptr_t owner_thread;
 	//! Multithreaded free list
 	atomic_uintptr_t thread_free[4];
+	//! Pages other threads freed every used block of, linked through the page pending next pointer
+	atomic_uintptr_t page_pending;
 	//! Padding to the end of the remotely accessed line
-	char remote_pad[HEAP_ALIGNMENT - (sizeof(uintptr_t) + (4 * sizeof(atomic_uintptr_t)))];
+	char remote_pad[HEAP_ALIGNMENT - (sizeof(uintptr_t) + (5 * sizeof(atomic_uintptr_t)))];
 	//! Heap local free list for small size classes
 	block_t* local_free[SIZE_CLASS_COUNT];
 	//! Available non-full pages for each size class
@@ -719,6 +729,15 @@ struct heap_t {
 	uint32_t page_commit_credit;
 	//! Available partially initialized spans for each page type
 	span_t* span_partial[4];
+	//! Span of the pages reserved by the heap from the process wide spans, for each page type
+	span_t* chunk_span[4];
+	//! Next and end index of the pages reserved by the heap from the process wide spans, for each page type
+	uint32_t chunk_next[4];
+	uint32_t chunk_end[4];
+	//! Number of pages of the next chunk the heap reserves, for each page type
+	uint32_t chunk_pages[4];
+	//! Lock of a shared heap
+	atomic_uintptr_t* shared_lock;
 	//! Spans in full use for each page type
 	span_t* span_used[5];
 	//! Next heap in queue
@@ -731,6 +750,11 @@ struct heap_t {
 	uint32_t finalize;
 	//! Set when the heap was released without being trimmed, the thread adopting it trims it first
 	uint32_t release_trim;
+	//! Set while the heap is in the queue of released heaps with its pages handed to the orphan lists, written
+	//  under the heap lock
+	atomic_uint orphaned;
+	//! Time (monotonic ms) the heap was released, while in the queue of released heaps
+	uint64_t release_ms;
 	//! Set for a first class heap, written before the heap has any page and cleared when a thread takes the
 	//  released heap over. Copied to the pages initialized for a size class, other threads never hold blocks of
 	//  such a page in their free chain, since rpmalloc_heap_free_all unmaps the pages regardless
@@ -788,6 +812,8 @@ static heap_t* global_heap_default = &global_heap_fallback;
 //! Released heaps available for reuse. These have been used and may hold caches, so they are
 //  only handed to ordinary thread heaps, never to first-class heaps (which require pristine state)
 static heap_t* global_heap_queue;
+//! Heap of the queue of released heaps the next orphan pass starts at, the queue below it is not yet orphaned
+static heap_t* global_heap_orphan_cursor;
 //! Pristine, never-used heaps carved from a shared block but not yet handed out. Safe for any
 //  request including first-class, which needs a heap with no prior allocations
 static heap_t* global_heap_pristine;
@@ -1028,6 +1054,31 @@ heap_allocate(int first_class);
 
 static void
 heap_release_free_pages(heap_t* heap);
+
+static NOINLINE void
+heap_collect_pending_pages(heap_t* heap);
+
+static NOINLINE void
+heap_collect_thread_free(heap_t* heap);
+
+static void
+heap_orphan_pages(heap_t* heap);
+
+static void
+page_orphan_sweep(uint64_t now);
+
+static inline int
+heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page);
+
+#ifndef HEAP_ORPHAN_DELAY_MS
+//! Time in milliseconds a released heap stays in the queue of released heaps with its pages, for a thread adopting
+//  it, before the pages are handed to the orphan lists
+#define HEAP_ORPHAN_DELAY_MS 1000
+#endif
+#ifndef HEAP_ORPHAN_BATCH
+//! Number of released heaps whose pages are handed to the orphan lists at most per heap release
+#define HEAP_ORPHAN_BATCH 4
+#endif
 
 static NOINLINE void
 heap_page_free_overflow(heap_t* heap, uint32_t page_type);
@@ -1677,14 +1728,21 @@ page_block_offset(page_t* page, block_t* block) {
 
 //! Set in the thread free token of a full page, whose list is empty
 #define THREAD_FREE_FULL (1ULL << 63ULL)
+//! Set in the thread free token of a page in the pending page list of its heap. A cross-thread free leaving
+//  every used block of the page in the list queues the page, which the heap retires at its next allocation
+//  slow path instead of keeping the memory until it allocates from the page again. The heap clears the flag
+//  when it takes the page from the list, and a queued page is not retired otherwise
+#define THREAD_FREE_QUEUED (1ULL << 62ULL)
+//! Mask of the list count in the thread free token
+#define THREAD_FREE_COUNT_MASK 0x3FFFFFFFULL
 
 //! The thread free list token holds the list head as a byte offset from the first block in the low
 //  32 bits (a block index would cost a division on every cross-thread free and a multiplication
-//  on every decode), the list count in the next 31 bits and the full page flag in the top bit
+//  on every decode), the list count in the next 30 bits, the queued flag and the full page flag in the top bit
 static inline uint32_t
 page_block_from_thread_free_list(page_t* page, uint64_t token, block_t** block) {
 	uint32_t block_offset = (uint32_t)(token & 0xFFFFFFFFULL);
-	uint32_t list_count = (uint32_t)((token >> 32ULL) & 0x7FFFFFFFULL);
+	uint32_t list_count = (uint32_t)((token >> 32ULL) & THREAD_FREE_COUNT_MASK);
 	*block = list_count ? (block_t*)pointer_offset(page->block_start, block_offset) : 0;
 	return list_count;
 }
@@ -1775,21 +1833,37 @@ page_available_rotate(heap_t* heap, page_t* page) {
 }
 
 static void
+heap_page_free(heap_t* heap, page_t* page);
+
+static void
 page_available_to_free(page_t* page) {
 	rpmalloc_assert(page->is_full == 0, "Page full flag internal failure");
 	rpmalloc_assert(page->is_decommitted == 0, "Page decommitted flag internal failure");
+	// A queued page is retired when the heap takes it from the pending list
+	if (UNEXPECTED(atomic_load_explicit(&page->thread_free, memory_order_relaxed) & THREAD_FREE_QUEUED))
+		return;
 	heap_t* heap = page->heap;
 	if (heap->page_available[page->size_class] == page) {
-		// Keep the last available page of a size class in place. Retiring it would make the next
-		// allocation of the class take the generic path and reinitialize the page from scratch,
-		// which an alternating allocate/free pattern would then repeat on every pair
-		if (!page->next)
+		// Keep the last available page of a size class in place. Retiring it would make the next allocation of
+		// the class take the generic path and reinitialize the page from scratch, which an alternating
+		// allocate/free pattern would then repeat on every pair. Retiring it after a number of allocation slow
+		// paths instead made the pages rotate between size classes, each page ending up touched as far as the
+		// class using most of it, which doubled the resident size of a program cycling through many size
+		// classes. A shared heap retires the page, its pages are of the largest page types
+		if (!page->next && (heap->owner_thread != SHARED_HEAP_OWNER))
 			return;
 		heap->page_available[page->size_class] = page->next;
-		page->next->prev = page->prev;
+		if (page->next)
+			page->next->prev = page->prev;
 	} else {
 		page_available_unlink(heap, page);
 	}
+	heap_page_free(heap, page);
+}
+
+//! Put a page without used blocks, unlinked from the available list, in the free pages of the heap
+static void
+heap_page_free(heap_t* heap, page_t* page) {
 	page->is_free = 1;
 	page->is_zero = 0;
 	page->next = heap->page_free[page->page_type];
@@ -1816,8 +1890,9 @@ page_full_to_available(page_t* page) {
 	page->is_full = 0;
 	if (page->has_aligned_block == 0)
 		page_set_key(page, page_key(heap));
-	// Other threads do not modify the token of a page flagged full, it holds only the flag
-	atomic_store_explicit(&page->thread_free, 0, memory_order_release);
+	// Other threads do not modify the token of a page flagged full, it holds only the flags
+	unsigned long long token = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
+	atomic_store_explicit(&page->thread_free, token & THREAD_FREE_QUEUED, memory_order_release);
 }
 
 static void
@@ -1886,10 +1961,13 @@ page_adopt_thread_free_block_list(page_t* page) {
 	if (page->local_free)
 		return;
 	unsigned long long thread_free = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
-	if (thread_free != 0) {
-		// Other threads can only replace with another valid list head, this will never change to 0 in other
-		// threads, so a single exchange claims the whole list without a retry loop
-		thread_free = atomic_exchange_explicit(&page->thread_free, 0, memory_order_acquire);
+	if (thread_free & ~THREAD_FREE_QUEUED) {
+		// Other threads can only replace with another valid list head, the queued flag stays until the heap takes
+		// the page from the pending list
+		while (!atomic_compare_exchange_weak_explicit(&page->thread_free, &thread_free,
+		                                              thread_free & THREAD_FREE_QUEUED, memory_order_acquire,
+		                                              memory_order_relaxed)) {
+		}
 		page->remote_fed = 1;
 		uint32_t thread_free_count = page_block_from_thread_free_list(page, thread_free, &page->local_free);
 		rpmalloc_assert(thread_free_count <= page->block_used, "Page thread free list count internal failure");
@@ -1909,16 +1987,61 @@ heap_put_thread_free_block_retry(atomic_uintptr_t* list, block_t* block, uintptr
 	                                                memory_order_relaxed));
 }
 
+static int
+page_orphan_full(page_t* page, block_t* head, block_t** tail_link, uint32_t count);
+
 //! Push a block freed into a full page to the heap level thread free list, otherwise the heap would
 //  not pick up the block until a thread local free happens
 static NOINLINE void
 heap_put_thread_free_block(page_t* page, block_t* block) {
+	// The owner wrote the heap of a page it took from the orphan lists before it flagged the page full
+	atomic_thread_fence(memory_order_acquire);
+	if (UNEXPECTED(atomic_load_explicit(&page->heap->orphaned, memory_order_relaxed)) &&
+	    page_orphan_full(page, block, &block->next, 1))
+		return;
 	atomic_uintptr_t* list = &page->heap->thread_free[page->page_type];
 	uintptr_t prev_head = atomic_load_explicit(list, memory_order_relaxed);
 	block->next = (void*)prev_head;
 	if (UNEXPECTED(!atomic_compare_exchange_weak_explicit(list, &prev_head, (uintptr_t)block, memory_order_release,
 	                                                      memory_order_relaxed)))
 		heap_put_thread_free_block_retry(list, block, prev_head);
+}
+
+//! Push a page to the pending page list of its heap. The page has the queued flag set, so it is not retired and
+//  stays owned by the heap until the heap takes it from the list
+static NOINLINE void
+heap_push_pending_page(page_t* page) {
+	// A heap taking the page from the orphan lists wrote the heap before it cleared the queued flag
+	atomic_thread_fence(memory_order_acquire);
+	heap_t* heap = page->heap;
+	uintptr_t head = atomic_load_explicit(&heap->page_pending, memory_order_relaxed);
+	do {
+		page->pending_next = (page_t*)head;
+	} while (!atomic_compare_exchange_weak_explicit(&heap->page_pending, &head, (uintptr_t)page, memory_order_release,
+	                                                memory_order_relaxed));
+	// A shared heap is not taken from again when the program stops allocating blocks of its size classes, the
+	// freeing thread retires the page unless another thread holds the heap
+	if (UNEXPECTED(heap->owner_thread == SHARED_HEAP_OWNER)) {
+		atomic_uintptr_t* lock = heap->shared_lock;
+		uintptr_t unlocked = 0;
+		if (!atomic_load_explicit(lock, memory_order_relaxed) &&
+		    atomic_compare_exchange_strong_explicit(lock, &unlocked, 1, memory_order_acquire, memory_order_relaxed)) {
+			heap_collect_pending_pages(heap);
+			atomic_store_explicit(lock, 0, memory_order_release);
+		}
+	}
+}
+
+//! Thread free token of a push making the list hold the given head and list size, queuing the page when the list
+//  then holds every used block of the page. The used block count is written by the owner without synchronization,
+//  a stale count queues a page the heap does not retire or leaves a page to be adopted from as before
+static inline uint64_t
+page_thread_free_token(page_t* page, uint64_t prev_thread_free, uint32_t head_offset, uint32_t list_size) {
+	uint64_t token =
+	    page_block_to_thread_free_list(page, head_offset, list_size) | (prev_thread_free & THREAD_FREE_QUEUED);
+	if (list_size == *(volatile uint32_t*)&page->block_used)
+		token |= THREAD_FREE_QUEUED;
+	return token;
 }
 
 //! Contended retry path for pushing a block to the page thread free list, or to the heap level list
@@ -1934,10 +2057,12 @@ page_put_thread_free_block_retry(page_t* page, block_t* block, uint32_t block_of
 			return;
 		}
 		uint32_t list_size = page_block_from_thread_free_list(page, prev_thread_free, &block->next) + 1;
-		thread_free = page_block_to_thread_free_list(page, block_offset, list_size);
+		thread_free = page_thread_free_token(page, prev_thread_free, block_offset, list_size);
 		wait_spin(&spin);
 	} while (!atomic_compare_exchange_weak_explicit(&page->thread_free, &prev_thread_free, thread_free,
 	                                                memory_order_release, memory_order_relaxed));
+	if ((thread_free & THREAD_FREE_QUEUED) && !(prev_thread_free & THREAD_FREE_QUEUED))
+		heap_push_pending_page(page);
 }
 
 //! Push a block to the deferred free list of another thread. The uncontended case is a single CAS,
@@ -1954,16 +2079,25 @@ page_put_thread_free_block(page_t* page, block_t* block) {
 	uint32_t block_offset = page_block_offset(page, block);
 	rpmalloc_assert(!(block_offset % page->block_size), "Block pointer is not aligned to start of block");
 	uint32_t list_size = page_block_from_thread_free_list(page, prev_thread_free, &block->next) + 1;
-	uint64_t thread_free = page_block_to_thread_free_list(page, block_offset, list_size);
+	uint64_t thread_free = page_thread_free_token(page, prev_thread_free, block_offset, list_size);
 	if (UNEXPECTED(!atomic_compare_exchange_weak_explicit(&page->thread_free, &prev_thread_free, thread_free,
-	                                                      memory_order_release, memory_order_relaxed)))
+	                                                      memory_order_release, memory_order_relaxed))) {
 		page_put_thread_free_block_retry(page, block, block_offset, prev_thread_free);
+		return;
+	}
+	if (UNEXPECTED((thread_free & THREAD_FREE_QUEUED) && !(prev_thread_free & THREAD_FREE_QUEUED)))
+		heap_push_pending_page(page);
 }
 
 //! Push a chain of blocks freed into a full page to the heap level thread free list, the chain is spliced
 //  in front of the list by storing the list head in the next pointer of the last chained block
 static void
-heap_put_thread_free_chain(page_t* page, block_t* head, block_t** tail_link) {
+heap_put_thread_free_chain(page_t* page, block_t* head, block_t** tail_link, uint32_t count) {
+	// The owner wrote the heap of a page it took from the orphan lists before it flagged the page full
+	atomic_thread_fence(memory_order_acquire);
+	if (UNEXPECTED(atomic_load_explicit(&page->heap->orphaned, memory_order_relaxed)) &&
+	    page_orphan_full(page, head, tail_link, count))
+		return;
 	atomic_uintptr_t* list = &page->heap->thread_free[page->page_type];
 	uintptr_t prev_head = atomic_load_explicit(list, memory_order_relaxed);
 	uint32_t spin = 0;
@@ -1987,14 +2121,17 @@ page_put_thread_free_chain(page_t* page, block_t* head, block_t** tail_link, uin
 	uint32_t spin = 0;
 	while (1) {
 		if (prev_thread_free & THREAD_FREE_FULL) {
-			heap_put_thread_free_chain(page, head, tail_link);
+			heap_put_thread_free_chain(page, head, tail_link, count);
 			return;
 		}
 		uint32_t list_size = page_block_from_thread_free_list(page, prev_thread_free, tail_link) + count;
-		uint64_t thread_free = page_block_to_thread_free_list(page, head_offset, list_size);
+		uint64_t thread_free = page_thread_free_token(page, prev_thread_free, head_offset, list_size);
 		if (atomic_compare_exchange_weak_explicit(&page->thread_free, &prev_thread_free, thread_free,
-		                                          memory_order_release, memory_order_relaxed))
+		                                          memory_order_release, memory_order_relaxed)) {
+			if ((thread_free & THREAD_FREE_QUEUED) && !(prev_thread_free & THREAD_FREE_QUEUED))
+				heap_push_pending_page(page);
 			return;
+		}
 		wait_spin(&spin);
 	}
 }
@@ -2219,28 +2356,26 @@ span_commit_metadata(span_t* span, size_t metadata_end) {
 	if (global_memory_interface->memory_commit(pointer_offset(span, span->metadata_commit), commit_size) != 0)
 		return 1;
 #if RPMALLOC_HEAP_STATISTICS
-	span->heap->stats.committed_size += commit_size;
+	if (span->heap)
+		span->heap->stats.committed_size += commit_size;
 #endif
 	span->metadata_commit = (uint32_t)commit_end;
 	return 0;
 }
 #endif
 
-//! Find or allocate a page from the given span
+//! Initialize the page with the given index in a span for the heap
 static inline page_t*
-span_allocate_page(span_t* span) {
-	// Allocate path, initialize a new chunk of memory for a page in the given span
-	rpmalloc_assert(span->page_initialized < span->page_count, "Page initialization internal failure");
-	heap_t* heap = span->heap;
-	uint32_t page_index = span->page_initialized;
+span_initialize_page(span_t* span, heap_t* heap, uint32_t page_index) {
 	page_t* page = span_get_page(span, page_index);
 	void* page_memory = pointer_offset(span, (size_t)span->page_size * page_index);
 
 #if ENABLE_DECOMMIT
 	// Reserve-only spans commit the page structure and the page on demand; fully committed spans are
-	// already committed from the map and must not be committed per page
+	// already committed from the map and must not be committed per page. The page structures of a process wide
+	// span are committed when the pages are reserved
 	if (span->commit_on_demand) {
-		if (span_commit_metadata(span, (size_t)pointer_diff(page, span) + PAGE_HEADER_SIZE) != 0)
+		if (span->heap && (span_commit_metadata(span, (size_t)pointer_diff(page, span) + PAGE_HEADER_SIZE) != 0))
 			return 0;
 		if (global_memory_interface->memory_commit(page_memory, span->page_size) != 0)
 			return 0;
@@ -2249,7 +2384,6 @@ span_allocate_page(span_t* span) {
 #endif
 	}
 #endif
-	++span->page_initialized;
 
 	page->page_type = (uint16_t)span->page_type;
 	page->commit_on_demand = span->commit_on_demand;
@@ -2258,13 +2392,27 @@ span_allocate_page(span_t* span) {
 	page->is_decommitted = 0;
 	page->heap = heap;
 	page->block_start = page_memory;
-	rpmalloc_assert(page_is_thread_heap(page), "Page owner thread mismatch");
+	rpmalloc_assert(page_is_thread_heap(page) || (heap->owner_thread == SHARED_HEAP_OWNER),
+	                "Page owner thread mismatch");
 
 	// Map the slots of the page to the page structure
 	size_t slot_count = (size_t)span->page_size >> SPAN_SLOT_SHIFT;
 	page_slot_t* slot = block_get_slot(page_memory);
 	for (size_t islot = 0; islot < slot_count; ++islot)
 		slot[islot].page = page;
+	return page;
+}
+
+//! Find or allocate a page from the given span
+static inline page_t*
+span_allocate_page(span_t* span) {
+	// Allocate path, initialize a new chunk of memory for a page in the given span
+	rpmalloc_assert(span->page_initialized < span->page_count, "Page initialization internal failure");
+	heap_t* heap = span->heap;
+	page_t* page = span_initialize_page(span, heap, span->page_initialized);
+	if (!page)
+		return 0;
+	++span->page_initialized;
 
 	if (span->page_initialized == span->page_count) {
 		// Span fully utilized
@@ -2903,6 +3051,9 @@ heap_allocate_new(int first_class) {
 		if (!first_class && global_heap_queue) {
 			heap_t* heap = global_heap_queue;
 			global_heap_queue = heap->next;
+			if (global_heap_orphan_cursor == heap)
+				global_heap_orphan_cursor = 0;
+			atomic_store_explicit(&heap->orphaned, 0, memory_order_relaxed);
 			heap_lock_release();
 			if (heap->release_trim) {
 				heap->release_trim = 0;
@@ -3060,12 +3211,39 @@ heap_release(heap_t* heap) {
 		heap->next->prev = heap->prev;
 	if (global_heap_used == heap)
 		global_heap_used = heap->next;
+	uint64_t now = monotonic_time_ms();
+	heap->release_ms = now;
 	heap->next = global_heap_queue;
 	global_heap_queue = heap;
 	if (global_heap_used_count)
 		--global_heap_used_count;
 	heap_used_count_scale();
+	// A heap left in the queue for the orphan delay is unlikely to be adopted soon, as when a thread pool retires
+	// idle workers and starts fewer, its pages go to the orphan lists for the running threads to reuse. The queue
+	// is a stack changing only at its top, the heaps below are released earlier the deeper they are, and the pass
+	// continues where the previous one stopped
+	uint32_t orphan_count = 0;
+	heap_t* queued = global_heap_orphan_cursor ? global_heap_orphan_cursor : heap->next;
+	while (queued && (orphan_count < HEAP_ORPHAN_BATCH)) {
+		if ((now - queued->release_ms) >= HEAP_ORPHAN_DELAY_MS) {
+			if (!queued->first_class && !atomic_load_explicit(&queued->orphaned, memory_order_relaxed)) {
+				if (atomic_load_explicit(&queued->page_pending, memory_order_relaxed))
+					heap_collect_pending_pages(queued);
+				heap_collect_thread_free(queued);
+				heap_orphan_pages(queued);
+				atomic_store_explicit(&queued->orphaned, 1, memory_order_relaxed);
+				++orphan_count;
+			}
+		} else if (global_heap_orphan_cursor) {
+			// Heaps below the cursor were released before it, none is younger than the delay
+			break;
+		}
+		queued = queued->next;
+	}
+	if (global_heap_orphan_cursor || orphan_count)
+		global_heap_orphan_cursor = queued;
 	heap_lock_release();
+	page_orphan_sweep(now);
 }
 
 static void
@@ -3195,6 +3373,264 @@ heap_page_commit_trim_pending(heap_t* heap, uint32_t page_type) {
 	return heap->page_commit_credit != 0;
 }
 
+////////////
+///
+/// Orphan pages
+///
+//////
+
+//! A thread heap released by its exiting thread keeps its pages until another thread adopts the heap. With fewer
+//  threads than released heaps, as when a thread pool retires idle workers and starts others later, the free blocks
+//  in the partly used pages of the queued heaps were never reused, while the running threads took new pages. A
+//  released thread heap instead hands its available pages to per size class orphan lists, and a thread heap takes
+//  an orphan page of the size class before it takes a new page. An orphan page has the queued flag set in its
+//  thread free token, so threads freeing into it neither push it to a pending list nor read its heap, and it is
+//  owned by the orphan heap, which no thread owns, so every free into it takes the cross-thread path
+static RPMALLOC_CACHE_ALIGNED heap_t global_heap_orphan;
+//! Orphan pages of each size class, linked through the page next pointer
+static atomic_uintptr_t global_page_orphan[SIZE_CLASS_COUNT];
+//! Lock of the orphan page lists
+static atomic_uintptr_t global_page_orphan_lock;
+
+static void
+page_orphan_lock_acquire(void) {
+	uintptr_t lock = 0;
+	uint32_t spin = 0;
+	while (!atomic_compare_exchange_weak_explicit(&global_page_orphan_lock, &lock, 1, memory_order_acquire,
+	                                              memory_order_relaxed)) {
+		lock = 0;
+		wait_spin(&spin);
+	}
+}
+
+static void
+page_orphan_lock_release(void) {
+	atomic_store_explicit(&global_page_orphan_lock, 0, memory_order_release);
+}
+
+//! Empty orphan pages of each page type, decommitted, linked through the page next pointer
+static atomic_uintptr_t global_page_orphan_empty[4];
+//! Time (monotonic ms) of the last sweep of the orphan lists
+static atomic_ullong global_page_orphan_sweep_ms;
+#if ENABLE_STATISTICS
+//! Number of blocks freed by other threads into orphan pages the sweep emptied, still counted as allocated by the
+//  heaps that allocated them
+static atomic_llong global_page_orphan_swept_blocks;
+#endif
+
+//! Move the orphan pages whose blocks have all been freed to the empty orphan pages of their page type and decommit
+//  them, at most once per orphan delay. Blocks are freed into orphan pages by other threads after the pages were
+//  orphaned, and a page of a size class no running thread takes pages of would otherwise stay resident. An empty
+//  orphan page is taken for a page of any size class of its page type
+static void
+page_orphan_sweep(uint64_t now) {
+	unsigned long long last = atomic_load_explicit(&global_page_orphan_sweep_ms, memory_order_relaxed);
+	if (((now - last) < HEAP_ORPHAN_DELAY_MS) ||
+	    !atomic_compare_exchange_strong_explicit(&global_page_orphan_sweep_ms, &last, now, memory_order_relaxed,
+	                                             memory_order_relaxed))
+		return;
+	page_t* empty = 0;
+	page_orphan_lock_acquire();
+	for (uint32_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
+		page_t* page = (page_t*)atomic_load_explicit(&global_page_orphan[iclass], memory_order_relaxed);
+		page_t* prev = 0;
+		while (page) {
+			page_t* next = page->next;
+			unsigned long long token = atomic_load_explicit(&page->thread_free, memory_order_acquire);
+			if ((uint32_t)((token >> 32ULL) & THREAD_FREE_COUNT_MASK) == page->block_used) {
+				if (prev)
+					prev->next = next;
+				else
+					atomic_store_explicit(&global_page_orphan[iclass], (uintptr_t)next, memory_order_relaxed);
+				page->next = empty;
+				empty = page;
+			} else {
+				prev = page;
+			}
+			page = next;
+		}
+	}
+	page_orphan_lock_release();
+	while (empty) {
+		page_t* page = empty;
+		empty = page->next;
+		// No thread holds a block of the page, every used block is in its thread free list
+#if ENABLE_STATISTICS
+		atomic_fetch_add_explicit(&global_page_orphan_swept_blocks, (long long)page->block_used, memory_order_relaxed);
+#endif
+		atomic_store_explicit(&page->thread_free, 0, memory_order_relaxed);
+		page->block_used = 0;
+		page->block_initialized = 0;
+		page->local_free = 0;
+		page->is_full = 0;
+		page->is_free = 1;
+		page->is_zero = 0;
+		page_decommit_memory_pages(page);
+		page_orphan_lock_acquire();
+		page->next = (page_t*)atomic_load_explicit(&global_page_orphan_empty[page->page_type], memory_order_relaxed);
+		atomic_store_explicit(&global_page_orphan_empty[page->page_type], (uintptr_t)page, memory_order_relaxed);
+		page_orphan_lock_release();
+	}
+}
+
+//! Take an empty orphan page of the page type as a page of the heap for the size class, returns 0 if there is none
+static NOINLINE page_t*
+heap_take_orphan_empty_page(heap_t* heap, uint32_t page_type, uint32_t size_class) {
+	page_orphan_lock_acquire();
+	page_t* page = (page_t*)atomic_load_explicit(&global_page_orphan_empty[page_type], memory_order_relaxed);
+	if (page)
+		atomic_store_explicit(&global_page_orphan_empty[page_type], (uintptr_t)page->next, memory_order_relaxed);
+	page_orphan_lock_release();
+	if (!page)
+		return 0;
+#if RPMALLOC_HEAP_STATISTICS && ENABLE_DECOMMIT
+	if (!page->is_decommitted)
+		heap->stats.committed_size += page_get_size(page);
+#endif
+	if (heap_make_free_page_available(heap, size_class, page) != 0)
+		return 0;
+	return page;
+}
+
+//! Hand the available pages of a released thread heap to the orphan lists. A page queued to the heap pending
+//  list by a cross-thread free stays with the heap, which retires it once a thread adopts the heap
+static void
+heap_orphan_pages(heap_t* heap) {
+	for (uint32_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
+		// The blocks in the heap list are counted as used in their page, give them back to the page first, a
+		// thread adopting the heap would otherwise allocate them from a page another heap owns
+		block_t* block = heap->local_free[iclass];
+		heap->local_free[iclass] = 0;
+		while (block) {
+			block_t* next = block->next;
+			page_t* block_page = block_get_page(block);
+			block->next = block_page->local_free;
+			block_page->local_free = block;
+			--block_page->block_used;
+			if (block_page->is_full)
+				page_full_to_available(block_page);
+			block = next;
+		}
+		page_t* page = heap->page_available[iclass];
+		if (!page)
+			continue;
+		page_t* keep = 0;
+		page_t* keep_tail = 0;
+		page_t* orphan = 0;
+		page_t* orphan_tail = 0;
+		while (page) {
+			page_t* next = page->next;
+			unsigned long long token = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
+			int claimed = 0;
+			while (!claimed && !(token & (THREAD_FREE_QUEUED | THREAD_FREE_FULL)))
+				claimed = atomic_compare_exchange_weak_explicit(&page->thread_free, &token, token | THREAD_FREE_QUEUED,
+				                                                memory_order_acquire, memory_order_relaxed);
+			page->next = 0;
+			if (claimed) {
+				page_set_key(page, PAGE_KEY_GENERIC);
+				page->heap = &global_heap_orphan;
+#if RPMALLOC_HEAP_STATISTICS && ENABLE_DECOMMIT
+				heap->stats.committed_size -= page_get_size(page);
+#endif
+				if (orphan_tail)
+					orphan_tail->next = page;
+				else
+					orphan = page;
+				orphan_tail = page;
+			} else {
+				if (keep_tail) {
+					keep_tail->next = page;
+					page->prev = keep_tail;
+				} else {
+					keep = page;
+				}
+				keep_tail = page;
+			}
+			page = next;
+		}
+		if (keep)
+			keep->prev = keep_tail;
+		heap->page_available[iclass] = keep;
+		if (orphan) {
+			page_orphan_lock_acquire();
+			orphan_tail->next = (page_t*)atomic_load_explicit(&global_page_orphan[iclass], memory_order_relaxed);
+			atomic_store_explicit(&global_page_orphan[iclass], (uintptr_t)orphan, memory_order_relaxed);
+			page_orphan_lock_release();
+		}
+	}
+}
+
+//! Orphan a full page of a released heap a thread frees blocks into, returns zero if the page stays with its heap.
+//  The pages of a released heap that were full when it was released are in none of its lists, and the blocks freed
+//  into them would wait in the heap level list until a thread adopted the heap. The freeing thread takes the heap
+//  lock, which keeps the heap from being adopted, and hands the page with the blocks in its thread free list to the
+//  orphan list of its size class. A thread holding the lock leaves the page to its heap as before
+static int
+page_orphan_full(page_t* page, block_t* head, block_t** tail_link, uint32_t count) {
+	uintptr_t unlocked = 0;
+	if (atomic_load_explicit(&global_heap_lock, memory_order_relaxed) ||
+	    !atomic_compare_exchange_strong_explicit(&global_heap_lock, &unlocked, get_thread_id(), memory_order_acquire,
+	                                             memory_order_relaxed))
+		return 0;
+	int orphaned = 0;
+	heap_t* heap = page->heap;
+	if (atomic_load_explicit(&heap->orphaned, memory_order_relaxed) && !heap->first_class) {
+		unsigned long long token = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
+		uint64_t list = page_block_to_thread_free_list(page, page_block_offset(page, head), count) | THREAD_FREE_QUEUED;
+		*tail_link = 0;
+		while ((token & THREAD_FREE_FULL) && !(token & THREAD_FREE_QUEUED) && !orphaned)
+			orphaned = atomic_compare_exchange_weak_explicit(&page->thread_free, &token, list, memory_order_acq_rel,
+			                                                 memory_order_relaxed);
+		if (orphaned) {
+			page->heap = &global_heap_orphan;
+#if RPMALLOC_HEAP_STATISTICS && ENABLE_DECOMMIT
+			heap->stats.committed_size -= page_get_size(page);
+#endif
+			page_orphan_lock_acquire();
+			page->next = (page_t*)atomic_load_explicit(&global_page_orphan[page->size_class], memory_order_relaxed);
+			atomic_store_explicit(&global_page_orphan[page->size_class], (uintptr_t)page, memory_order_relaxed);
+			page_orphan_lock_release();
+		}
+	}
+	atomic_store_explicit(&global_heap_lock, 0, memory_order_release);
+	return orphaned;
+}
+
+//! Take an orphan page of the size class as an available page of the heap, returns 0 if there is none
+static NOINLINE page_t*
+heap_take_orphan_page(heap_t* heap, uint32_t size_class) {
+	page_orphan_lock_acquire();
+	page_t* page = (page_t*)atomic_load_explicit(&global_page_orphan[size_class], memory_order_relaxed);
+	if (page)
+		atomic_store_explicit(&global_page_orphan[size_class], (uintptr_t)page->next, memory_order_relaxed);
+	page_orphan_lock_release();
+	if (!page)
+		return 0;
+	page->heap = heap;
+	page->is_full = 0;
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	page->heap_first_class = 0;
+#endif
+#if RPMALLOC_HEAP_STATISTICS && ENABLE_DECOMMIT
+	heap->stats.committed_size += page_get_size(page);
+#endif
+	page_t* head = heap->page_available[size_class];
+	page->next = head;
+	page->prev = head ? head->prev : page;
+	if (head)
+		head->prev = page;
+	heap->page_available[size_class] = page;
+	if (page->has_aligned_block == 0)
+		page_set_key(page, page_key(heap));
+	// The heap is written before the queued flag is cleared, with release ordering, so a thread whose free queues
+	// the page again pushes it to the pending list of the new heap
+	unsigned long long token = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
+	while (!atomic_compare_exchange_weak_explicit(&page->thread_free, &token, token & ~THREAD_FREE_QUEUED,
+	                                              memory_order_release, memory_order_relaxed))
+		;
+	return page;
+}
+
 //! Trims the memory a released heap holds for reuse. Until another thread adopts the heap nothing
 //  reuses that memory or runs the decommit delay, so a heap that many short lived threads pass along
 //  would otherwise keep it all. The empty medium-large and large pages kept as the last available
@@ -3206,7 +3642,8 @@ static void
 heap_release_free_pages(heap_t* heap) {
 	for (uint32_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
 		page_t* page = heap->page_available[iclass];
-		if (!page || page->next || page->block_used || (page->page_type < PAGE_MEDIUM_LARGE))
+		if (!page || page->next || page->block_used || (page->page_type < PAGE_MEDIUM_LARGE) ||
+		    (atomic_load_explicit(&page->thread_free, memory_order_relaxed) & THREAD_FREE_QUEUED))
 			continue;
 		heap->page_available[iclass] = 0;
 		page->is_free = 1;
@@ -3233,6 +3670,8 @@ heap_release_trim(heap_t* heap) {
 #if HUGE_CACHE_SLOT_COUNT
 	huge_cache_collect(monotonic_time_ms());
 #endif
+	if (atomic_load_explicit(&heap->page_pending, memory_order_relaxed))
+		heap_collect_pending_pages(heap);
 	heap_lock_acquire();
 	int queued = (global_heap_queue != 0);
 	heap_lock_release();
@@ -3273,25 +3712,22 @@ heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page) {
 	return 0;
 }
 
-//! Find or allocate a span for the given page type with the given size class
-static inline span_t*
-heap_get_span(heap_t* heap, page_type_t page_type) {
-	// Fast path, available span for given page type
-	if (EXPECTED(heap->span_partial[page_type] != 0))
-		return heap->span_partial[page_type];
-
-	// Fallback path, map more memory
+//! Map a span of pages of the given page type owned by the heap, or by no heap for a process wide span
+static span_t*
+span_map_pages(heap_t* heap, page_type_t page_type) {
 	size_t offset = 0;
 	size_t mapped_size = 0;
 	span_t* span = memory_interface_map(SPAN_SIZE, SPAN_SIZE, &offset, &mapped_size);
 #if RPMALLOC_HEAP_STATISTICS
-	heap->stats.mapped_size += mapped_size;
+	if (heap)
+		heap->stats.mapped_size += mapped_size;
 #endif
 	if (EXPECTED(span != 0)) {
 		rpmalloc_assert(!((uintptr_t)span & (SPAN_SIZE - 1)),
 		                "memory_map returned a block not aligned to the span size");
 		thp_advise(span, SPAN_SIZE, page_type);
-		_rpmalloc_stat_inc_span_map(heap, page_type);
+		if (heap)
+			_rpmalloc_stat_inc_span_map(heap, page_type);
 		uint32_t page_count = 0;
 		uint32_t page_size = 0;
 		if (page_type == PAGE_SMALL) {
@@ -3326,11 +3762,13 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 		span->commit_shift = commit_shift;
 		span->metadata_commit = SPAN_METADATA_COMMIT_INITIAL;
 #if RPMALLOC_HEAP_STATISTICS
+		if (heap) {
 #if ENABLE_DECOMMIT
-		heap->stats.committed_size += SPAN_METADATA_COMMIT_INITIAL;
+			heap->stats.committed_size += SPAN_METADATA_COMMIT_INITIAL;
 #else
-		heap->stats.committed_size += mapped_size;
+			heap->stats.committed_size += mapped_size;
 #endif
+		}
 #endif
 		span->heap = heap;
 		span->page_type = page_type;
@@ -3340,11 +3778,137 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 		span->mapped_size = mapped_size;
 		// The first pages hold the span metadata
 		span->page_initialized = span_first_page(span);
-
-		heap->span_partial[page_type] = span;
 	}
 
 	return span;
+}
+
+//! Find or allocate a span of the heap for the given page type
+static inline span_t*
+heap_get_span(heap_t* heap, page_type_t page_type) {
+	// Fast path, available span for given page type
+	if (EXPECTED(heap->span_partial[page_type] != 0))
+		return heap->span_partial[page_type];
+	span_t* span = span_map_pages(heap, page_type);
+	if (span)
+		heap->span_partial[page_type] = span;
+	return span;
+}
+
+////////////
+///
+/// Process wide spans
+///
+//////
+
+//! Thread heaps and shared heaps take pages from process wide spans, which are not owned by a heap, in chunks of a
+//  number of consecutive pages. Pages of different heaps share the spans, so a heap using a few pages does not map
+//  and touch the metadata of a span of its own for each page type, and the pages of all heaps are packed together,
+//  which lets huge pages back the memory of many heaps. A first class heap maps its own spans, which
+//  rpmalloc_heap_free_all unmaps
+typedef struct span_arena_t {
+	//! Lock
+	atomic_uintptr_t lock;
+	//! Span pages are reserved from
+	span_t* current;
+	//! Every span, linked through next
+	span_t* spans;
+	//! Padding to a cache line
+	char pad[RPMALLOC_CACHE_LINE_SIZE - sizeof(atomic_uintptr_t) - (2 * sizeof(span_t*))];
+} span_arena_t;
+
+static RPMALLOC_CACHE_ALIGNED span_arena_t global_span_arena[4];
+
+//! Number of pages of the first chunk a heap reserves from a process wide span, for each page type. Each further
+//  chunk doubles in size up to the largest chunk, a heap using few pages packs them with the pages of other heaps
+//  while a heap using many pages keeps them close together
+static uint32_t global_span_chunk_pages[4] = {8, 2, 1, 1};
+//! Number of pages of the largest chunk a heap reserves, for each page type
+static uint32_t global_span_chunk_pages_max[4] = {64, 4, 1, 1};
+
+//! Check if the heap takes pages from the process wide spans
+static inline int
+heap_uses_span_arena(heap_t* heap) {
+	return !heap->first_class;
+}
+
+//! Reserve a chunk of pages of the given page type from the process wide spans for the heap
+static NOINLINE int
+span_arena_reserve(heap_t* heap, page_type_t page_type) {
+	span_arena_t* arena = &global_span_arena[page_type];
+	uintptr_t lock = 0;
+	uint32_t spin = 0;
+	while (!atomic_compare_exchange_weak_explicit(&arena->lock, &lock, 1, memory_order_acquire, memory_order_relaxed)) {
+		lock = 0;
+		wait_spin(&spin);
+	}
+	// Chunks of small pages start at a cache line of slot table entries, the entries of a page of another heap
+	// are not on the line, its fast free key is written when the page becomes full or available again
+	uint32_t align_mask = (page_type == PAGE_SMALL) ? 3U : 0;
+	span_t* span = arena->current;
+	uint32_t first = span ? ((span->page_initialized + align_mask) & ~align_mask) : 0;
+	if (!span || (first >= span->page_count)) {
+		span = span_map_pages(0, page_type);
+		if (!span) {
+			atomic_store_explicit(&arena->lock, 0, memory_order_release);
+			return 0;
+		}
+		span->next = arena->spans;
+		arena->spans = span;
+		arena->current = span;
+		first = (span->page_initialized + align_mask) & ~align_mask;
+	}
+	uint32_t count = heap->chunk_pages[page_type];
+	if (!count)
+		count = global_span_chunk_pages[page_type];
+	if (count < global_span_chunk_pages_max[page_type])
+		heap->chunk_pages[page_type] = count * 2;
+	else
+		heap->chunk_pages[page_type] = global_span_chunk_pages_max[page_type];
+	if (count > (span->page_count - first))
+		count = span->page_count - first;
+#if ENABLE_DECOMMIT
+	if (span->commit_on_demand &&
+	    (span_commit_metadata(
+	         span, (size_t)pointer_diff(span_get_page(span, first + count - 1), span) + PAGE_HEADER_SIZE) != 0)) {
+		atomic_store_explicit(&arena->lock, 0, memory_order_release);
+		return 0;
+	}
+#endif
+	span->page_initialized = first + count;
+	atomic_store_explicit(&arena->lock, 0, memory_order_release);
+	// A chunk reservation is accounted as a span map call of the heap
+	_rpmalloc_stat_inc_span_map(heap, page_type);
+	heap->chunk_span[page_type] = span;
+	heap->chunk_next[page_type] = first;
+	heap->chunk_end[page_type] = first + count;
+	return 1;
+}
+
+//! Allocate a page of the given page type for the heap from its chunk of a process wide span
+static page_t*
+heap_chunk_allocate_page(heap_t* heap, page_type_t page_type) {
+	if ((heap->chunk_next[page_type] == heap->chunk_end[page_type]) && !span_arena_reserve(heap, page_type))
+		return 0;
+	page_t* page = span_initialize_page(heap->chunk_span[page_type], heap, heap->chunk_next[page_type]);
+	if (page)
+		++heap->chunk_next[page_type];
+	return page;
+}
+
+//! Forget the process wide spans, for a finalize unmapping them
+static void
+span_arena_unmap(void) {
+	for (uint32_t itype = 0; itype < 4; ++itype) {
+		span_t* span = global_span_arena[itype].spans;
+		while (span) {
+			span_t* next = span->next;
+			global_memory_interface->memory_unmap(span, span->offset, span->mapped_size);
+			span = next;
+		}
+		global_span_arena[itype].spans = 0;
+		global_span_arena[itype].current = 0;
+	}
 }
 
 static page_t*
@@ -3385,7 +3949,8 @@ heap_collect_thread_free(heap_t* heap) {
 		// Claim the whole list in one exchange, concurrent pushes either land before (and are claimed) or after
 		block_t* block = (block_t*)atomic_exchange_explicit(&heap->thread_free[itype], 0, memory_order_acquire);
 		// A thread free chain is pushed as a run of blocks of one page, each run is put in the page free list
-		// at once. The blocks belong to pages of this heap and are block starts
+		// at once. The blocks are block starts of pages of this heap, or of pages the heap gave to the orphan lists
+		// after a thread freeing into them found them full, which are freed into their pages again
 		page_t* block_page = block ? block_get_page(block) : 0;
 		while (block) {
 			block_t* last = block;
@@ -3400,7 +3965,10 @@ heap_collect_thread_free(heap_t* heap) {
 				next_block = next_block->next;
 				++count;
 			}
-			page_put_thread_free_run(block_page, block, last, count);
+			if (EXPECTED(block_page->heap == heap))
+				page_put_thread_free_run(block_page, block, last, count);
+			else
+				page_put_thread_free_chain(block_page, block, &last->next, count);
 			block = next_block;
 			block_page = next_page;
 		}
@@ -3428,8 +3996,17 @@ heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 			return page;
 	}
 
-	// Check if there is a free page
+	// Take a partly used orphan page before a free page or a new page. Its free blocks would otherwise stay unused,
+	// while a free page left unused is decommitted after the decommit delay
 	page_t* page = heap->page_free[page_type];
+	if (UNEXPECTED(atomic_load_explicit(&global_page_orphan[size_class], memory_order_relaxed) != 0) && heap->id &&
+	    heap_uses_span_arena(heap) && (heap->owner_thread != SHARED_HEAP_OWNER)) {
+		page_t* orphan = heap_take_orphan_page(heap, size_class);
+		if (orphan)
+			return orphan;
+	}
+
+	// Check if there is a free page
 	if (EXPECTED(page != 0)) {
 		heap->page_free[page_type] = page->next;
 		if (!page->next)
@@ -3452,6 +4029,22 @@ heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 		// Thread has not yet initialized, assign heap and try again
 		rpmalloc_initialize(0);
 		return heap_get_page(get_thread_heap(), size_class);
+	}
+
+	if (heap_uses_span_arena(heap)) {
+		if (UNEXPECTED(atomic_load_explicit(&global_page_orphan_empty[page_type], memory_order_relaxed) != 0) &&
+		    (heap->owner_thread != SHARED_HEAP_OWNER)) {
+			page = heap_take_orphan_empty_page(heap, page_type, size_class);
+			if (page) {
+				heap_page_commit_check(heap, page_type);
+				return page;
+			}
+		}
+		page = heap_chunk_allocate_page(heap, page_type);
+		if (!page || (heap_make_free_page_available(heap, size_class, page) != 0))
+			return 0;
+		heap_page_commit_check(heap, page_type);
+		return page;
 	}
 
 	// Fallback path, find or allocate span for given size class
@@ -3489,11 +4082,55 @@ heap_pop_local_free(heap_t* heap, uint32_t size_class) {
 	return block;
 }
 
+//! Take the pages other threads queued from the pending page list. A page whose used blocks are all in its thread
+//  free list is retired, or kept as the last available page of its size class with the blocks in its local free
+//  list. The queued flag of the other pages is cleared, their blocks are adopted when the heap allocates from them
+static NOINLINE void
+heap_collect_pending_pages(heap_t* heap) {
+	page_t* page = (page_t*)atomic_exchange_explicit(&heap->page_pending, 0, memory_order_acquire);
+	while (page) {
+		page_t* next = page->pending_next;
+		unsigned long long token = atomic_load_explicit(&page->thread_free, memory_order_acquire);
+		uint32_t count;
+		int retire;
+		do {
+			count = (uint32_t)((token >> 32ULL) & THREAD_FREE_COUNT_MASK);
+			retire = !(token & THREAD_FREE_FULL) && (count == page->block_used);
+		} while (!atomic_compare_exchange_weak_explicit(&page->thread_free, &token,
+		                                                retire ? 0 : (token & ~THREAD_FREE_QUEUED),
+		                                                memory_order_acq_rel, memory_order_acquire));
+		if (retire) {
+			if (count) {
+				block_t* block;
+				page_block_from_thread_free_list(page, token, &block);
+				if ((heap->page_available[page->size_class] == page) && !page->next &&
+				    (heap->owner_thread != SHARED_HEAP_OWNER)) {
+					// Kept as the last available page, its free blocks must all be in the local free list
+					if (page->local_free) {
+						block_t* tail = block;
+						while (tail->next)
+							tail = tail->next;
+						tail->next = page->local_free;
+					}
+					page->local_free = block;
+				}
+				page->remote_fed = 1;
+				page->block_used = 0;
+				_rpmalloc_stat_add_free(heap, page->size_class, count);
+			}
+			page_available_to_free(page);
+		}
+		page = next;
+	}
+}
+
 //! Generic allocation path from heap pages, spans or new mapping
 static NOINLINE RPMALLOC_ALLOCATOR void*
 heap_allocate_block_small_to_large(heap_t* heap, uint32_t size_class, size_t zero_size) {
 	page_t* page;
 	uint32_t retain = PAGE_FULL_RETAIN;
+	if (UNEXPECTED(atomic_load_explicit(&heap->page_pending, memory_order_relaxed) != 0))
+		heap_collect_pending_pages(heap);
 	while ((page = heap_get_page(heap, size_class)) != 0) {
 		void* block = page_allocate_block(page, zero_size);
 		if (EXPECTED(block != 0)) {
@@ -3516,8 +4153,9 @@ heap_allocate_block_small_to_large(heap_t* heap, uint32_t size_class, size_t zer
 		} else {
 			// Flag the page full in the thread free token, unless a cross-thread free just added a block
 			// in which case the page stays available and is retried
-			unsigned long long empty = 0;
-			if (atomic_compare_exchange_strong_explicit(&page->thread_free, &empty, THREAD_FREE_FULL,
+			unsigned long long empty =
+			    atomic_load_explicit(&page->thread_free, memory_order_relaxed) & THREAD_FREE_QUEUED;
+			if (atomic_compare_exchange_strong_explicit(&page->thread_free, &empty, empty | THREAD_FREE_FULL,
 			                                            memory_order_acq_rel, memory_order_relaxed))
 				page_available_to_full(page);
 		}
@@ -3641,10 +4279,139 @@ heap_allocate_block_huge(heap_t* heap, size_t size, size_t zero_size) {
 	return ptr;
 }
 
+////////////
+///
+/// Shared heaps
+///
+//////
+
+#ifndef SHARED_HEAP_MAX
+//! Largest number of shared heaps
+#define SHARED_HEAP_MAX 64
+#endif
+
+//! Blocks of the size classes from global_shared_class_min are allocated from a few heaps shared by all thread
+//  heaps instead of from the thread heap. Each thread heap would otherwise hold a partly used page of each of these
+//  size classes it uses, a page of up to 16MiB for a few blocks, and the pages and the free pages left of them grow
+//  with the thread count. A shared heap is allocated from under its lock, the allocating thread takes the first
+//  shared heap that is not locked starting from the one of its heap. Blocks are freed by any thread through the
+//  cross-thread free path without a lock, and collected by the shared heap as a heap collects the blocks other
+//  threads free into its pages
+typedef struct shared_heap_t {
+	//! Lock
+	atomic_uintptr_t lock;
+	//! Heap
+	heap_t* heap;
+	//! Padding to a cache line
+	char pad[RPMALLOC_CACHE_LINE_SIZE - sizeof(atomic_uintptr_t) - sizeof(heap_t*)];
+} shared_heap_t;
+
+static RPMALLOC_CACHE_ALIGNED shared_heap_t global_shared_heap[SHARED_HEAP_MAX];
+//! Number of shared heaps
+static uint32_t global_shared_heap_count = 1;
+//! First size class allocated from the shared heaps
+static uint32_t global_shared_class_min = SIZE_CLASS_COUNT;
+
+//! Check if allocations of the heap take the blocks of the larger size classes from the shared heaps. A first class
+//  heap keeps its own pages, rpmalloc_heap_free_all releases them
+static inline int
+heap_uses_shared_heap(heap_t* heap) {
+	return !heap->first_class && heap->id;
+}
+
+static NOINLINE RPMALLOC_ALLOCATOR void*
+shared_heap_allocate(heap_t* heap, uint32_t size_class, size_t zero_size) {
+	uint32_t count = global_shared_heap_count;
+	uint32_t ishared = heap->id % count;
+	shared_heap_t* shared = &global_shared_heap[ishared];
+	uint32_t itry = 0;
+	while (1) {
+		uintptr_t lock = 0;
+		if (!atomic_load_explicit(&shared->lock, memory_order_relaxed) &&
+		    atomic_compare_exchange_weak_explicit(&shared->lock, &lock, 1, memory_order_acquire, memory_order_relaxed))
+			break;
+		if (++itry < count) {
+			ishared = ((ishared + 1) < count) ? (ishared + 1) : 0;
+			shared = &global_shared_heap[ishared];
+			continue;
+		}
+		shared = &global_shared_heap[heap->id % count];
+		uint32_t spin = 0;
+		lock = 0;
+		while (!atomic_compare_exchange_weak_explicit(&shared->lock, &lock, 1, memory_order_acquire,
+		                                              memory_order_relaxed)) {
+			lock = 0;
+			wait_spin(&spin);
+		}
+		break;
+	}
+	heap_t* shared_heap = shared->heap;
+	if (UNEXPECTED(!shared_heap)) {
+		shared_heap = heap_allocate(0);
+		if (!shared_heap) {
+			atomic_store_explicit(&shared->lock, 0, memory_order_release);
+			return 0;
+		}
+		shared_heap->owner_thread = SHARED_HEAP_OWNER;
+		shared_heap->shared_lock = &shared->lock;
+		shared->heap = shared_heap;
+	}
+	block_t* block = heap_pop_local_free(shared_heap, size_class);
+	if (EXPECTED(block != 0)) {
+		_rpmalloc_stat_inc_alloc(shared_heap, size_class);
+		atomic_store_explicit(&shared->lock, 0, memory_order_release);
+		if (zero_size)
+			memset(block, 0, zero_size);
+		return block;
+	}
+	block = heap_allocate_block_small_to_large(shared_heap, size_class, zero_size);
+	atomic_store_explicit(&shared->lock, 0, memory_order_release);
+	return block;
+}
+
+//! Collect the blocks other threads freed into the pages of the shared heaps and decommit their free pages held above
+//  the retain count, as rpmalloc_thread_collect does for the thread heap
+static void
+shared_heap_collect(void) {
+	for (uint32_t ishared = 0; ishared < global_shared_heap_count; ++ishared) {
+		shared_heap_t* shared = &global_shared_heap[ishared];
+		if (!shared->heap)
+			continue;
+		uintptr_t lock = 0;
+		uint32_t spin = 0;
+		while (!atomic_compare_exchange_weak_explicit(&shared->lock, &lock, 1, memory_order_acquire,
+		                                              memory_order_relaxed)) {
+			lock = 0;
+			wait_spin(&spin);
+		}
+		heap_t* heap = shared->heap;
+		if (atomic_load_explicit(&heap->page_pending, memory_order_relaxed))
+			heap_collect_pending_pages(heap);
+		heap_collect_thread_free(heap);
+		for (uint32_t itype = 0; itype < 4; ++itype) {
+			if (global_page_free_overflow[itype] == 0xFFFFFFFFU)
+				continue;
+			heap->page_free_overflow_ms[itype] = 0;
+			if (heap->page_free_commit_count[itype] > global_page_free_retain[itype])
+				heap_page_free_decommit(heap, itype, global_page_free_retain[itype]);
+		}
+		atomic_store_explicit(&shared->lock, 0, memory_order_release);
+	}
+}
+
+//! Forget the shared heaps, for a finalize unmapping every heap
+static void
+shared_heap_reset(void) {
+	for (uint32_t ishared = 0; ishared < SHARED_HEAP_MAX; ++ishared)
+		global_shared_heap[ishared].heap = 0;
+}
+
 static RPMALLOC_ALLOCATOR NOINLINE void*
 heap_allocate_block_generic(heap_t* heap, size_t size, size_t zero_size) {
 	uint32_t size_class = get_size_class(size);
 	if (EXPECTED(size_class < SIZE_CLASS_COUNT)) {
+		if ((size_class >= global_shared_class_min) && heap_uses_shared_heap(heap))
+			return shared_heap_allocate(heap, size_class, zero_size);
 #if RPMALLOC_HEAP_STATISTICS
 		heap->stats.allocated_size += global_size_class[size_class].block_size;
 #endif
@@ -4029,7 +4796,14 @@ heap_free_all(heap_t* heap) {
 		heap->page_free_overflow_ms[itype] = 0;
 		atomic_store_explicit(&heap->thread_free[itype], 0, memory_order_release);
 	}
+	atomic_store_explicit(&heap->page_pending, 0, memory_order_release);
 	heap->page_commit_credit = 0;
+	for (int itype = 0; itype < 4; ++itype) {
+		heap->chunk_span[itype] = 0;
+		heap->chunk_next[itype] = 0;
+		heap->chunk_end[itype] = 0;
+		heap->chunk_pages[itype] = 0;
+	}
 	for (int itype = 0; itype < 5; ++itype) {
 		span_t* span = heap->span_used[itype];
 		while (span) {
@@ -4561,6 +5335,11 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 #endif
 	global_config.enable_thp = os_thp;
 	global_thp_mask = os_thp ? ((1U << PAGE_SMALL) | (1U << PAGE_HUGE)) : 0;
+	// Without huge pages a heap reserves its small pages in chunks of the largest size from the start, keeping
+	// the pages of a heap together. With huge pages the first chunks are small, the pages of heaps using few
+	// pages share huge pages
+	global_span_chunk_pages[PAGE_SMALL] = os_thp ? 8 : global_span_chunk_pages_max[PAGE_SMALL];
+	global_span_chunk_pages[PAGE_MEDIUM_SMALL] = os_thp ? 2 : global_span_chunk_pages_max[PAGE_MEDIUM_SMALL];
 
 	// Decommit of free pages only applies to page types larger than the configured
 	// page size, disable the free page overflow pass for page types where it can
@@ -4606,6 +5385,22 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 #endif
 
 	global_main_thread_id = get_thread_id();
+	global_heap_orphan.owner_thread = ORPHAN_HEAP_OWNER;
+
+	{
+#if PLATFORM_WINDOWS
+		long cpu_count = (long)system_info.dwNumberOfProcessors;
+#else
+		long cpu_count = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
+		long shared_count = (cpu_count > 0) ? (cpu_count / 16) : 1;
+		if (shared_count < 2)
+			shared_count = 2;
+		if (shared_count > SHARED_HEAP_MAX)
+			shared_count = SHARED_HEAP_MAX;
+		global_shared_heap_count = (uint32_t)shared_count;
+		global_shared_class_min = SMALL_SIZE_CLASS_COUNT + MEDIUM_SMALL_SIZE_CLASS_COUNT;
+	}
 
 	atomic_store_explicit(&global_rpmalloc_init_state, RPMALLOC_INIT_DONE, memory_order_release);
 
@@ -4632,7 +5427,7 @@ statistics_outstanding_blocks(void) {
 				outstanding += heap->size_use[iclass].alloc_current;
 		}
 	}
-	return outstanding;
+	return outstanding - atomic_load_explicit(&global_page_orphan_swept_blocks, memory_order_relaxed);
 }
 
 //! Number of cross-thread freed blocks parked in a span's per page deferred lists, counting every
@@ -4645,7 +5440,7 @@ span_deferred_block_count(span_t* span) {
 	for (uint32_t ipage = span_first_page(span); ipage < span->page_initialized; ++ipage) {
 		page_t* page = span_get_page(span, ipage);
 		uint64_t token = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
-		deferred += (long long)(uint32_t)((token >> 32ULL) & 0x7FFFFFFFULL);
+		deferred += (long long)(uint32_t)((token >> 32ULL) & THREAD_FREE_COUNT_MASK);
 	}
 	return deferred;
 }
@@ -4673,6 +5468,10 @@ statistics_pending_deferred_blocks(void) {
 					deferred += span_deferred_block_count(span);
 			}
 		}
+	}
+	for (uint32_t itype = 0; itype < 4; ++itype) {
+		for (span_t* span = global_span_arena[itype].spans; span; span = span->next)
+			deferred += span_deferred_block_count(span);
 	}
 	return deferred;
 }
@@ -4704,6 +5503,15 @@ rpmalloc_finalize(void) {
 		// Heaps can share a mapping (heap_allocate_new); only the owner carries mapped_size != 0.
 		// Resources are freed while every heap is still mapped, then owners are unmapped in a
 		// separate pass so a heap is never dereferenced after its shared mapping is gone.
+		shared_heap_reset();
+		span_arena_unmap();
+		for (uint32_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass)
+			atomic_store_explicit(&global_page_orphan[iclass], 0, memory_order_relaxed);
+		for (uint32_t itype = 0; itype < 4; ++itype)
+			atomic_store_explicit(&global_page_orphan_empty[itype], 0, memory_order_relaxed);
+#if ENABLE_STATISTICS
+		atomic_store_explicit(&global_page_orphan_swept_blocks, 0, memory_order_relaxed);
+#endif
 		heap_t* owners = 0;
 		heap_t* heap = global_heap_pristine;
 		global_heap_pristine = 0;
@@ -4718,6 +5526,7 @@ rpmalloc_finalize(void) {
 		}
 		heap = global_heap_queue;
 		global_heap_queue = 0;
+		global_heap_orphan_cursor = 0;
 		while (heap) {
 			heap_t* heap_next = heap->next;
 			heap_free_all(heap);
@@ -4798,6 +5607,8 @@ rpmalloc_thread_collect(void) {
 #if HUGE_CACHE_SLOT_COUNT
 	huge_cache_collect(monotonic_time_ms());
 #endif
+	if (atomic_load_explicit(&heap->page_pending, memory_order_relaxed))
+		heap_collect_pending_pages(heap);
 	heap_collect_thread_free(heap);
 	for (uint32_t itype = 0; itype < 4; ++itype) {
 		if (global_page_free_overflow[itype] == 0xFFFFFFFFU)
@@ -4806,6 +5617,7 @@ rpmalloc_thread_collect(void) {
 		if (heap->page_free_commit_count[itype] > global_page_free_retain[itype])
 			heap_page_free_decommit(heap, itype, global_page_free_retain[itype]);
 	}
+	shared_heap_collect();
 }
 
 void
@@ -4844,6 +5656,8 @@ rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats) {
 	for (uint32_t itype = 0; itype < 5; ++itype) {
 		size_t current = 0;
 		if ((itype < 4) && heap->span_partial[itype])
+			++current;
+		if ((itype < 4) && heap->chunk_span[itype])
 			++current;
 		for (span_t* span = heap->span_used[itype]; span; span = span->next)
 			++current;

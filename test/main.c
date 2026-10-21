@@ -3179,6 +3179,197 @@ test_collect_crossthread(void) {
 	return 0;
 }
 
+enum { RETIRE_PAGES = 40, RETIRE_BLOCKS_PER_PAGE = 16, RETIRE_BLOCKS = RETIRE_PAGES * RETIRE_BLOCKS_PER_PAGE };
+
+static void
+retire_free_thread(void* arg) {
+	void** block = arg;
+	for (unsigned int i = 0; i < RETIRE_BLOCKS; ++i) {
+		if (i % RETIRE_BLOCKS_PER_PAGE)
+			rpfree(block[i]);
+	}
+	thread_exit(0);
+}
+
+static int
+test_remote_free_retire(void) {
+	// A page whose used blocks are all freed by another thread is queued to its heap, which retires it at its next
+	// allocation slow path without allocating from the page again, so a block of another size class reuses it
+	rpmalloc_initialize(0);
+	const size_t size = 4000;  // 4KiB size class, 16 blocks per 64KiB small page
+	static void* block[RETIRE_BLOCKS];
+	for (unsigned int i = 0; i < RETIRE_BLOCKS; ++i) {
+		block[i] = rpmalloc(size);
+		if (!block[i])
+			return test_fail("Allocation failed");
+		memset(block[i], 0xcd, size);
+	}
+	// Free one block of each page locally so the pages are available, not full, then the rest in another thread
+	for (unsigned int i = 0; i < RETIRE_BLOCKS; i += RETIRE_BLOCKS_PER_PAGE)
+		rpfree(block[i]);
+	thread_arg targ;
+	targ.fn = retire_free_thread;
+	targ.arg = block;
+	if (thread_join(thread_run(&targ)) != 0)
+		return test_fail("Free thread failed");
+
+	// 2KiB size class, 32 blocks per page, more blocks than pages of the class left by earlier tests hold
+	enum { OTHER_BLOCKS = 32 * 8 };
+	static void* other[OTHER_BLOCKS];
+	int reused = 0;
+	for (unsigned int iother = 0; iother < OTHER_BLOCKS; ++iother) {
+		other[iother] = rpmalloc(2000);
+		if (!other[iother])
+			return test_fail("Allocation failed");
+		uintptr_t other_page = (uintptr_t)other[iother] & ~(uintptr_t)(64 * 1024 - 1);
+		for (unsigned int i = 0; i < RETIRE_BLOCKS; ++i)
+			reused |= (((uintptr_t)block[i] & ~(uintptr_t)(64 * 1024 - 1)) == other_page);
+	}
+	for (unsigned int iother = 0; iother < OTHER_BLOCKS; ++iother)
+		rpfree(other[iother]);
+	if (!reused)
+		return test_fail("Page freed by another thread not retired and reused for another size class");
+
+	rpmalloc_finalize();
+	printf("Remote free retire tests passed\n");
+	return 0;
+}
+
+static int
+test_shared_heap_retire(void) {
+	// Blocks of the larger size classes come from heaps shared by the threads. Freeing every block of a page retires
+	// the page right away, without another allocation from the shared heap, so blocks of another size class reuse it
+	rpmalloc_initialize(0);
+	enum { SHARED_BLOCKS = 72 };
+	static void* block[SHARED_BLOCKS];
+	static void* other[SHARED_BLOCKS];
+	const size_t page_mask = ~(uintptr_t)(4 * 1024 * 1024 - 1);  // 4MiB medium-large pages
+	for (unsigned int i = 0; i < SHARED_BLOCKS; ++i) {
+		block[i] = rpmalloc(100 * 1024);
+		if (!block[i])
+			return test_fail("Allocation failed");
+		memset(block[i], 0xcd, 100 * 1024);
+	}
+	for (unsigned int i = 0; i < SHARED_BLOCKS; ++i)
+		rpfree(block[i]);
+	int reused = 0;
+	for (unsigned int iother = 0; iother < SHARED_BLOCKS; ++iother) {
+		other[iother] = rpmalloc(200 * 1024);
+		if (!other[iother])
+			return test_fail("Allocation failed");
+		for (unsigned int i = 0; i < SHARED_BLOCKS; ++i)
+			reused |= (((uintptr_t)block[i] & page_mask) == ((uintptr_t)other[iother] & page_mask));
+	}
+	for (unsigned int iother = 0; iother < SHARED_BLOCKS; ++iother)
+		rpfree(other[iother]);
+	if (!reused)
+		return test_fail("Freed page of a shared heap not retired and reused for another size class");
+
+	rpmalloc_finalize();
+	printf("Shared heap retire tests passed\n");
+	return 0;
+}
+
+enum { ORPHAN_PAGES = 40, ORPHAN_BLOCKS_PER_PAGE = 18, ORPHAN_BLOCKS = ORPHAN_PAGES * ORPHAN_BLOCKS_PER_PAGE };
+static void* orphan_block[ORPHAN_BLOCKS];
+static int orphan_reused;
+static atomic_int orphan_hold;
+
+static void
+orphan_alloc_thread(void* arg) {
+	(void)sizeof(arg);
+	for (unsigned int i = 0; i < ORPHAN_BLOCKS; ++i) {
+		orphan_block[i] = rpmalloc(3500);
+		if (!orphan_block[i])
+			thread_exit(1);
+		memset(orphan_block[i], 0xcd, 3500);
+	}
+	for (unsigned int i = 0; i < ORPHAN_BLOCKS; i += 2) {
+		rpfree(orphan_block[i]);
+		orphan_block[i] = 0;
+	}
+	thread_exit(0);
+}
+
+static void
+orphan_hold_thread(void* arg) {
+	(void)sizeof(arg);
+	rpfree(rpmalloc(16));
+	while (atomic_load(&orphan_hold))
+		thread_sleep(1);
+	thread_exit(0);
+}
+
+static void
+orphan_release_thread(void* arg) {
+	(void)sizeof(arg);
+	rpfree(rpmalloc(16));
+	thread_exit(0);
+}
+
+static void
+orphan_reuse_thread(void* arg) {
+	(void)sizeof(arg);
+	static void* block[ORPHAN_BLOCKS];
+	for (unsigned int i = 0; i < ORPHAN_BLOCKS; ++i) {
+		block[i] = rpmalloc(3500);
+		if (!block[i])
+			thread_exit(1);
+		memset(block[i], 0xab, 3500);
+		uintptr_t page = (uintptr_t)block[i] & ~(uintptr_t)(64 * 1024 - 1);
+		for (unsigned int iorphan = 1; iorphan < ORPHAN_BLOCKS; iorphan += 2)
+			orphan_reused |= (((uintptr_t)orphan_block[iorphan] & ~(uintptr_t)(64 * 1024 - 1)) == page);
+	}
+	for (unsigned int i = 0; i < ORPHAN_BLOCKS; ++i)
+		rpfree(block[i]);
+	thread_exit(0);
+}
+
+static int
+test_orphan_pages(void) {
+	// The partly used pages of a heap left in the queue of released heaps for the orphan delay are handed to the
+	// orphan lists by the next heap release. Another thread takes them for blocks of the size class before it takes
+	// new pages, and the blocks left in them are freed into them from a third thread
+	rpmalloc_initialize(0);
+	orphan_reused = 0;
+	atomic_store(&orphan_hold, 1);
+	// A second thread holds a heap until the allocating thread has released its heap, then releases its heap on
+	// top of it, so the heap of the allocating thread stays below in the queue
+	thread_arg hold_arg;
+	hold_arg.fn = orphan_hold_thread;
+	hold_arg.arg = 0;
+	uintptr_t hold = thread_run(&hold_arg);
+	thread_arg targ;
+	targ.fn = orphan_alloc_thread;
+	targ.arg = 0;
+	if (thread_join(thread_run(&targ)) != 0)
+		return test_fail("Allocation thread failed");
+	atomic_store(&orphan_hold, 0);
+	if (thread_join(hold) != 0)
+		return test_fail("Hold thread failed");
+	thread_sleep(1100);
+	targ.fn = orphan_release_thread;
+	if (thread_join(thread_run(&targ)) != 0)
+		return test_fail("Release thread failed");
+	targ.fn = orphan_reuse_thread;
+	if (thread_join(thread_run(&targ)) != 0)
+		return test_fail("Reuse thread failed");
+	for (unsigned int i = 1; i < ORPHAN_BLOCKS; i += 2) {
+		unsigned char* ptr = orphan_block[i];
+		for (size_t ibyte = 0; ibyte < 3500; ++ibyte) {
+			if (ptr[ibyte] != 0xcd)
+				return test_fail("Block of an orphan page overwritten");
+		}
+		rpfree(ptr);
+	}
+	if (!orphan_reused)
+		return test_fail("Partly used pages of a released heap not reused by another thread");
+
+	rpmalloc_finalize();
+	printf("Orphan page tests passed\n");
+	return 0;
+}
+
 static int
 test_page_decommit_other_type(void) {
 	// Committing pages of one page type decommits the free pages of another type held above the overflow
@@ -3186,9 +3377,11 @@ test_page_decommit_other_type(void) {
 	rpmalloc_initialize(0);
 	const rpmalloc_config_t* config = rpmalloc_config();
 	int can_decommit = !config->disable_decommit && (config->page_size < (64 * 1024));
-	enum { BLOCKS = 40 * 16, LARGE_BLOCKS = 100 };
+	enum { BLOCKS = 40 * 16, LARGE_BLOCKS = 200 };
 	const size_t size = 4000;  // 4KiB size class, 16 blocks per 64KiB small page, 40 pages
-	const size_t large_size = 200 * 1024;  // 4MiB medium-large pages, 5 pages
+	// 24KiB size class, 1MiB medium-small pages of the thread heap, 5 pages. The larger size classes are allocated
+	// from the shared heaps
+	const size_t large_size = 24 * 1024;
 	static void* block[BLOCKS];
 	// Start from a collected heap, without free pages from earlier tests above the threshold
 	rpmalloc_thread_collect();
@@ -3251,6 +3444,12 @@ test_run(int argc, char** argv) {
 	}
 	// Runs first, while the heap has no free pages of the medium-large page type left by other tests
 	if (test_page_decommit_other_type())
+		return -1;
+	if (test_remote_free_retire())
+		return -1;
+	if (test_shared_heap_retire())
+		return -1;
+	if (test_orphan_pages())
 		return -1;
 	if (test_alloc())
 		return -1;
