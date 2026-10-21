@@ -19,3 +19,11 @@ race:heap_reallocate_block
 # owner does not retire, or leaves the page to be adopted when the owner allocates from it. See
 # page_thread_free_token in rpmalloc.c.
 race:page_thread_free_token
+
+# A heap taking a page from the orphan lists writes the page heap and first class flag while threads freeing blocks
+# into the page read them on the cross-thread free path. Both the orphan heap and the new heap make a thread
+# that does not own the page take the cross-thread path, and the queued flag the heap clears with release ordering
+# afterwards orders the write before any read that queues the page. See heap_take_orphan_page in rpmalloc.c.
+race:heap_take_orphan_page
+race:heap_orphan_pages
+race:page_orphan_full

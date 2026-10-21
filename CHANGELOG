@@ -15,6 +15,13 @@ A page whose used blocks are all freed by other threads is queued to its heap, w
 allocation slow path, at rpmalloc_thread_collect or when the thread exits, instead of keeping the memory until it
 allocates from the page again. A page of a shared heap is retired by the freeing thread.
 
+A thread heap left in the queue of released heaps for a second hands its partly used pages to per size class orphan
+lists at the next heap release, and the pages that were full when it was released when another thread frees a block
+into them. A thread heap takes an orphan page of a size class before a free page or a new page. The pages
+of a released heap were only reused once another thread adopted the heap, so with fewer threads than released heaps,
+as when a thread pool retires idle workers, the free blocks in them were never reused. Orphan pages whose blocks have
+all been freed are decommitted, at most once a second, and taken for pages of any size class of their page type.
+
 Unloading a DLL or shared object that has rpmalloc compiled in no longer leaves the thread exit
 destructor (a fiber local storage slot on Windows, a pthread key elsewhere) registered in unmapped
 code, which crashed the next exit of a thread that had allocated through the module, and on Windows

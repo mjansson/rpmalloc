@@ -3244,6 +3244,106 @@ test_shared_heap_retire(void) {
 	return 0;
 }
 
+enum { ORPHAN_PAGES = 40, ORPHAN_BLOCKS_PER_PAGE = 18, ORPHAN_BLOCKS = ORPHAN_PAGES * ORPHAN_BLOCKS_PER_PAGE };
+static void* orphan_block[ORPHAN_BLOCKS];
+static int orphan_reused;
+static atomic_int orphan_hold;
+
+static void
+orphan_alloc_thread(void* arg) {
+	(void)sizeof(arg);
+	for (unsigned int i = 0; i < ORPHAN_BLOCKS; ++i) {
+		orphan_block[i] = rpmalloc(3500);
+		if (!orphan_block[i])
+			thread_exit(1);
+		memset(orphan_block[i], 0xcd, 3500);
+	}
+	for (unsigned int i = 0; i < ORPHAN_BLOCKS; i += 2) {
+		rpfree(orphan_block[i]);
+		orphan_block[i] = 0;
+	}
+	thread_exit(0);
+}
+
+static void
+orphan_hold_thread(void* arg) {
+	(void)sizeof(arg);
+	rpfree(rpmalloc(16));
+	while (atomic_load(&orphan_hold))
+		thread_sleep(1);
+	thread_exit(0);
+}
+
+static void
+orphan_release_thread(void* arg) {
+	(void)sizeof(arg);
+	rpfree(rpmalloc(16));
+	thread_exit(0);
+}
+
+static void
+orphan_reuse_thread(void* arg) {
+	(void)sizeof(arg);
+	static void* block[ORPHAN_BLOCKS];
+	for (unsigned int i = 0; i < ORPHAN_BLOCKS; ++i) {
+		block[i] = rpmalloc(3500);
+		if (!block[i])
+			thread_exit(1);
+		memset(block[i], 0xab, 3500);
+		uintptr_t page = (uintptr_t)block[i] & ~(uintptr_t)(64 * 1024 - 1);
+		for (unsigned int iorphan = 1; iorphan < ORPHAN_BLOCKS; iorphan += 2)
+			orphan_reused |= (((uintptr_t)orphan_block[iorphan] & ~(uintptr_t)(64 * 1024 - 1)) == page);
+	}
+	for (unsigned int i = 0; i < ORPHAN_BLOCKS; ++i)
+		rpfree(block[i]);
+	thread_exit(0);
+}
+
+static int
+test_orphan_pages(void) {
+	// The partly used pages of a heap left in the queue of released heaps for the orphan delay are handed to the
+	// orphan lists by the next heap release. Another thread takes them for blocks of the size class before it takes
+	// new pages, and the blocks left in them are freed into them from a third thread
+	rpmalloc_initialize(0);
+	orphan_reused = 0;
+	atomic_store(&orphan_hold, 1);
+	// A second thread holds a heap until the allocating thread has released its heap, then releases its heap on
+	// top of it, so the heap of the allocating thread stays below in the queue
+	thread_arg hold_arg;
+	hold_arg.fn = orphan_hold_thread;
+	hold_arg.arg = 0;
+	uintptr_t hold = thread_run(&hold_arg);
+	thread_arg targ;
+	targ.fn = orphan_alloc_thread;
+	targ.arg = 0;
+	if (thread_join(thread_run(&targ)) != 0)
+		return test_fail("Allocation thread failed");
+	atomic_store(&orphan_hold, 0);
+	if (thread_join(hold) != 0)
+		return test_fail("Hold thread failed");
+	thread_sleep(1100);
+	targ.fn = orphan_release_thread;
+	if (thread_join(thread_run(&targ)) != 0)
+		return test_fail("Release thread failed");
+	targ.fn = orphan_reuse_thread;
+	if (thread_join(thread_run(&targ)) != 0)
+		return test_fail("Reuse thread failed");
+	for (unsigned int i = 1; i < ORPHAN_BLOCKS; i += 2) {
+		unsigned char* ptr = orphan_block[i];
+		for (size_t ibyte = 0; ibyte < 3500; ++ibyte) {
+			if (ptr[ibyte] != 0xcd)
+				return test_fail("Block of an orphan page overwritten");
+		}
+		rpfree(ptr);
+	}
+	if (!orphan_reused)
+		return test_fail("Partly used pages of a released heap not reused by another thread");
+
+	rpmalloc_finalize();
+	printf("Orphan page tests passed\n");
+	return 0;
+}
+
 static int
 test_page_decommit_other_type(void) {
 	// Committing pages of one page type decommits the free pages of another type held above the overflow
@@ -3322,6 +3422,8 @@ test_run(int argc, char** argv) {
 	if (test_remote_free_retire())
 		return -1;
 	if (test_shared_heap_retire())
+		return -1;
+	if (test_orphan_pages())
 		return -1;
 	if (test_alloc())
 		return -1;

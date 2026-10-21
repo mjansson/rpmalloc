@@ -33,6 +33,9 @@
  *                            (default off), exercising the huge block cache from all threads with
  *                            allocations, zeroed allocations checked for zero, in place growth and
  *                            shrinking and cross-thread frees. Not limited by RPMALLOC_STRESS_MAX_SIZE.
+ *   RPMALLOC_STRESS_CHURN    release the thread heap and take a heap again every this many bursts of each
+ *                            worker (default 0, off), keeping half of the local blocks live across the switch, which
+ *                            exercises the orphan pages of released heaps and frees into them.
  *
  * Suggested run durations (RPMALLOC_STRESS_SECONDS):
  *   30      quick smoke test (default)
@@ -106,6 +109,8 @@ static size_t max_alloc_size;
 static int use_aligned_alloc = 1;
 //! Whether to churn huge blocks through the huge pool (default off). Set RPMALLOC_STRESS_HUGE=1 to enable.
 static int use_huge_churn;
+//! Number of bursts between heap switches of a worker (0 = never). Set RPMALLOC_STRESS_CHURN to enable.
+static unsigned int heap_churn_bursts;
 
 static uint64_t
 monotonic_ms(void) {
@@ -297,8 +302,21 @@ worker(void* worker_index_arg) {
 	void* local_ring[LOCAL_RING];
 	memset(local_ring, 0, sizeof(local_ring));
 	uint32_t ring_index = 0;
+	unsigned int bursts = 0;
 
 	while (!atomic_load_explicit(&stop_requested, memory_order_relaxed)) {
+		if (heap_churn_bursts && (++bursts >= heap_churn_bursts)) {
+			// Hand half of the local blocks to other threads, keep the rest live across the heap switch
+			bursts = 0;
+			for (uint32_t ring_slot = 0; ring_slot < LOCAL_RING; ring_slot += 2) {
+				if (local_ring[ring_slot]) {
+					pool_handoff(local_ring[ring_slot], &random_state);
+					local_ring[ring_slot] = 0;
+				}
+			}
+			rpmalloc_thread_finalize();
+			rpmalloc_thread_initialize();
+		}
 		for (unsigned int burst = 0; burst < 32; ++burst) {
 			void* block = block_alloc(&random_state);
 			uint32_t action = random_next(&random_state) & 3u;
@@ -384,11 +402,17 @@ main(int argc, char** argv) {
 	if (env_huge)
 		use_huge_churn = atoi(env_huge) != 0;
 
+	const char* env_churn = getenv("RPMALLOC_STRESS_CHURN");
+	if (env_churn && (atoi(env_churn) > 0))
+		heap_churn_bursts = (unsigned int)atoi(env_churn);
+
 	printf("rpmalloc stress: %zu threads, %d seconds", worker_count, run_seconds);
 	if (max_alloc_size)
 		printf(", max alloc %zu bytes", max_alloc_size);
 	if (use_huge_churn)
 		printf(", huge churn");
+	if (heap_churn_bursts)
+		printf(", heap switch every %u bursts", heap_churn_bursts);
 	printf("\n");
 	fflush(stdout);
 
