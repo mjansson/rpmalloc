@@ -1123,6 +1123,36 @@ os_set_page_name(void* address, size_t size) {
 #endif
 }
 
+#if !PLATFORM_WINDOWS && defined(MAP_HUGETLB) && !defined(__APPLE__) && ARCH_64BIT
+#define OS_MMAP_HINT 1
+//! Aligned mappings are first tried at an address from a range above the program and below the area the kernel
+//  places mappings in, handed out in steps of the span size. A mapping at a free aligned address does not map the
+//  alignment padding, which is unmapped again in two more system calls taking the process memory map lock for writing
+#define OS_MMAP_HINT_BASE ((uintptr_t)4 << 40)
+#define OS_MMAP_HINT_END ((uintptr_t)64 << 40)
+static atomic_uintptr_t os_mmap_hint_address;
+
+static void*
+os_mmap_hint(size_t size, size_t alignment) {
+	if ((alignment > SPAN_SIZE) || (SPAN_SIZE % alignment))
+		return 0;
+	uintptr_t step = ((uintptr_t)size + (SPAN_SIZE - 1)) & ~(uintptr_t)(SPAN_SIZE - 1);
+	uintptr_t hint = atomic_fetch_add_explicit(&os_mmap_hint_address, step, memory_order_relaxed);
+	if ((hint < OS_MMAP_HINT_BASE) || ((hint + step) > OS_MMAP_HINT_END)) {
+		// Start at an address randomized by the address of a stack variable, and again from the start once the
+		// range is used up, cached and freed mappings have released the addresses by then
+		uintptr_t random = ((uintptr_t)&step >> 12) ^ (uintptr_t)monotonic_time_ms();
+		uintptr_t start = OS_MMAP_HINT_BASE + ((random * 0x9E3779B97F4A7C15ULL) & (((uintptr_t)1 << 40) - 1));
+		start &= ~(uintptr_t)(SPAN_SIZE - 1);
+		atomic_store_explicit(&os_mmap_hint_address, start + step, memory_order_relaxed);
+		hint = start;
+	}
+	return (void*)hint;
+}
+#else
+#define OS_MMAP_HINT 0
+#endif
+
 static void*
 os_mmap(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
 	size_t map_size = size + alignment;
@@ -1182,8 +1212,26 @@ os_mmap(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
 			huge_flags |= (int)(os_huge_page_shift << MAP_HUGE_SHIFT);
 #endif
 	}
-	void* ptr =
-	    mmap(0, map_size, PROT_READ | PROT_WRITE | PROT_MAX(PROT_READ | PROT_WRITE), huge_flags | flags, -1, 0);
+	void* ptr = MAP_FAILED;
+#if OS_MMAP_HINT
+	if (alignment && !os_huge_pages) {
+		void* hint = os_mmap_hint(size, alignment);
+		if (hint) {
+			ptr = mmap(hint, size, PROT_READ | PROT_WRITE | PROT_MAX(PROT_READ | PROT_WRITE), flags, -1, 0);
+			if (ptr == hint) {
+				map_size = size;
+				alignment = 0;
+				*offset = 0;
+			} else {
+				if (ptr != MAP_FAILED)
+					munmap(ptr, size);
+				ptr = MAP_FAILED;
+			}
+		}
+	}
+#endif
+	if (ptr == MAP_FAILED)
+		ptr = mmap(0, map_size, PROT_READ | PROT_WRITE | PROT_MAX(PROT_READ | PROT_WRITE), huge_flags | flags, -1, 0);
 #if defined(MADV_HUGEPAGE)
 	// In some configurations, huge pages allocations might fail thus
 	// we fallback to normal allocations and promote the region as transparent huge page
@@ -2145,10 +2193,10 @@ span_allocate_page(span_t* span) {
 //! the tail beyond is decommitted. The span page count holds the committed pages, the page request the usable size
 //! and the mapped size the address range.
 #ifndef HUGE_CACHE_SLOT_COUNT
-#define HUGE_CACHE_SLOT_COUNT 32
+#define HUGE_CACHE_SLOT_COUNT 256
 #endif
 #ifndef HUGE_CACHE_HEADROOM_PERCENT
-#define HUGE_CACHE_HEADROOM_PERCENT 25
+#define HUGE_CACHE_HEADROOM_PERCENT 50
 #endif
 #ifndef HUGE_CACHE_HEADROOM_MIN
 #define HUGE_CACHE_HEADROOM_MIN (64 * 1024 * 1024)
@@ -2427,12 +2475,12 @@ huge_cache_push(span_t* span) {
 //! Add a huge block allocation of the given (page aligned) size to the live blocks and take the cached mapping
 //! that fits it best, returns 0 on a miss. A mapping that can decommit fits a request within its address range
 //! and of at least a quarter of its committed size, the best one needs the fewest bytes committed up to the
-//! request or decommitted down to twice the request. A larger mapping is left for a larger request, since
-//! decommitting more than twice the request to save the faults of a fresh mapping of the request size loses
-//! more committed memory than it saves. A reused mapping keeps committed pages beyond the request, up to twice
-//! the request, only within the room left under the budget. Other mappings are reused only for requests of at
-//! least half their committed size and keep all their committed pages. The committed size the block is accounted
-//! with, the request size on a miss, is returned in commit_size.
+//! request or committed beyond twice the request, leaving a larger mapping for a larger request. A reused mapping
+//! keeps its committed pages beyond the request within the room left under the budget, and decommits the rest.
+//! Decommitting the pages beyond twice the request regardless of the room made the next larger request reusing the
+//! mapping fault them in again. Other mappings are reused only for requests of at least half their committed size
+//! and keep all their committed pages. The committed size the block is accounted with, the request size on a miss,
+//! is returned in commit_size.
 static span_t*
 huge_cache_pop(size_t alloc_size, size_t* commit_size) {
 	size_t slack_limit = (alloc_size <= (SIZE_MAX / 2)) ? (alloc_size * 2) : SIZE_MAX;
@@ -2475,7 +2523,7 @@ huge_cache_pop(size_t alloc_size, size_t* commit_size) {
 		global_huge_cache.slot[best_slot].span = 0;
 		global_huge_cache.cached -= best_committed;
 		if (best_committed > alloc_size)
-			spare = ((best_committed > slack_limit) ? slack_limit : best_committed) - alloc_size;
+			spare = best_committed - alloc_size;
 		// A mapping that cannot decommit keeps all its committed pages
 		if (!best->commit_on_demand) {
 			commit += spare;
@@ -3598,7 +3646,7 @@ span_huge_grow(span_t* span, size_t size) {
 }
 
 //! Shrink a huge block in place to a smaller huge size. The committed pages beyond twice the new size are
-//  decommitted, keeping the same slack as a reused cached mapping. Returns the block, or 0 if the mapping is from
+//  decommitted, keeping slack for the block to grow in place again. Returns the block, or 0 if the mapping is from
 //  before a reinitialization with another page size.
 static void*
 span_huge_shrink(span_t* span, size_t size) {

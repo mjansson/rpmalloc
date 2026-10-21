@@ -1,5 +1,15 @@
 2.0.2
 
+The huge block cache holds up to 256 mappings instead of 32, and keeps cached and live huge blocks within the peak
+of the requested bytes plus half of it, instead of a quarter, as headroom. A program freeing many huge blocks at once,
+such as threads exiting together, reuses the mappings instead of unmapping and mapping them again. A reused mapping
+keeps its committed pages beyond the request within that budget, instead of decommitting those beyond twice the
+request, which the next larger request reusing the mapping faulted in again.
+
+Span and huge block mappings are first tried at an address aligned to the span size from an address range above the
+program, instead of mapping the alignment padding and unmapping it again in two more system calls, which take the
+process memory map lock for writing.
+
 Unloading a DLL or shared object that has rpmalloc compiled in no longer leaves the thread exit
 destructor (a fiber local storage slot on Windows, a pthread key elsewhere) registered in unmapped
 code, which crashed the next exit of a thread that had allocated through the module, and on Windows
