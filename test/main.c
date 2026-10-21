@@ -1691,6 +1691,25 @@ test_transparent_huge_pages(void) {
 
 	int ret = test_huge_pages_alloc();
 
+#if defined(__linux__)
+	if ((ret == 0) && thp_in_use) {
+		// A huge block mapping ends on a huge page boundary, so its last huge page can be a huge page
+		size_t thp_size = 2 * 1024 * 1024;
+		char buf[64] = {0};
+		int fd = open("/sys/kernel/mm/transparent_hugepage/hpage_pmd_size", O_RDONLY);
+		if (fd != -1) {
+			ssize_t was_read = read(fd, buf, sizeof(buf) - 1);
+			close(fd);
+			if (was_read > 0)
+				thp_size = (size_t)strtoull(buf, 0, 10);
+		}
+		void* block = rpmalloc((5 * 1024 * 1024) + 1);
+		if (!block || (((uintptr_t)block + rpmalloc_usable_size(block)) % thp_size))
+			ret = test_fail("Huge block mapping not a whole number of transparent huge pages");
+		rpfree(block);
+	}
+#endif
+
 	rpmalloc_finalize();
 
 	if (ret == 0) {

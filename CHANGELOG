@@ -26,6 +26,18 @@ Defining ENABLE_8_BYTE_CLASS to 1 adds an 8 byte size class for blocks of 8 byte
 to 8 bytes instead of 16, enough for any object of that size. Programs making many allocations of 8 bytes or less
 use less memory. The default stays off, as code may rely on every block being aligned to 16 bytes.
 
+With transparent huge pages enabled only the spans of small pages and the huge block mappings are advised to be
+backed by huge pages. The spans of larger pages hold the partly used pages of the larger size classes, where each
+partly used page would keep a whole huge page resident. Defining ENABLE_THP to 1 enables transparent huge pages
+unless the configuration says otherwise, for builds where the program cannot pass a configuration, as with the
+standard library override.
+
+With transparent huge pages a new mapping is advised before it is first accessed, and first accessed by a write. The
+span header was read first, which mapped the huge zero page, and the write after it split the zero page into small
+pages, leaving the span metadata and the first pages of every span and huge block mapping in small pages. Huge
+block mappings are a whole number of huge pages, and cached huge block mappings are decommitted from a huge page
+boundary.
+
 Unloading a DLL or shared object that has rpmalloc compiled in no longer leaves the thread exit
 destructor (a fiber local storage slot on Windows, a pthread key elsewhere) registered in unmapped
 code, which crashed the next exit of a thread that had allocated through the module, and on Windows

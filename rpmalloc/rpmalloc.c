@@ -175,6 +175,11 @@ madvise(caddr_t, size_t, int);
 //! Enable statistics
 #define ENABLE_STATISTICS 0
 #endif
+#ifndef ENABLE_THP
+//! Enable transparent huge pages unless the configuration passed to rpmalloc_initialize_config says otherwise, for
+//  builds where the program cannot pass a configuration, as with the standard library override
+#define ENABLE_THP 0
+#endif
 #ifndef ENABLE_8_BYTE_CLASS
 //! Enable an 8 byte size class for blocks of 8 bytes or less, aligned to 8 bytes instead of the 16 byte alignment of
 //  all other blocks. The alignment is enough for any object of that size, and programs making many allocations of
@@ -812,7 +817,7 @@ static rpmalloc_interface_t* global_memory_interface;
 //! Default memory interface
 static rpmalloc_interface_t global_memory_interface_default;
 //! Current configuration
-static rpmalloc_config_t global_config = {0};
+static rpmalloc_config_t global_config = {.enable_thp = ENABLE_THP};
 //! Main thread ID
 static uintptr_t global_main_thread_id;
 //! Set when the module is unloaded or the process exits, the thread destructor is not registered again
@@ -903,11 +908,41 @@ static const uint32_t global_page_units[4] = {1, MEDIUM_SMALL_PAGE_SIZE / SMALL_
                                               MEDIUM_LARGE_PAGE_SIZE / SMALL_PAGE_SIZE,
                                               LARGE_PAGE_SIZE / SMALL_PAGE_SIZE};
 
+//! Transparent huge page advice, a bit per page type of span mappings and a bit for huge block mappings. In
+//  transparent huge page mode the small page spans and huge block mappings are advised. Spans of larger page types
+//  hold the partially used pages of the larger size classes, where huge pages would make the whole huge page of
+//  each partially used page resident
+static uint32_t global_thp_mask;
+
+static void*
+os_mmap(size_t size, size_t alignment, size_t* offset, size_t* mapped_size);
+
+//! Advise a fresh mapping to be backed by huge pages, before anything accesses it. A mapping of the OS interface,
+//  where commit is a no-op, is then written first: the first access to the header is otherwise a read, whose fault
+//  maps the huge zero page, and the write fault after it splits the zero page into small pages instead of allocating
+//  a huge page, leaving the header and the first pages of the mapping in small pages
+static void
+thp_advise(void* address, size_t size, uint32_t type) {
+#if defined(MADV_HUGEPAGE)
+	if ((global_thp_mask & (1U << type)) && !madvise(address, size, MADV_HUGEPAGE) &&
+	    (global_memory_interface->memory_map == os_mmap)) {
+		*(volatile uintptr_t*)address = 0;
+		__asm__ __volatile__("" ::: "memory");
+	}
+#else
+	(void)sizeof(address);
+	(void)sizeof(size);
+	(void)sizeof(type);
+#endif
+}
+
 //! OS huge page support
 static int os_huge_pages;
 //! OS transparent huge page support (advise mappings to be huge page backed without
 //! requiring a preallocated huge page pool, currently Linux/Android only)
 static int os_thp;
+//! Size of a transparent huge page
+static size_t os_thp_size;
 //! Shift for the huge page size (log2 of huge page size when huge pages are enabled)
 static size_t os_huge_page_shift;
 //! OS memory map granularity
@@ -1159,6 +1194,16 @@ get_page_aligned_size(size_t size) {
 	return size;
 }
 
+//! Size of the mapping of a huge block, in transparent huge page mode a whole number of huge pages. The last huge
+//  page of the mapping would otherwise be backed by small pages, and a cached mapping decommitted from within a huge
+//  page and committed again would fault the rest of it in small pages
+static inline size_t
+get_huge_aligned_size(size_t size) {
+	if (global_thp_mask & (1U << PAGE_HUGE))
+		return (size + (os_thp_size - 1)) & ~(os_thp_size - 1);
+	return get_page_aligned_size(size);
+}
+
 ////////////
 ///
 /// OS entry points
@@ -1300,10 +1345,6 @@ os_mmap(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
 			// The mapping is still valid, just backed by normal pages.
 			(void)madvise(ptr, map_size, MADV_HUGEPAGE);
 		}
-	} else if (os_thp && ptr && (ptr != MAP_FAILED)) {
-		// Transparent huge page mode, advise the kernel to back this mapping with
-		// huge pages without requiring a preallocated huge page pool
-		(void)madvise(ptr, map_size, MADV_HUGEPAGE);
 	}
 #endif
 	os_set_page_name(ptr, map_size);
@@ -2591,12 +2632,14 @@ huge_cache_pop(size_t alloc_size, size_t* commit_size) {
 	uint32_t purge_count = huge_cache_evict(now, 0, purge);
 	if (spare) {
 		// Keep the spare committed pages of the reused mapping only within the room left under the budget, the
-		// cached mappings save more faults than the spare pages. The rest of the tail is decommitted
+		// cached mappings save more faults than the spare pages. The rest of the tail is decommitted, from a huge
+		// page boundary in transparent huge page mode
 		size_t used = global_huge_cache.live + global_huge_cache.cached;
 		size_t budget = huge_cache_budget();
 		size_t room = (budget > used) ? (budget - used) : 0;
+		size_t granularity = (global_thp_mask & (1U << PAGE_HUGE)) ? os_thp_size : best->page_size;
 		if (spare > room)
-			spare = room - (room % best->page_size);
+			spare = room - (room % granularity);
 		commit += spare;
 		global_huge_cache.live += spare;
 	}
@@ -3247,6 +3290,7 @@ heap_get_span(heap_t* heap, page_type_t page_type) {
 	if (EXPECTED(span != 0)) {
 		rpmalloc_assert(!((uintptr_t)span & (SPAN_SIZE - 1)),
 		                "memory_map returned a block not aligned to the span size");
+		thp_advise(span, SPAN_SIZE, page_type);
 		_rpmalloc_stat_inc_span_map(heap, page_type);
 		uint32_t page_count = 0;
 		uint32_t page_size = 0;
@@ -3491,7 +3535,7 @@ heap_allocate_block_huge(heap_t* heap, size_t size, size_t zero_size) {
 		rpmalloc_initialize(0);
 		heap = get_thread_heap();
 	}
-	size_t alloc_size = get_page_aligned_size(size + HUGE_HEADER_SIZE);
+	size_t alloc_size = get_huge_aligned_size(size + HUGE_HEADER_SIZE);
 	size_t commit_size = alloc_size;
 	size_t clear_size = zero_size;
 	span_t* span = 0;
@@ -3552,6 +3596,7 @@ heap_allocate_block_huge(heap_t* heap, size_t size, size_t zero_size) {
 		rpmalloc_assert(!((uintptr_t)span & (SPAN_SIZE - 1)),
 		                "memory_map returned a block not aligned to the span size");
 		_rpmalloc_stat_inc_span_map(heap, PAGE_HUGE);
+		thp_advise(span, alloc_size, PAGE_HUGE);
 		// Huge blocks never use the per-page commit path, the flag records whether the mapping is reserve-only
 		// so the cache can commit and decommit its tail
 		span->commit_on_demand = (uint32_t)commit_on_demand;
@@ -3711,7 +3756,7 @@ heap_allocate_block_aligned(heap_t* heap, size_t alignment, size_t size, unsigne
 //  block, or 0 if the mapping is too small.
 static void*
 span_huge_grow(span_t* span, size_t size) {
-	size_t alloc_size = get_page_aligned_size(size + HUGE_HEADER_SIZE);
+	size_t alloc_size = get_huge_aligned_size(size + HUGE_HEADER_SIZE);
 	size_t old_request = (size_t)span->page_request * span->page_size;
 	size_t old_committed = span_huge_committed(span);
 	if ((alloc_size <= old_request) || (alloc_size > ((size_t)span->mapped_size - span->offset)) ||
@@ -3751,7 +3796,7 @@ span_huge_grow(span_t* span, size_t size) {
 //  before a reinitialization with another page size.
 static void*
 span_huge_shrink(span_t* span, size_t size) {
-	size_t alloc_size = get_page_aligned_size(size + HUGE_HEADER_SIZE);
+	size_t alloc_size = get_huge_aligned_size(size + HUGE_HEADER_SIZE);
 	size_t old_request = (size_t)span->page_request * span->page_size;
 	size_t old_committed = span_huge_committed(span);
 	if ((alloc_size >= old_request) || (span->page_size != global_config.page_size))
@@ -3804,7 +3849,7 @@ span_huge_remap(span_t* span, size_t size) {
 	if ((global_memory_interface->memory_map != os_mmap) || os_huge_pages || span->offset ||
 	    span_get_huge_page(span)->is_tracked)
 		return 0;
-	size_t alloc_size = get_page_aligned_size(size + HUGE_HEADER_SIZE);
+	size_t alloc_size = get_huge_aligned_size(size + HUGE_HEADER_SIZE);
 	size_t old_mapped_size = span->mapped_size;
 	if (alloc_size <= old_mapped_size)
 		return 0;
@@ -4500,13 +4545,22 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 		int thp_never = 0;
 		if (os_read_system_file("/sys/kernel/mm/transparent_hugepage/enabled", thp_state, sizeof(thp_state)))
 			thp_never = (strstr(thp_state, "[never]") != 0);
-		if (!thp_never)
+		if (!thp_never) {
 			os_thp = 1;
+			os_thp_size = 2 * 1024 * 1024;
+			if (os_read_system_file("/sys/kernel/mm/transparent_hugepage/hpage_pmd_size", thp_state,
+			                        sizeof(thp_state))) {
+				size_t thp_size = (size_t)strtoull(thp_state, 0, 10);
+				if (thp_size && !(thp_size & (thp_size - 1)))
+					os_thp_size = thp_size;
+			}
+		}
 	}
 	if (global_config.disable_thp)
 		(void)prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0);
 #endif
 	global_config.enable_thp = os_thp;
+	global_thp_mask = os_thp ? ((1U << PAGE_SMALL) | (1U << PAGE_HUGE)) : 0;
 
 	// Decommit of free pages only applies to page types larger than the configured
 	// page size, disable the free page overflow pass for page types where it can
