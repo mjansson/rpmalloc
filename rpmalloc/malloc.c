@@ -71,7 +71,7 @@ typedef struct rp_nothrow_t { int __dummy; } rp_nothrow_t;
 static void* rpmalloc_nothrow(size_t size, rp_nothrow_t t) { (void)sizeof(t); return rpmalloc(size); }
 static void* rpaligned_alloc_reverse(size_t size, size_t align) { return rpaligned_alloc(align, size); }
 static void* rpaligned_alloc_reverse_nothrow(size_t size, size_t align, rp_nothrow_t t) { (void)sizeof(t); return rpaligned_alloc(align, size); }
-static void rpfree_size(void* p, size_t size) { (void)sizeof(size); rpfree(p); }
+static ENTRY_ALIGNED void rpfree_size(void* p, size_t size) { (void)sizeof(size); rpfree(p); }
 static void rpfree_aligned(void* p, size_t align) { (void)sizeof(align); rpfree(p); }
 static void rpfree_size_aligned(void* p, size_t size, size_t align) { (void)sizeof(size); (void)sizeof(align); rpfree(p); }
 static void rpfree_nothrow(void* p, rp_nothrow_t t) { (void)sizeof(t); rpfree(p); }

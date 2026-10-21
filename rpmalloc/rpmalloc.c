@@ -477,11 +477,15 @@ wait_spin(uint32_t* spin_count) {
 
 #define EXPECTED(x) __builtin_expect((x), 1)
 #define UNEXPECTED(x) __builtin_expect((x), 0)
+//! Align the hot entry points to a cache line. Unrelated code changes otherwise move them across fetch block
+//  boundaries, which changes the speed of tight allocation loops by up to 12%
+#define ENTRY_ALIGNED __attribute__((aligned(64)))
 
 #else
 
 #define EXPECTED(x) x
 #define UNEXPECTED(x) x
+#define ENTRY_ALIGNED
 
 #endif
 
@@ -558,61 +562,69 @@ struct block_t {
 //  pages, not stored in the pages, so the structures of different pages do not map to the same cache sets and the
 //  blocks start at the page start
 struct page_t {
+	// The first cache line holds the fields the owning heap writes on every local free and page refill, the
+	// second line the fields other threads freeing into the page read and the thread free list they write, so
+	// cross-thread frees and the owner do not take the line from each other on every free
+	union {
+		struct {
+			//! Block used count
+			uint32_t block_used;
+			//! Block initialized count
+			uint32_t block_initialized;
+			//! Local free list
+			block_t* local_free;
+			//! Next page in list
+			page_t* next;
+			//! Previous page in list
+			page_t* prev;
+			//! Block count
+			uint32_t block_count;
+			//! Flag set if part of heap full list
+			uint32_t is_full : 1;
+			//! Flag set if part of heap free list
+			uint32_t is_free : 1;
+			//! Flag set if blocks are zero initialied
+			uint32_t is_zero : 1;
+			//! Flag set if memory pages have been decommitted
+			uint32_t is_decommitted : 1;
+			//! Set when a refill took blocks freed by the owner thread from the page local free list
+			uint32_t local_reuse : 1;
+			//! Set when the page received blocks freed by other threads
+			uint32_t remote_fed : 1;
+			//! Flag set if the page is the header of a huge block span in the huge span list of its heap
+			uint32_t is_tracked : 1;
+		};
+		//! Padding of the owner fields to a cache line
+		char owner_line[64];
+	};
+	//! Multithreaded free list, block offset is in low 32 bit, list count is high 32 bit
+	atomic_ullong thread_free;
+	//! Start of the page memory, where the first block starts. Kept next to the thread free list, which is coded
+	//  with block offsets from it
+	block_t* block_start;
+	//! Owning heap
+	heap_t* heap;
+	//! Block size
+	uint32_t block_size;
 	//! Size class of blocks
 	uint16_t size_class;
 	//! Page type, kept out of the flag word so reading it never waits on the byte stores of flag updates
 	uint16_t page_type;
-	//! Block size
-	uint32_t block_size;
-	//! Block count
-	uint32_t block_count;
-	//! Block initialized count
-	uint32_t block_initialized;
-	//! Block used count
-	uint32_t block_used;
-	//! Flag set if part of heap full list
-	uint32_t is_full : 1;
-	//! Flag set if part of heap free list
-	uint32_t is_free : 1;
-	//! Flag set if blocks are zero initialied
-	uint32_t is_zero : 1;
-	//! Flag set if memory pages have been decommitted
-	uint32_t is_decommitted : 1;
 	//! Flag set if containing aligned blocks.
-	//  Note: has_aligned_block and is_full are read on the cross-thread free path while the
-	//  owner thread writes this packed flag word. The owner is the sole writer and the word is
-	//  naturally aligned (hardware-atomic access), and the read flags are monotonic/tolerant,
-	//  so the read/write race is benign. ThreadSanitizer still reports it; see
-	//  test/tsan-suppressions.txt.
+	//  Note: has_aligned_block is read on the cross-thread free path while the owner thread writes
+	//  this packed flag word. The owner is the sole writer and the word is naturally aligned
+	//  (hardware-atomic access), and the read flag is monotonic, so the read/write race is benign.
+	//  ThreadSanitizer still reports it; see test/tsan-suppressions.txt.
 	uint32_t has_aligned_block : 1;
 	//! Set if the span maps reserve-only (pages commit on demand, may be decommitted),
 	//  captured at map time so it survives a config change across a finalize/initialize
 	uint32_t commit_on_demand : 1;
 	//! log2 of the commit granularity (the page size at the span's map time)
 	uint32_t commit_shift : 6;
-	//! Set when a refill took blocks freed by the owner thread from the page local free list
-	uint32_t local_reuse : 1;
-	//! Set when the page received blocks freed by other threads
-	uint32_t remote_fed : 1;
-	//! Flag set if the page is the header of a huge block span in the huge span list of its heap
-	uint32_t is_tracked : 1;
 	//! Set if the heap was a first class heap when the page was initialized for its size class. Cross-thread
 	//  frees into the page are not chained, read from the flag word the free path reads instead of the remotely
 	//  written heap line. The heap flag is only ever cleared, so a stale page flag only stops chaining
 	uint32_t heap_first_class : 1;
-	//! Local free list
-	block_t* local_free;
-	//! Owning heap
-	heap_t* heap;
-	//! Next page in list
-	page_t* next;
-	//! Previous page in list
-	page_t* prev;
-	//! Multithreaded free list, block offset is in low 32 bit, list count is high 32 bit
-	atomic_ullong thread_free;
-	//! Start of the page memory, where the first block starts. Kept next to the thread free list, which is coded
-	//  with block offsets from it
-	block_t* block_start;
 };
 
 //! An entry of the span slot table
@@ -3871,7 +3883,7 @@ rpmalloc_is_thread_initialized(void) {
 	return (get_thread_heap() != global_heap_default) ? 1 : 0;
 }
 
-extern inline RPMALLOC_ALLOCATOR void*
+extern inline RPMALLOC_ALLOCATOR ENTRY_ALIGNED void*
 rpmalloc(size_t size) {
 #if ENABLE_VALIDATE_ARGS
 	if (size >= MAX_ALLOC_SIZE) {
@@ -3883,7 +3895,7 @@ rpmalloc(size_t size) {
 	return heap_allocate_block(heap, size, 0);
 }
 
-extern inline RPMALLOC_ALLOCATOR void*
+extern inline RPMALLOC_ALLOCATOR ENTRY_ALIGNED void*
 rpzalloc(size_t size) {
 #if ENABLE_VALIDATE_ARGS
 	if (size >= MAX_ALLOC_SIZE) {
@@ -3895,14 +3907,14 @@ rpzalloc(size_t size) {
 	return heap_allocate_block(heap, size, size);
 }
 
-extern inline void
+extern inline ENTRY_ALIGNED void
 rpfree(void* ptr) {
 	if (UNEXPECTED(ptr == 0))
 		return;
 	block_deallocate(ptr);
 }
 
-extern inline RPMALLOC_ALLOCATOR void*
+extern inline RPMALLOC_ALLOCATOR ENTRY_ALIGNED void*
 rpcalloc(size_t num, size_t size) {
 	size_t total;
 	if (size_mul_overflow(num, size, &total)) {
@@ -3919,7 +3931,7 @@ rpcalloc(size_t num, size_t size) {
 	return heap_allocate_block(heap, total, total);
 }
 
-extern inline RPMALLOC_ALLOCATOR void*
+extern inline RPMALLOC_ALLOCATOR ENTRY_ALIGNED void*
 rprealloc(void* ptr, size_t size) {
 #if ENABLE_VALIDATE_ARGS
 	if (size >= MAX_ALLOC_SIZE) {
@@ -3994,7 +4006,7 @@ rpposix_memalign(void** memptr, size_t alignment, size_t size) {
 	return *memptr ? 0 : ENOMEM;
 }
 
-extern inline size_t
+extern inline ENTRY_ALIGNED size_t
 rpmalloc_usable_size(void* ptr) {
 	return (ptr ? block_usable_size(ptr) : 0);
 }
