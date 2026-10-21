@@ -15,6 +15,13 @@ Span and huge block mappings are first tried at an address aligned to the span s
 program, instead of mapping the alignment padding and unmapping it again in two more system calls, which take the
 process memory map lock for writing.
 
+With more than 8 heaps in use the number of free small and medium-small pages a heap keeps committed beyond the
+decommit delay is scaled down with the number of heaps, to at least 2, instead of every heap keeping up to 16 and 8,
+so the committed free pages of a program with many threads no longer grow with the thread count. The limit at which
+freed pages are decommitted within the delay is unchanged. With more heaps in use than processors the process can run
+on, the decommit delay is scaled down by the ratio, to at least a quarter, as the free pages a heap keeps for reuse
+sit unused while its thread waits for a processor.
+
 Unloading a DLL or shared object that has rpmalloc compiled in no longer leaves the thread exit
 destructor (a fiber local storage slot on Windows, a pthread key elsewhere) registered in unmapped
 code, which crashed the next exit of a thread that had allocated through the module, and on Windows

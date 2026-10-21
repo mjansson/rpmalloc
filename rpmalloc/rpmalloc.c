@@ -857,11 +857,34 @@ static const size_class_t global_size_class[SIZE_CLASS_COUNT] = {
 #define PAGE_DECOMMIT_LIMIT_FACTOR 4
 #endif
 
-//! Threshold number of pages for when free pages are decommitted
-static uint32_t global_page_free_overflow[5] = {16, 8, 4, 2, 0};
+#ifndef HEAP_RETAIN_SCALE_COUNT
+//! Number of heaps in use up to which each heap keeps the full threshold number of free committed pages. With more
+//  heaps in use the threshold of the page types of thread heaps is scaled down, so the free committed pages of the
+//  process stay at about this many heaps worth instead of growing with the thread count
+#define HEAP_RETAIN_SCALE_COUNT 8
+#endif
 
-//! Number of pages to retain when free page threshold overflows
-static uint32_t global_page_free_retain[5] = {4, 2, 1, 1, 0};
+//! Threshold number of pages for when free pages are decommitted, scaled to the number of heaps in use
+static atomic_uint global_page_free_overflow[5] = {16, 8, 4, 2, 0};
+
+//! Threshold number of pages for when free pages are decommitted with few heaps in use
+static uint32_t global_page_free_overflow_base[4] = {16, 8, 4, 2};
+
+//! Number of free committed pages at which a freed page is decommitted right away, within the decommit delay
+static uint32_t global_page_free_limit[4] = {16 * PAGE_DECOMMIT_LIMIT_FACTOR, 8 * PAGE_DECOMMIT_LIMIT_FACTOR,
+                                             4 * PAGE_DECOMMIT_LIMIT_FACTOR, 2 * PAGE_DECOMMIT_LIMIT_FACTOR};
+
+//! Number of pages to retain when free page threshold overflows, scaled with the threshold
+static atomic_uint global_page_free_retain[5] = {4, 2, 1, 1, 0};
+
+//! Number of pages to retain when free page threshold overflows with few heaps in use
+static const uint32_t global_page_free_retain_base[4] = {4, 2, 1, 1};
+
+//! Decommit delay of free pages in milliseconds, scaled down when the heaps in use outnumber the processors
+static atomic_uint global_page_decommit_delay = PAGE_DECOMMIT_DELAY_MS;
+
+//! Number of processors the process can run on
+static uint32_t global_cpu_count;
 
 //! Size of each page type in small page units
 static const uint32_t global_page_units[4] = {1, MEDIUM_SMALL_PAGE_SIZE / SMALL_PAGE_SIZE,
@@ -2901,6 +2924,39 @@ heap_unmap(heap_t* heap) {
 	global_memory_interface->memory_unmap(heap, heap->offset, heap->mapped_size);
 }
 
+//! Number of heaps in use, by threads or as first class heaps
+static uint32_t global_heap_used_count;
+
+//! Scale the free page threshold and retain count of the page types of thread heaps to the number of heaps in use
+//  (heap lock held). A process with many threads kept the threshold number of free committed pages in every heap,
+//  a heap freeing pages faster than it reuses them, as a heap of a thread only allocating blocks other threads free,
+//  holding them all. The hard limit is not scaled, the pages of a burst of frees are kept for reuse within the
+//  decommit delay as before, and only decommitted once the delay passes.
+//  With more heaps in use than processors the decommit delay is scaled down by the ratio, to at least a quarter. The
+//  threads then wait for a processor in turn, and the free pages a heap keeps for its next burst sit unused while its
+//  thread waits, in every waiting heap. Scaling the hard limit instead decommitted the pages of bursts the heap reused
+//  right away, and a shorter delay made heaps of programs with many more threads than processors decommit and fault
+//  in their pages on every turn
+static void
+heap_used_count_scale(void) {
+	uint32_t count = global_heap_used_count;
+	for (uint32_t itype = PAGE_SMALL; itype <= PAGE_MEDIUM_SMALL; ++itype) {
+		uint32_t base = global_page_free_overflow_base[itype];
+		if (base == 0xFFFFFFFFU)
+			continue;
+		uint32_t overflow = (count > HEAP_RETAIN_SCALE_COUNT) ? ((base * HEAP_RETAIN_SCALE_COUNT) / count) : base;
+		if (overflow < 2)
+			overflow = 2;
+		uint32_t retain = global_page_free_retain_base[itype];
+		global_page_free_overflow[itype] = overflow;
+		global_page_free_retain[itype] = (retain < overflow) ? retain : (overflow - 1);
+	}
+	uint32_t delay = PAGE_DECOMMIT_DELAY_MS;
+	if (global_cpu_count && (count > global_cpu_count))
+		delay = (uint32_t)(((uint64_t)delay * global_cpu_count) / count);
+	global_page_decommit_delay = (delay > (PAGE_DECOMMIT_DELAY_MS / 4)) ? delay : (PAGE_DECOMMIT_DELAY_MS / 4);
+}
+
 static heap_t*
 heap_allocate(int first_class) {
 	heap_t* heap = heap_allocate_new(first_class);
@@ -2912,6 +2968,8 @@ heap_allocate(int first_class) {
 		if (global_heap_used)
 			global_heap_used->prev = heap;
 		global_heap_used = heap;
+		++global_heap_used_count;
+		heap_used_count_scale();
 		heap_lock_release();
 		heap->owner_thread = current_thread_id;
 #if ENABLE_STATISTICS
@@ -2939,6 +2997,9 @@ heap_release(heap_t* heap) {
 		global_heap_used = heap->next;
 	heap->next = global_heap_queue;
 	global_heap_queue = heap;
+	if (global_heap_used_count)
+		--global_heap_used_count;
+	heap_used_count_scale();
 	heap_lock_release();
 }
 
@@ -2990,7 +3051,7 @@ heap_page_free_decommit_head(heap_t* heap, uint32_t page_type) {
 //  the next phase.
 static NOINLINE void
 heap_page_free_overflow(heap_t* heap, uint32_t page_type) {
-	uint64_t limit = (uint64_t)global_page_free_overflow[page_type] * PAGE_DECOMMIT_LIMIT_FACTOR;
+	uint32_t limit = global_page_free_limit[page_type];
 	uint64_t now = monotonic_time_ms();
 #if HUGE_CACHE_SLOT_COUNT
 	huge_cache_collect(now);
@@ -3000,7 +3061,7 @@ heap_page_free_overflow(heap_t* heap, uint32_t page_type) {
 		since = now ? now : 1;
 		heap->page_free_overflow_ms[page_type] = since;
 	}
-	if ((now - since) < PAGE_DECOMMIT_DELAY_MS) {
+	if ((now - since) < global_page_decommit_delay) {
 		// Within the delay only pages above the hard limit are decommitted, one at a time as they are
 		// freed, keeping the committed pages below the limit for reuse
 		if (heap->page_free_commit_count[page_type] >= limit)
@@ -3020,7 +3081,7 @@ heap_page_free_overflow_other(heap_t* heap, uint32_t page_type) {
 	uint64_t now = monotonic_time_ms();
 	for (uint32_t itype = 0; itype < 4; ++itype) {
 		uint64_t since = heap->page_free_overflow_ms[itype];
-		if ((itype == page_type) || !since || ((now - since) < PAGE_DECOMMIT_DELAY_MS))
+		if ((itype == page_type) || !since || ((now - since) < global_page_decommit_delay))
 			continue;
 		heap->page_free_overflow_ms[itype] = 0;
 		heap_page_free_decommit(heap, itype, global_page_free_retain[itype]);
@@ -4418,13 +4479,36 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 	// page size, disable the free page overflow pass for page types where it can
 	// never apply (always the case when huge pages or a large page size is in use)
 	const uint32_t page_free_overflow_default[4] = {16, 8, 4, 2};
+	global_cpu_count = 0;
+#if defined(__linux__) && defined(CPU_COUNT)
+	{
+		cpu_set_t cpu_set;
+		if (!sched_getaffinity(0, sizeof(cpu_set), &cpu_set))
+			global_cpu_count = (uint32_t)CPU_COUNT(&cpu_set);
+	}
+#endif
+	if (!global_cpu_count) {
+#if PLATFORM_WINDOWS
+		global_cpu_count = (uint32_t)system_info.dwNumberOfProcessors;
+#else
+		long cpu_online = sysconf(_SC_NPROCESSORS_ONLN);
+		global_cpu_count = (cpu_online > 0) ? (uint32_t)cpu_online : 0;
+#endif
+	}
 	const uint32_t builtin_page_size[4] = {SMALL_PAGE_SIZE, MEDIUM_SMALL_PAGE_SIZE, MEDIUM_LARGE_PAGE_SIZE,
 	                                       LARGE_PAGE_SIZE};
 	for (unsigned int itype = 0; itype < 4; ++itype) {
 		int page_can_decommit =
 		    !global_config.disable_decommit && ((size_t)builtin_page_size[itype] > global_config.page_size);
-		global_page_free_overflow[itype] = page_can_decommit ? page_free_overflow_default[itype] : 0xFFFFFFFFU;
+		global_page_free_overflow_base[itype] = page_can_decommit ? page_free_overflow_default[itype] : 0xFFFFFFFFU;
+		global_page_free_overflow[itype] = global_page_free_overflow_base[itype];
+		global_page_free_retain[itype] = global_page_free_retain_base[itype];
+		global_page_free_limit[itype] =
+		    page_can_decommit ? (page_free_overflow_default[itype] * PAGE_DECOMMIT_LIMIT_FACTOR) : 0xFFFFFFFFU;
 	}
+	heap_lock_acquire();
+	heap_used_count_scale();
+	heap_lock_release();
 
 #if PLATFORM_WINDOWS
 	if (!global_module_detached)
@@ -4558,6 +4642,7 @@ rpmalloc_finalize(void) {
 		}
 		heap = global_heap_used;
 		global_heap_used = 0;
+		global_heap_used_count = 0;
 		while (heap) {
 			heap_t* heap_next = heap->next;
 			heap_free_all(heap);
