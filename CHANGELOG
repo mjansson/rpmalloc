@@ -5,6 +5,23 @@ free list and the fields threads freeing into the page read, and the malloc, fre
 entry points are aligned to a cache line, removing up to 12% swings in the speed of allocation heavy loops from the
 placement of unrelated code.
 
+Transparent huge pages are managed by page type. Huge block mappings are advised to be backed by huge pages, and a
+span of small pages once its heap uses more than the first huge page of the span, so a heap using less keeps its small
+pages instead of a whole huge page. The spans of larger pages hold the partly used pages of the larger size classes,
+where each partly used page would keep a whole huge page resident, and are not advised. When the system backs every
+mapping by huge pages (transparent huge page mode "always") this is the default, and those spans are advised not to be
+backed by huge pages. In mode "madvise" it takes enable_thp, or ENABLE_THP defined to 1 for builds where the program
+cannot pass a configuration, as with the standard library override. disable_thp opts out in both modes. Transparent
+huge pages are not used in mode "never", when the huge page size has mode "never" of its own, or when the process
+has them disabled.
+
+With transparent huge pages a new mapping is advised before it is first accessed, and first accessed by a write. The
+span header was read first, which mapped the huge zero page, and the write after it split the zero page into small
+pages. Huge block mappings are rounded up to a whole number of huge pages when that adds at most an eighth of their
+size, and cached huge block mappings are decommitted from a huge page boundary. Only mappings of the default memory
+interface are advised, and huge block mappings are not rounded for a huge page size above 2MiB or below the configured
+page size, where the usable size of a huge block could be smaller than its request.
+
 Unloading a DLL or shared object that has rpmalloc compiled in no longer leaves the thread exit
 destructor (a fiber local storage slot on Windows, a pthread key elsewhere) registered in unmapped
 code, which crashed the next exit of a thread that had allocated through the module, and on Windows

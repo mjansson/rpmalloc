@@ -181,13 +181,16 @@ typedef struct rpmalloc_config_t {
 	//  For Windows, see https://docs.microsoft.com/en-us/windows/desktop/memory/large-page-support
 	//  For Linux, see https://www.kernel.org/doc/Documentation/vm/hugetlbpage.txt
 	int enable_huge_pages;
-	//! Enable use of transparent huge pages, advising the kernel to back large memory
-	//  mappings with huge pages without requiring a preallocated huge page pool. Unlike
-	//  enable_huge_pages this does not affect page size or accounting, and unused memory
-	//  ranges can still be decommitted. Ignored if enable_huge_pages is in effect or if
-	//  the platform has no transparent huge page support (currently implemented for
-	//  Linux and Android only). After initialization the config value reflects if
-	//  transparent huge pages are actually used.
+	//! Enable use of transparent huge pages when the system only backs memory mappings
+	//  advised to be by huge pages (transparent huge page mode "madvise"), without
+	//  requiring a preallocated huge page pool. Unlike enable_huge_pages this does not
+	//  affect page size or accounting, and unused memory ranges can still be decommitted.
+	//  When the system backs every mapping by huge pages (mode "always") they are used
+	//  regardless, and the allocator advises the mappings where huge pages would keep
+	//  partially used memory resident not to be backed by them. Use disable_thp to opt
+	//  out. Ignored if enable_huge_pages is in effect or if the platform has no
+	//  transparent huge page support (currently implemented for Linux and Android only).
+	//  After initialization the config value reflects if transparent huge pages are used.
 	int enable_thp;
 	//! Disable decommitting unused pages when allocator determines the memory pressure
 	//  is low and there is enough active pages cached. If set to 1, keep all pages committed.
@@ -205,10 +208,10 @@ typedef struct rpmalloc_config_t {
 	//  running would unmap memory the runtime still uses. Only honored without the override.
 	int unmap_on_finalize;
 #if defined(__linux__) || defined(__ANDROID__)
-	///! Allows to disable the Transparent Huge Page feature on Linux on a process basis,
-	///  rather than enabling/disabling system-wise (done via /sys/kernel/mm/transparent_hugepage/enabled).
-	///  It can possibly improve performance and reduced allocation overhead in some contexts, albeit
-	///  THP is usually enabled by default.
+	///! Disable transparent huge pages for the process on Linux, rather than system wide (done
+	///  via /sys/kernel/mm/transparent_hugepage/enabled), including in mode "always" where the
+	///  allocator otherwise uses and manages them. Huge pages trade memory, as partially used
+	///  huge pages stay resident, and page fault latency for fewer page faults and TLB misses.
 	int disable_thp;
 #endif
 } rpmalloc_config_t;
