@@ -125,7 +125,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-14, arch: arm64 }
+          - { os: macos-latest, arch: arm64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -149,7 +149,7 @@ jobs:
   # ---------------------------------------------------------------------------
   macos-sanitizers:
     name: macos-asan-ubsan
-    runs-on: macos-14
+    runs-on: macos-latest
     env:
       RPMALLOC_TEST_SCALE: "50"
       ASAN_OPTIONS: "use_sigaltstack=0:detect_leaks=0"
@@ -247,7 +247,7 @@ jobs:
   # ---------------------------------------------------------------------------
   ios:
     name: ios-simulator
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
       - name: Build for iOS simulator
