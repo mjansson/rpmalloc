@@ -1687,6 +1687,32 @@ test_transparent_huge_pages(void) {
 
 	int ret = test_huge_pages_alloc();
 
+#if defined(__linux__)
+	if ((ret == 0) && thp_in_use) {
+		// A huge block mapping ends on a huge page boundary when that adds at most an eighth of its size, so its
+		// last huge page can be a huge page
+		size_t thp_size = 2 * 1024 * 1024;
+		char buf[64] = {0};
+		int fd = open("/sys/kernel/mm/transparent_hugepage/hpage_pmd_size", O_RDONLY);
+		if (fd != -1) {
+			ssize_t was_read = read(fd, buf, sizeof(buf) - 1);
+			close(fd);
+			if (was_read > 0)
+				thp_size = (size_t)strtoull(buf, 0, 10);
+		}
+		void* block = rpmalloc((17 * 1024 * 1024) + 1);
+		if (!block || (((uintptr_t)block + rpmalloc_usable_size(block)) % thp_size))
+			ret = test_fail("Huge block mapping not a whole number of transparent huge pages");
+		rpfree(block);
+		// A power of two size just above a whole number of huge pages with the block header is not rounded up to
+		// another huge page
+		block = rpmalloc(4 * 1024 * 1024);
+		if (!block || (rpmalloc_usable_size(block) >= ((4 * 1024 * 1024) + (thp_size / 2))))
+			ret = test_fail("Huge block mapping rounded up a whole huge page past a power of two size");
+		rpfree(block);
+	}
+#endif
+
 	rpmalloc_finalize();
 
 	if (ret == 0) {
@@ -2812,6 +2838,15 @@ test_commit_fail_decommit(void* address, size_t size) {
 
 //! Check the huge allocation statistics are back at the given value once the test has freed its huge blocks, so
 //  reuse, growth and shrinking in place account the same committed bytes as the free
+//! Largest usable size of a huge block beyond its request: the page size, or with transparent huge pages in use a
+//  huge page, as huge block mappings are then rounded up to whole huge pages
+static size_t
+test_huge_slack(void) {
+	size_t page_size = rpmalloc_config()->page_size;
+	size_t thp_size = 2 * 1024 * 1024;
+	return (rpmalloc_config()->enable_thp && (thp_size > page_size)) ? thp_size : page_size;
+}
+
 static int
 test_huge_alloc_restored(size_t huge_alloc) {
 	rpmalloc_global_statistics_t stats;
@@ -2830,7 +2865,6 @@ test_huge_cache(void) {
 	rpmalloc_global_statistics_t baseline;
 	rpmalloc_global_statistics(&baseline);
 	const size_t mib = 1024 * 1024;
-	const size_t page_size = rpmalloc_config()->page_size;
 
 	char* block = rpmalloc(48 * mib);
 	if (!block)
@@ -2842,7 +2876,7 @@ test_huge_cache(void) {
 	if (reuse != block)
 		return test_fail("Cached huge mapping not reused for a smaller request");
 	size_t usable_size = rpmalloc_usable_size(reuse);
-	if ((usable_size < (16 * mib)) || (usable_size > ((16 * mib) + page_size)))
+	if ((usable_size < (16 * mib)) || (usable_size > ((16 * mib) + test_huge_slack())))
 		return test_fail("Reused huge mapping has bad usable size");
 	memset(reuse, 0x11, 16 * mib);
 
@@ -2966,7 +3000,7 @@ test_huge_cache(void) {
 	if (shrunk_large != large)
 		return test_fail("Huge block not shrunk in place");
 	usable_size = rpmalloc_usable_size(shrunk_large);
-	if ((usable_size < (20 * mib)) || (usable_size > ((20 * mib) + page_size)))
+	if ((usable_size < (20 * mib)) || (usable_size > ((20 * mib) + test_huge_slack())))
 		return test_fail("Huge block shrunk in place has bad usable size");
 	for (size_t ibyte = 0; ibyte < (20 * mib); ibyte += 4093) {
 		if (shrunk_large[ibyte] != 0x44)
@@ -3042,7 +3076,7 @@ test_huge_cache(void) {
 		if (test_decommit_fail_next)
 			return test_fail("Tail of a reused huge mapping not decommitted");
 		usable_size = rpmalloc_usable_size(narrow);
-		if ((usable_size < (32 * mib)) || (usable_size > ((32 * mib) + page_size)))
+		if ((usable_size < (32 * mib)) || (usable_size > ((32 * mib) + test_huge_slack())))
 			return test_fail("Reused huge mapping with a failed decommit has bad usable size");
 		if (before.huge_alloc && (after.huge_alloc < (before.huge_alloc + (96 * mib))))
 			return test_fail("Reused huge mapping with a failed decommit not accounted with all its pages");
@@ -3078,7 +3112,7 @@ test_huge_cache(void) {
 		if (half != block)
 			return test_fail("Huge mapping that cannot decommit not reused for a request of half its size");
 		usable_size = rpmalloc_usable_size(half);
-		if ((usable_size < (30 * mib)) || (usable_size > ((30 * mib) + page_size)))
+		if ((usable_size < (30 * mib)) || (usable_size > ((30 * mib) + test_huge_slack())))
 			return test_fail("Reused huge mapping that cannot decommit has bad usable size");
 		if (after.huge_alloc && (after.huge_alloc < (before.huge_alloc + (48 * mib))))
 			return test_fail("Reused huge mapping that cannot decommit not accounted with all its pages");
