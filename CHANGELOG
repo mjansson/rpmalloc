@@ -30,6 +30,22 @@ blocks other threads free, decommits them after one window. While more heaps fre
 process can run on, the window is shortened by that ratio, to at least a quarter of the delay, as the free pages a
 heap keeps for reuse sit unused while its thread waits for a processor.
 
+A huge block mapping reserves the address range up to the next multiple of the span size, which the span alignment
+leaves unusable for other spans and huge blocks, and commits only the block. A cached mapping is reused for any request
+up to the reserved range, and realloc grows a block in place up to it instead of moving it. The range is not reserved
+with strict overcommit accounting (overcommit_memory 2) or an address space limit (RLIMIT_AS), without decommit, with
+huge pages or a custom memory interface, on 32-bit platforms, and with transparent huge pages for a block not ending on
+a huge page boundary, where the fault of its last partial huge page would fill the whole huge page.
+
+Over its budget the huge block cache trims the least recently freed mapping holding more than the excess by it instead
+of unmapping the whole mapping, which the next request reusing a mapping faulted in again. A cached mapping is reused
+for a request of at least two fifths of its committed size instead of a quarter, leaving the larger mappings for the
+larger requests instead of decommitting them for the smaller ones, and a request missing the cache while it holds
+mappings too large for it takes the bytes it commits out of the cache. Cached and live huge blocks are kept within the
+peak of the requested bytes plus a fifth of it as headroom, instead of a quarter. The cached mappings are kept in the
+order they were freed with their sizes in the slot, so a lookup reads no span headers under the lock, eviction is one
+pass, and no array of all slots is kept on the stack.
+
 Unloading a DLL or shared object that has rpmalloc compiled in no longer leaves the thread exit
 destructor (a fiber local storage slot on Windows, a pthread key elsewhere) registered in unmapped
 code, which crashed the next exit of a thread that had allocated through the module, and on Windows
