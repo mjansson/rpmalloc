@@ -14,6 +14,11 @@
  *
  */
 
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+// The processor affinity mask of the process (sched_getaffinity) is a GNU extension
+#define _GNU_SOURCE
+#endif
+
 #include "rpmalloc.h"
 
 #include <errno.h>
@@ -76,6 +81,8 @@ static DWORD fls_key = FLS_OUT_OF_INDEXES;
 //! VirtualAlloc2 (Windows 10+), resolved dynamically; null on older systems
 typedef PVOID(WINAPI* virtualalloc2_fn)(HANDLE, PVOID, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER*, ULONG);
 static virtualalloc2_fn os_virtualalloc2;
+//! GetActiveProcessorCount (Windows 7+), resolved dynamically
+typedef DWORD(WINAPI* active_processor_count_fn)(WORD);
 #endif
 #if PLATFORM_POSIX
 #include <sys/mman.h>
@@ -705,9 +712,13 @@ struct heap_t {
 	page_t* page_free_tail[4];
 	//! Free but still committed page count for each page tyoe
 	uint32_t page_free_commit_count[4];
-	//! Time (monotonic ms) the free committed page count first went over the overflow threshold
-	//  for each page type, zero while below the threshold
+	//! Time (monotonic ms) the decommit window of each page type started, zero while the free committed page count
+	//  is at most the retain count
 	uint64_t page_free_overflow_ms[4];
+	//! Lowest free committed page count of each page type since its decommit window started
+	uint32_t page_free_low[4];
+	//! Last decommit epoch the heap freed pages in, counted in the heaps active in that epoch
+	uint32_t page_free_epoch;
 	//! Size decommitted from free pages of other page types beyond what committed pages needed, in small
 	//  page units, used by the next commits before decommitting more
 	uint32_t page_commit_credit;
@@ -851,9 +862,10 @@ static const size_class_t global_size_class[SIZE_CLASS_COUNT] = {
 #endif
 
 #ifndef PAGE_DECOMMIT_DELAY_MS
-//! Time in milliseconds the free committed pages of a page type must stay above the overflow
-//  threshold before the excess is decommitted. Delaying the decommit keeps memory committed across
-//  allocate/free phases that would otherwise decommit and page fault the same pages every cycle.
+//! Length in milliseconds of the decommit window of free pages. The free committed pages of a page type a
+//  heap holds through a whole window without reusing them are decommitted beyond the retain count.
+//  Delaying the decommit keeps memory committed across allocate/free phases that would otherwise
+//  decommit and page fault the same pages every cycle.
 #define PAGE_DECOMMIT_DELAY_MS 250
 #endif
 #ifndef PAGE_DECOMMIT_LIMIT_FACTOR
@@ -862,10 +874,11 @@ static const size_class_t global_size_class[SIZE_CLASS_COUNT] = {
 #define PAGE_DECOMMIT_LIMIT_FACTOR 4
 #endif
 
-//! Threshold number of pages for when free pages are decommitted
+//! Free page count of each page type at which taking a page of another type decommits free pages of the type,
+//  and which times PAGE_DECOMMIT_LIMIT_FACTOR bounds the free committed pages within a decommit window
 static uint32_t global_page_free_overflow[5] = {16, 8, 4, 2, 0};
 
-//! Number of pages to retain when free page threshold overflows
+//! Number of free committed pages of each page type a heap keeps for reuse past a decommit window
 static uint32_t global_page_free_retain[5] = {4, 2, 1, 1, 0};
 
 //! Size of each page type in small page units
@@ -1026,7 +1039,7 @@ heap_page_free_overflow(heap_t* heap, uint32_t page_type);
 static NOINLINE void
 heap_page_free_overflow_other(heap_t* heap, uint32_t page_type);
 
-//! Check if the decommit delay of free pages of another page type than the given one is running
+//! Check if the decommit window of free pages of another page type than the given one is running
 static inline int
 heap_page_free_overflow_other_pending(heap_t* heap, uint32_t page_type) {
 	uint64_t pending = 0;
@@ -1734,7 +1747,7 @@ page_available_to_free(page_t* page) {
 	heap->page_free[page->page_type] = page;
 	if (!page->next)
 		heap->page_free_tail[page->page_type] = page;
-	if (++heap->page_free_commit_count[page->page_type] >= global_page_free_overflow[page->page_type])
+	if (++heap->page_free_commit_count[page->page_type] > global_page_free_retain[page->page_type])
 		heap_page_free_overflow(heap, page->page_type);
 	if (heap_page_free_overflow_other_pending(heap, page->page_type))
 		heap_page_free_overflow_other(heap, page->page_type);
@@ -1771,7 +1784,7 @@ page_full_to_free_on_new_heap(page_t* page, heap_t* heap) {
 	heap->page_free[page->page_type] = page;
 	if (!page->next)
 		heap->page_free_tail[page->page_type] = page;
-	if (++heap->page_free_commit_count[page->page_type] >= global_page_free_overflow[page->page_type])
+	if (++heap->page_free_commit_count[page->page_type] > global_page_free_retain[page->page_type])
 		heap_page_free_overflow(heap, page->page_type);
 }
 
@@ -2973,6 +2986,15 @@ heap_release(heap_t* heap) {
 	heap_lock_release();
 }
 
+//! Count a free page of the heap that is no longer committed and free, decommitted or taken for reuse, lowering the
+//  low water mark of the decommit window
+static inline void
+heap_page_free_commit_dec(heap_t* heap, uint32_t page_type) {
+	uint32_t count = --heap->page_free_commit_count[page_type];
+	if (count < heap->page_free_low[page_type])
+		heap->page_free_low[page_type] = count;
+}
+
 static void
 heap_page_free_decommit(heap_t* heap, uint32_t page_type, uint32_t page_retain_count) {
 	page_t* page = heap->page_free[page_type];
@@ -2987,7 +3009,7 @@ heap_page_free_decommit(heap_t* heap, uint32_t page_type, uint32_t page_retain_c
 		// in which case remaining pages cannot be decommitted either
 		if (page->is_decommitted == 0)
 			break;
-		--heap->page_free_commit_count[page_type];
+		heap_page_free_commit_dec(heap, page_type);
 		page = page->next;
 	}
 }
@@ -3002,7 +3024,7 @@ heap_page_free_decommit_head(heap_t* heap, uint32_t page_type) {
 	page_decommit_memory_pages(page);
 	if (!page->is_decommitted)
 		return 0;
-	--heap->page_free_commit_count[page_type];
+	heap_page_free_commit_dec(heap, page_type);
 	if (page->next) {
 		heap->page_free[page_type] = page->next;
 		heap->page_free_tail[page_type]->next = page;
@@ -3012,13 +3034,70 @@ heap_page_free_decommit_head(heap_t* heap, uint32_t page_type) {
 	return 1;
 }
 
-//! Called when the free committed page count of a page type is at or above the overflow threshold.
-//  The excess is decommitted only once the count has stayed above the threshold for the decommit
-//  delay (the count dropping below the threshold restarts the delay). Within the delay a page freed
-//  with the count at the hard limit is decommitted right away, so the limit bounds the committed free
-//  pages without decommitting the pages kept for reuse. Decommitting on the count alone made every
-//  allocate/free phase larger than the threshold decommit its pages and page fault them back in on
-//  the next phase.
+//! Number of processors the process can run on
+static uint32_t global_cpu_count;
+
+//! Current decommit epoch, the monotonic time in units of the decommit delay
+static atomic_uint global_heap_active_epoch;
+
+//! Number of heaps freeing pages in the current and the previous decommit epoch, by epoch parity
+static atomic_uint global_heap_active_count[2];
+
+//! Decommit delay of free pages in milliseconds, shortened while more heaps free pages than processors run them
+static atomic_uint global_page_decommit_delay = PAGE_DECOMMIT_DELAY_MS;
+
+//! Count the heap as freeing pages in the current decommit epoch and return the decommit delay. When the epoch moves
+//  on, the number of heaps that freed pages in the ended epoch sets the delay: with more of them than processors the
+//  threads wait for a processor in turn, and the free pages a waiting heap keeps for its next turn sit unused in
+//  every waiting heap. The delay is then scaled down by the ratio, to at least a quarter, so the pages a heap leaves
+//  unused through the shorter window are decommitted while it waits. Heaps that do not free pages, of idle or blocked
+//  threads, are not counted
+static uint32_t
+heap_page_decommit_delay(heap_t* heap, uint64_t now) {
+	uint32_t epoch = (uint32_t)(now / PAGE_DECOMMIT_DELAY_MS);
+	uint32_t current = atomic_load_explicit(&global_heap_active_epoch, memory_order_relaxed);
+	if ((epoch != current) && atomic_compare_exchange_strong_explicit(&global_heap_active_epoch, &current, epoch,
+	                                                                  memory_order_relaxed, memory_order_relaxed)) {
+		uint32_t active = 0;
+		if (epoch == current + 1)
+			active = atomic_load_explicit(&global_heap_active_count[current & 1], memory_order_relaxed);
+		atomic_store_explicit(&global_heap_active_count[epoch & 1], 0, memory_order_relaxed);
+		uint32_t delay = PAGE_DECOMMIT_DELAY_MS;
+		if (global_cpu_count && (active > global_cpu_count)) {
+			delay = (uint32_t)(((uint64_t)PAGE_DECOMMIT_DELAY_MS * global_cpu_count) / active);
+			if (delay < (PAGE_DECOMMIT_DELAY_MS / 4))
+				delay = PAGE_DECOMMIT_DELAY_MS / 4;
+		}
+		atomic_store_explicit(&global_page_decommit_delay, delay, memory_order_relaxed);
+	}
+	if (heap->page_free_epoch != epoch) {
+		heap->page_free_epoch = epoch;
+		atomic_fetch_add_explicit(&global_heap_active_count[epoch & 1], 1, memory_order_relaxed);
+	}
+	return atomic_load_explicit(&global_page_decommit_delay, memory_order_relaxed);
+}
+
+//! End the decommit window of a page type. The free pages the heap held committed through the whole window, the
+//  low water mark of the free committed page count, were not reused and are decommitted down to the retain count,
+//  the oldest first. The pages the heap reused during the window stay committed. A new window starts while the heap
+//  holds more than the retain count
+static void
+heap_page_free_window_end(heap_t* heap, uint32_t page_type, uint64_t now) {
+	uint32_t retain = global_page_free_retain[page_type];
+	uint32_t low = heap->page_free_low[page_type];
+	if (low > retain)
+		heap_page_free_decommit(heap, page_type, heap->page_free_commit_count[page_type] - (low - retain));
+	uint32_t count = heap->page_free_commit_count[page_type];
+	heap->page_free_overflow_ms[page_type] = (count > retain) ? (now ? now : 1) : 0;
+	heap->page_free_low[page_type] = count;
+}
+
+//! Called when a page is freed with the free committed page count of its type above the retain count. The first
+//  call starts a decommit window, which tracks the lowest count until it ends after the decommit delay and the pages
+//  unused through the whole window are decommitted. A heap reusing its free pages keeps them committed whatever its
+//  count, and a heap freeing pages faster than it reuses them, as a heap of a thread whose blocks other threads
+//  free, decommits them after a window whatever the number of heaps. Within the window a page freed with the count
+//  at the hard limit is decommitted right away, so the limit bounds the committed free pages of a burst
 static NOINLINE void
 heap_page_free_overflow(heap_t* heap, uint32_t page_type) {
 	uint64_t limit = (uint64_t)global_page_free_overflow[page_type] * PAGE_DECOMMIT_LIMIT_FACTOR;
@@ -3027,34 +3106,31 @@ heap_page_free_overflow(heap_t* heap, uint32_t page_type) {
 	huge_cache_collect(now);
 #endif
 	uint64_t since = heap->page_free_overflow_ms[page_type];
+	uint32_t delay = heap_page_decommit_delay(heap, now);
 	if (!since) {
-		since = now ? now : 1;
-		heap->page_free_overflow_ms[page_type] = since;
-	}
-	if ((now - since) < PAGE_DECOMMIT_DELAY_MS) {
-		// Within the delay only pages above the hard limit are decommitted, one at a time as they are
-		// freed, keeping the committed pages below the limit for reuse
-		if (heap->page_free_commit_count[page_type] >= limit)
-			heap_page_free_decommit_head(heap, page_type);
+		heap->page_free_overflow_ms[page_type] = now ? now : 1;
+		heap->page_free_low[page_type] = heap->page_free_commit_count[page_type];
+	} else if ((now - since) >= delay) {
+		heap_page_free_window_end(heap, page_type, now);
 		return;
 	}
-	heap->page_free_overflow_ms[page_type] = 0;
-	heap_page_free_decommit(heap, page_type, global_page_free_retain[page_type]);
+	if (heap->page_free_commit_count[page_type] >= limit)
+		heap_page_free_decommit_head(heap, page_type);
 }
 
-//! Decommit the free pages of other page types than the given one whose decommit delay has passed. The
-//  delay of a page type was only checked when a page of that type was freed, so the free pages of a type
-//  the program stopped freeing stayed committed indefinitely. Page frees and commits of any type now
-//  check the delay of the other types too
+//! End the decommit windows of other page types than the given one that have run for the decommit delay.
+//  The window of a page type was only checked when a page of that type was freed, so the free pages of a
+//  type the program stopped freeing stayed committed indefinitely. Page frees and commits of any type
+//  check the windows of the other types too
 static NOINLINE void
 heap_page_free_overflow_other(heap_t* heap, uint32_t page_type) {
 	uint64_t now = monotonic_time_ms();
+	uint32_t delay = heap_page_decommit_delay(heap, now);
 	for (uint32_t itype = 0; itype < 4; ++itype) {
 		uint64_t since = heap->page_free_overflow_ms[itype];
-		if ((itype == page_type) || !since || ((now - since) < PAGE_DECOMMIT_DELAY_MS))
+		if ((itype == page_type) || !since || ((now - since) < delay))
 			continue;
-		heap->page_free_overflow_ms[itype] = 0;
-		heap_page_free_decommit(heap, itype, global_page_free_retain[itype]);
+		heap_page_free_window_end(heap, itype, now);
 	}
 }
 
@@ -3101,12 +3177,11 @@ heap_page_commit_trim_pending(heap_t* heap, uint32_t page_type) {
 }
 
 //! Trims the memory a released heap holds for reuse. Until another thread adopts the heap nothing
-//  reuses that memory or runs the decommit delay, so a heap that many short lived threads pass along
+//  reuses that memory or runs the decommit window, so a heap that many short lived threads pass along
 //  would otherwise keep it all. The empty medium-large and large pages kept as the last available
 //  page of their size class are retired, and free pages of those types are decommitted down to below
-//  the overflow threshold, the most the heap holds without a delay. Small and medium-small pages are
-//  cheap to keep and costly to fault back in, they are left to the decommit delay, which keeps
-//  running across heap owners
+//  the overflow threshold. Small and medium-small pages are cheap to keep and costly to fault back in,
+//  they are left to the decommit window, which keeps running across heap owners
 static void
 heap_release_free_pages(heap_t* heap) {
 	for (uint32_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
@@ -3270,7 +3345,7 @@ heap_has_thread_free(heap_t* heap) {
 }
 
 //! Taking a new page from a span decommits free pages of other page types the heap cannot reuse for it
-//  and runs the decommit delay of the other page types
+//  and ends the decommit windows of the other page types that have run their delay
 static inline void
 heap_page_commit_check(heap_t* heap, uint32_t page_type) {
 	if (heap_page_commit_trim_pending(heap, page_type))
@@ -3342,8 +3417,7 @@ heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 		int recommit = (page->is_decommitted != 0);
 		if (!recommit) {
 			rpmalloc_assert(heap->page_free_commit_count[page_type] > 0, "Free committed page count out of sync");
-			if (--heap->page_free_commit_count[page_type] < global_page_free_overflow[page_type])
-				heap->page_free_overflow_ms[page_type] = 0;
+			heap_page_free_commit_dec(heap, page_type);
 		}
 		if (heap_make_free_page_available(heap, size_class, page) != 0)
 			return 0;
@@ -4296,6 +4370,35 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 	os_thp = 0;
 	os_huge_page_shift = 0;
 
+	global_cpu_count = 0;
+#if PLATFORM_WINDOWS
+	{
+		// The processors of every group (ALL_PROCESSOR_GROUPS), a process runs on all of them from Windows 11
+		HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+		active_processor_count_fn active_processor_count = 0;
+		if (kernel32)
+			active_processor_count =
+			    (active_processor_count_fn)(void (*)(void))GetProcAddress(kernel32, "GetActiveProcessorCount");
+		if (active_processor_count)
+			global_cpu_count = (uint32_t)active_processor_count(0xFFFF);
+	}
+	if (!global_cpu_count)
+		global_cpu_count = (uint32_t)system_info.dwNumberOfProcessors;
+#else
+#if defined(__linux__) && defined(CPU_COUNT)
+	{
+		cpu_set_t cpu_set;
+		if (!sched_getaffinity(0, sizeof(cpu_set), &cpu_set))
+			global_cpu_count = (uint32_t)CPU_COUNT(&cpu_set);
+	}
+#endif
+	if (!global_cpu_count) {
+		long cpu_online = sysconf(_SC_NPROCESSORS_ONLN);
+		global_cpu_count = (cpu_online > 0) ? (uint32_t)cpu_online : 0;
+	}
+#endif
+	atomic_store_explicit(&global_page_decommit_delay, PAGE_DECOMMIT_DELAY_MS, memory_order_relaxed);
+
 	rpmalloc_assert(!(global_config.page_size & (global_config.page_size - 1)),
 	                "Configured page size must be a power of two");
 
@@ -4485,12 +4588,14 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 	// page size, disable the free page overflow pass for page types where it can
 	// never apply (always the case when huge pages or a large page size is in use)
 	const uint32_t page_free_overflow_default[4] = {16, 8, 4, 2};
+	const uint32_t page_free_retain_default[4] = {4, 2, 1, 1};
 	const uint32_t builtin_page_size[4] = {SMALL_PAGE_SIZE, MEDIUM_SMALL_PAGE_SIZE, MEDIUM_LARGE_PAGE_SIZE,
 	                                       LARGE_PAGE_SIZE};
 	for (unsigned int itype = 0; itype < 4; ++itype) {
 		int page_can_decommit =
 		    !global_config.disable_decommit && ((size_t)builtin_page_size[itype] > global_config.page_size);
 		global_page_free_overflow[itype] = page_can_decommit ? page_free_overflow_default[itype] : 0xFFFFFFFFU;
+		global_page_free_retain[itype] = page_can_decommit ? page_free_retain_default[itype] : 0xFFFFFFFFU;
 	}
 
 #if PLATFORM_WINDOWS

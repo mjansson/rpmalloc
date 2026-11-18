@@ -22,6 +22,14 @@ size, and cached huge block mappings are decommitted from a huge page boundary. 
 interface are advised, and huge block mappings are not rounded for a huge page size above 2MiB or below the configured
 page size, where the usable size of a huge block could be smaller than its request.
 
+A heap decommits the free pages it held committed through a whole decommit delay window without reusing them, beyond
+the pages it keeps for reuse, instead of decommitting down to those only once it held at least 16 free small pages (8
+medium-small, 4 medium-large and 2 large pages) through the whole delay. A heap reusing its free pages keeps them
+committed whatever their number, and a heap freeing pages faster than it reuses them, as the heap of a thread whose
+blocks other threads free, decommits them after one window. While more heaps free pages than there are processors the
+process can run on, the window is shortened by that ratio, to at least a quarter of the delay, as the free pages a
+heap keeps for reuse sit unused while its thread waits for a processor.
+
 Unloading a DLL or shared object that has rpmalloc compiled in no longer leaves the thread exit
 destructor (a fiber local storage slot on Windows, a pthread key elsewhere) registered in unmapped
 code, which crashed the next exit of a thread that had allocated through the module, and on Windows
