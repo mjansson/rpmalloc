@@ -454,6 +454,24 @@ thread_yield(void) {
 #endif
 }
 
+#ifndef RPMALLOC_TEST_YIELD_POINTS
+#define RPMALLOC_TEST_YIELD_POINTS 0
+#endif
+#if RPMALLOC_TEST_YIELD_POINTS
+//! Test builds yield the thread at every RPMALLOC_TEST_YIELD_POINTS-th pass of a point where another thread can
+//  interleave, so the races the tests exercise happen often instead of in a window of a few instructions
+static atomic_uint test_yield_counter;
+#define test_yield_point()                                                                                           \
+	do {                                                                                                             \
+		if (!(atomic_fetch_add_explicit(&test_yield_counter, 1, memory_order_relaxed) % RPMALLOC_TEST_YIELD_POINTS)) \
+			thread_yield();                                                                                          \
+	} while (0)
+#else
+#define test_yield_point() \
+	do {                   \
+	} while (0)
+#endif
+
 #ifndef WAIT_SPIN_YIELD_THRESHOLD
 //! Number of cheap CPU-pause spins before wait_spin escalates to a real OS scheduler yield.
 #define WAIT_SPIN_YIELD_THRESHOLD 100
@@ -485,6 +503,37 @@ wait_spin(uint32_t* spin_count) {
 	nanosleep(&ts, 0);
 #endif
 }
+
+#if RPMALLOC_TEST_YIELD_POINTS
+#if !PLATFORM_WINDOWS
+#include <time.h>
+#endif
+//! Milliseconds the next push of a queued page to the pending list of its heap waits before the push, set by the tests
+//  to hold a thread in the window between queuing a page and pushing it while the owner works on the page
+atomic_uint rpmalloc_test_pending_push_delay_ms;
+static atomic_uint test_pending_push_count;
+
+//! Hold the thread pushing a queued page, for the delay the tests set or 100us on every eighth push
+static void
+test_pending_push_delay(void) {
+	unsigned int delay_us =
+	    atomic_exchange_explicit(&rpmalloc_test_pending_push_delay_ms, 0, memory_order_relaxed) * 1000;
+	if (!delay_us && !(atomic_fetch_add_explicit(&test_pending_push_count, 1, memory_order_relaxed) & 7))
+		delay_us = 100;
+	if (!delay_us)
+		return;
+#if PLATFORM_WINDOWS
+	Sleep((delay_us + 999) / 1000);
+#else
+	struct timespec ts = {(time_t)(delay_us / 1000000), (long)(delay_us % 1000000) * 1000};
+	nanosleep(&ts, 0);
+#endif
+}
+#else
+#define test_pending_push_delay() \
+	do {                          \
+	} while (0)
+#endif
 
 #if defined(__GNUC__) || defined(__clang__)
 
@@ -638,6 +687,8 @@ struct page_t {
 	//  frees into the page are not chained, read from the flag word the free path reads instead of the remotely
 	//  written heap line. The heap flag is only ever cleared, so a stale page flag only stops chaining
 	uint32_t heap_first_class : 1;
+	//! Next page in the pending page list of the heap, written by the thread queueing the page
+	page_t* pending_next;
 };
 
 //! An entry of the span slot table
@@ -701,8 +752,10 @@ struct heap_t {
 	uintptr_t owner_thread;
 	//! Multithreaded free list
 	atomic_uintptr_t thread_free[4];
+	//! Pages other threads freed every used block of, linked through the page pending next pointer
+	atomic_uintptr_t page_pending;
 	//! Padding to the end of the remotely accessed line
-	char remote_pad[HEAP_ALIGNMENT - (sizeof(uintptr_t) + (4 * sizeof(atomic_uintptr_t)))];
+	char remote_pad[HEAP_ALIGNMENT - (sizeof(uintptr_t) + (5 * sizeof(atomic_uintptr_t)))];
 	//! Heap local free list for small size classes
 	block_t* local_free[SIZE_CLASS_COUNT];
 	//! Available non-full pages for each size class
@@ -1048,6 +1101,9 @@ heap_allocate(int first_class);
 
 static void
 heap_release_free_pages(heap_t* heap);
+
+static NOINLINE void
+heap_collect_pending_pages(heap_t* heap);
 
 static NOINLINE void
 heap_page_free_overflow(heap_t* heap, uint32_t page_type);
@@ -1644,14 +1700,21 @@ page_block_offset(page_t* page, block_t* block) {
 
 //! Set in the thread free token of a full page, whose list is empty
 #define THREAD_FREE_FULL (1ULL << 63ULL)
+//! Set in the thread free token of a page in the pending page list of its heap. A cross-thread free leaving
+//  every used block of the page in the list queues the page, which the heap retires at its next allocation
+//  slow path instead of keeping the memory until it allocates from the page again. The heap clears the flag
+//  when it takes the page from the list, and a queued page is not retired otherwise
+#define THREAD_FREE_QUEUED (1ULL << 62ULL)
+//! Mask of the list count in the thread free token
+#define THREAD_FREE_COUNT_MASK 0x3FFFFFFFULL
 
 //! The thread free list token holds the list head as a byte offset from the first block in the low
 //  32 bits (a block index would cost a division on every cross-thread free and a multiplication
-//  on every decode), the list count in the next 31 bits and the full page flag in the top bit
+//  on every decode), the list count in the next 30 bits, the queued flag and the full page flag in the top bit
 static inline uint32_t
 page_block_from_thread_free_list(page_t* page, uint64_t token, block_t** block) {
 	uint32_t block_offset = (uint32_t)(token & 0xFFFFFFFFULL);
-	uint32_t list_count = (uint32_t)((token >> 32ULL) & 0x7FFFFFFFULL);
+	uint32_t list_count = (uint32_t)((token >> 32ULL) & THREAD_FREE_COUNT_MASK);
 	*block = list_count ? (block_t*)pointer_offset(page->block_start, block_offset) : 0;
 	return list_count;
 }
@@ -1742,9 +1805,15 @@ page_available_rotate(heap_t* heap, page_t* page) {
 }
 
 static void
+heap_page_free(heap_t* heap, page_t* page);
+
+static void
 page_available_to_free(page_t* page) {
 	rpmalloc_assert(page->is_full == 0, "Page full flag internal failure");
 	rpmalloc_assert(page->is_decommitted == 0, "Page decommitted flag internal failure");
+	// A queued page is retired when the heap takes it from the pending list
+	if (UNEXPECTED(atomic_load_explicit(&page->thread_free, memory_order_relaxed) & THREAD_FREE_QUEUED))
+		return;
 	heap_t* heap = page->heap;
 	if (heap->page_available[page->size_class] == page) {
 		// Keep the last available page of a size class in place. Retiring it would make the next
@@ -1757,6 +1826,12 @@ page_available_to_free(page_t* page) {
 	} else {
 		page_available_unlink(heap, page);
 	}
+	heap_page_free(heap, page);
+}
+
+//! Put a page without used blocks, unlinked from the available list, in the free pages of the heap
+static void
+heap_page_free(heap_t* heap, page_t* page) {
 	page->is_free = 1;
 	page->is_zero = 0;
 	page->next = heap->page_free[page->page_type];
@@ -1783,8 +1858,9 @@ page_full_to_available(page_t* page) {
 	page->is_full = 0;
 	if (page->has_aligned_block == 0)
 		page_set_key(page, page_key(heap));
-	// Other threads do not modify the token of a page flagged full, it holds only the flag
-	atomic_store_explicit(&page->thread_free, 0, memory_order_release);
+	// Other threads do not modify the token of a page flagged full, it holds only the flags
+	unsigned long long token = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
+	atomic_store_explicit(&page->thread_free, token & THREAD_FREE_QUEUED, memory_order_release);
 }
 
 static void
@@ -1853,10 +1929,14 @@ page_adopt_thread_free_block_list(page_t* page) {
 	if (page->local_free)
 		return;
 	unsigned long long thread_free = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
-	if (thread_free != 0) {
-		// Other threads can only replace with another valid list head, this will never change to 0 in other
-		// threads, so a single exchange claims the whole list without a retry loop
-		thread_free = atomic_exchange_explicit(&page->thread_free, 0, memory_order_acquire);
+	if (thread_free & ~THREAD_FREE_QUEUED) {
+		test_yield_point();
+		// Other threads can only replace with another valid list head, the queued flag stays until the heap takes
+		// the page from the pending list
+		while (!atomic_compare_exchange_weak_explicit(&page->thread_free, &thread_free,
+		                                              thread_free & THREAD_FREE_QUEUED, memory_order_acquire,
+		                                              memory_order_relaxed)) {
+		}
 		page->remote_fed = 1;
 		uint32_t thread_free_count = page_block_from_thread_free_list(page, thread_free, &page->local_free);
 		rpmalloc_assert(thread_free_count <= page->block_used, "Page thread free list count internal failure");
@@ -1888,6 +1968,31 @@ heap_put_thread_free_block(page_t* page, block_t* block) {
 		heap_put_thread_free_block_retry(list, block, prev_head);
 }
 
+//! Push a page to the pending page list of its heap. The page has the queued flag set, so it is not retired and
+//  stays owned by the heap until the heap takes it from the list
+static NOINLINE void
+heap_push_pending_page(page_t* page) {
+	test_pending_push_delay();
+	heap_t* heap = page->heap;
+	uintptr_t head = atomic_load_explicit(&heap->page_pending, memory_order_relaxed);
+	do {
+		page->pending_next = (page_t*)head;
+	} while (!atomic_compare_exchange_weak_explicit(&heap->page_pending, &head, (uintptr_t)page, memory_order_release,
+	                                                memory_order_relaxed));
+}
+
+//! Thread free token of a push making the list hold the given head and list size, queuing the page when the list
+//  then holds every used block of the page. The used block count is written by the owner without synchronization,
+//  a stale count queues a page the heap does not retire or leaves a page to be adopted from as before
+static inline uint64_t
+page_thread_free_token(page_t* page, uint64_t prev_thread_free, uint32_t head_offset, uint32_t list_size) {
+	uint64_t token =
+	    page_block_to_thread_free_list(page, head_offset, list_size) | (prev_thread_free & THREAD_FREE_QUEUED);
+	if (list_size == *(volatile uint32_t*)&page->block_used)
+		token |= THREAD_FREE_QUEUED;
+	return token;
+}
+
 //! Contended retry path for pushing a block to the page thread free list, or to the heap level list
 //  once the owner has flagged the page full
 static NOINLINE void
@@ -1901,10 +2006,12 @@ page_put_thread_free_block_retry(page_t* page, block_t* block, uint32_t block_of
 			return;
 		}
 		uint32_t list_size = page_block_from_thread_free_list(page, prev_thread_free, &block->next) + 1;
-		thread_free = page_block_to_thread_free_list(page, block_offset, list_size);
+		thread_free = page_thread_free_token(page, prev_thread_free, block_offset, list_size);
 		wait_spin(&spin);
 	} while (!atomic_compare_exchange_weak_explicit(&page->thread_free, &prev_thread_free, thread_free,
 	                                                memory_order_release, memory_order_relaxed));
+	if ((thread_free & THREAD_FREE_QUEUED) && !(prev_thread_free & THREAD_FREE_QUEUED))
+		heap_push_pending_page(page);
 }
 
 //! Push a block to the deferred free list of another thread. The uncontended case is a single CAS,
@@ -1921,10 +2028,15 @@ page_put_thread_free_block(page_t* page, block_t* block) {
 	uint32_t block_offset = page_block_offset(page, block);
 	rpmalloc_assert(!(block_offset % page->block_size), "Block pointer is not aligned to start of block");
 	uint32_t list_size = page_block_from_thread_free_list(page, prev_thread_free, &block->next) + 1;
-	uint64_t thread_free = page_block_to_thread_free_list(page, block_offset, list_size);
+	uint64_t thread_free = page_thread_free_token(page, prev_thread_free, block_offset, list_size);
+	test_yield_point();
 	if (UNEXPECTED(!atomic_compare_exchange_weak_explicit(&page->thread_free, &prev_thread_free, thread_free,
-	                                                      memory_order_release, memory_order_relaxed)))
+	                                                      memory_order_release, memory_order_relaxed))) {
 		page_put_thread_free_block_retry(page, block, block_offset, prev_thread_free);
+		return;
+	}
+	if (UNEXPECTED((thread_free & THREAD_FREE_QUEUED) && !(prev_thread_free & THREAD_FREE_QUEUED)))
+		heap_push_pending_page(page);
 }
 
 //! Push a chain of blocks freed into a full page to the heap level thread free list, the chain is spliced
@@ -1958,10 +2070,14 @@ page_put_thread_free_chain(page_t* page, block_t* head, block_t** tail_link, uin
 			return;
 		}
 		uint32_t list_size = page_block_from_thread_free_list(page, prev_thread_free, tail_link) + count;
-		uint64_t thread_free = page_block_to_thread_free_list(page, head_offset, list_size);
+		uint64_t thread_free = page_thread_free_token(page, prev_thread_free, head_offset, list_size);
+		test_yield_point();
 		if (atomic_compare_exchange_weak_explicit(&page->thread_free, &prev_thread_free, thread_free,
-		                                          memory_order_release, memory_order_relaxed))
+		                                          memory_order_release, memory_order_relaxed)) {
+			if ((thread_free & THREAD_FREE_QUEUED) && !(prev_thread_free & THREAD_FREE_QUEUED))
+				heap_push_pending_page(page);
 			return;
+		}
 		wait_spin(&spin);
 	}
 }
@@ -3290,7 +3406,8 @@ static void
 heap_release_free_pages(heap_t* heap) {
 	for (uint32_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
 		page_t* page = heap->page_available[iclass];
-		if (!page || page->next || page->block_used || (page->page_type < PAGE_MEDIUM_LARGE))
+		if (!page || page->next || page->block_used || (page->page_type < PAGE_MEDIUM_LARGE) ||
+		    (atomic_load_explicit(&page->thread_free, memory_order_relaxed) & THREAD_FREE_QUEUED))
 			continue;
 		heap->page_available[iclass] = 0;
 		page->is_free = 1;
@@ -3317,6 +3434,8 @@ heap_release_trim(heap_t* heap) {
 #if HUGE_CACHE_SLOT_COUNT
 	huge_cache_collect(monotonic_time_ms());
 #endif
+	if (atomic_load_explicit(&heap->page_pending, memory_order_relaxed))
+		heap_collect_pending_pages(heap);
 	heap_lock_acquire();
 	int queued = (global_heap_queue != 0);
 	heap_lock_release();
@@ -3572,11 +3691,55 @@ heap_pop_local_free(heap_t* heap, uint32_t size_class) {
 	return block;
 }
 
+//! Take the pages other threads queued from the pending page list. A page whose used blocks are all in its thread
+//  free list is retired, or kept as the last available page of its size class with the blocks in its local free
+//  list. The queued flag of the other pages is cleared, their blocks are adopted when the heap allocates from them
+static NOINLINE void
+heap_collect_pending_pages(heap_t* heap) {
+	page_t* page = (page_t*)atomic_exchange_explicit(&heap->page_pending, 0, memory_order_acquire);
+	while (page) {
+		page_t* next = page->pending_next;
+		unsigned long long token = atomic_load_explicit(&page->thread_free, memory_order_acquire);
+		uint32_t count;
+		int retire;
+		do {
+			test_yield_point();
+			count = (uint32_t)((token >> 32ULL) & THREAD_FREE_COUNT_MASK);
+			retire = !(token & THREAD_FREE_FULL) && (count == page->block_used);
+		} while (!atomic_compare_exchange_weak_explicit(&page->thread_free, &token,
+		                                                retire ? 0 : (token & ~THREAD_FREE_QUEUED),
+		                                                memory_order_acq_rel, memory_order_acquire));
+		if (retire) {
+			if (count) {
+				block_t* block;
+				page_block_from_thread_free_list(page, token, &block);
+				if ((heap->page_available[page->size_class] == page) && !page->next) {
+					// Kept as the last available page, its free blocks must all be in the local free list
+					if (page->local_free) {
+						block_t* tail = block;
+						while (tail->next)
+							tail = tail->next;
+						tail->next = page->local_free;
+					}
+					page->local_free = block;
+				}
+				page->remote_fed = 1;
+				page->block_used = 0;
+				_rpmalloc_stat_add_free(heap, page->size_class, count);
+			}
+			page_available_to_free(page);
+		}
+		page = next;
+	}
+}
+
 //! Generic allocation path from heap pages, spans or new mapping
 static NOINLINE RPMALLOC_ALLOCATOR void*
 heap_allocate_block_small_to_large(heap_t* heap, uint32_t size_class, size_t zero_size) {
 	page_t* page;
 	uint32_t retain = PAGE_FULL_RETAIN;
+	if (UNEXPECTED(atomic_load_explicit(&heap->page_pending, memory_order_relaxed) != 0))
+		heap_collect_pending_pages(heap);
 	while ((page = heap_get_page(heap, size_class)) != 0) {
 		void* block = page_allocate_block(page, zero_size);
 		if (EXPECTED(block != 0)) {
@@ -3599,8 +3762,9 @@ heap_allocate_block_small_to_large(heap_t* heap, uint32_t size_class, size_t zer
 		} else {
 			// Flag the page full in the thread free token, unless a cross-thread free just added a block
 			// in which case the page stays available and is retried
-			unsigned long long empty = 0;
-			if (atomic_compare_exchange_strong_explicit(&page->thread_free, &empty, THREAD_FREE_FULL,
+			unsigned long long empty =
+			    atomic_load_explicit(&page->thread_free, memory_order_relaxed) & THREAD_FREE_QUEUED;
+			if (atomic_compare_exchange_strong_explicit(&page->thread_free, &empty, empty | THREAD_FREE_FULL,
 			                                            memory_order_acq_rel, memory_order_relaxed))
 				page_available_to_full(page);
 		}
@@ -4103,6 +4267,7 @@ heap_free_all(heap_t* heap) {
 		heap->page_free_overflow_ms[itype] = 0;
 		atomic_store_explicit(&heap->thread_free[itype], 0, memory_order_release);
 	}
+	atomic_store_explicit(&heap->page_pending, 0, memory_order_release);
 	heap->page_commit_credit = 0;
 	for (int itype = 0; itype < 5; ++itype) {
 		span_t* span = heap->span_used[itype];
@@ -4770,7 +4935,7 @@ span_deferred_block_count(span_t* span) {
 	for (uint32_t ipage = span_first_page(span); ipage < span->page_initialized; ++ipage) {
 		page_t* page = span_get_page(span, ipage);
 		uint64_t token = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
-		deferred += (long long)(uint32_t)((token >> 32ULL) & 0x7FFFFFFFULL);
+		deferred += (long long)(uint32_t)((token >> 32ULL) & THREAD_FREE_COUNT_MASK);
 	}
 	return deferred;
 }
@@ -4922,6 +5087,8 @@ rpmalloc_thread_collect(void) {
 #if HUGE_CACHE_SLOT_COUNT
 	huge_cache_collect(monotonic_time_ms());
 #endif
+	if (atomic_load_explicit(&heap->page_pending, memory_order_relaxed))
+		heap_collect_pending_pages(heap);
 	heap_collect_thread_free(heap);
 	for (uint32_t itype = 0; itype < 4; ++itype) {
 		if (global_page_free_overflow[itype] == 0xFFFFFFFFU)

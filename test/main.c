@@ -3302,6 +3302,669 @@ test_collect_crossthread(void) {
 	return 0;
 }
 
+enum { RETIRE_PAGES = 40, RETIRE_BLOCKS_PER_PAGE = 16, RETIRE_BLOCKS = RETIRE_PAGES * RETIRE_BLOCKS_PER_PAGE };
+
+static void
+retire_free_thread(void* arg) {
+	void** block = arg;
+	for (unsigned int i = 0; i < RETIRE_BLOCKS; ++i) {
+		if (i % RETIRE_BLOCKS_PER_PAGE)
+			rpfree(block[i]);
+	}
+	thread_exit(0);
+}
+
+static int
+test_remote_free_retire(void) {
+	// A page whose used blocks are all freed by another thread is queued to its heap, which retires it at its next
+	// allocation slow path without allocating from the page again, so a block of another size class reuses it
+	rpmalloc_initialize(0);
+	const size_t size = 4000;  // 4KiB size class, 16 blocks per 64KiB small page
+	static void* block[RETIRE_BLOCKS];
+	for (unsigned int i = 0; i < RETIRE_BLOCKS; ++i) {
+		block[i] = rpmalloc(size);
+		if (!block[i])
+			return test_fail("Allocation failed");
+		memset(block[i], 0xcd, size);
+	}
+	// Free one block of each page locally so the pages are available, not full, then the rest in another thread
+	for (unsigned int i = 0; i < RETIRE_BLOCKS; i += RETIRE_BLOCKS_PER_PAGE)
+		rpfree(block[i]);
+	thread_arg targ;
+	targ.fn = retire_free_thread;
+	targ.arg = block;
+	if (thread_join(thread_run(&targ)) != 0)
+		return test_fail("Free thread failed");
+
+	// 2KiB size class, 32 blocks per page, more blocks than pages of the class left by earlier tests hold
+	enum { OTHER_BLOCKS = 32 * 8 };
+	static void* other[OTHER_BLOCKS];
+	int reused = 0;
+	for (unsigned int iother = 0; iother < OTHER_BLOCKS; ++iother) {
+		other[iother] = rpmalloc(2000);
+		if (!other[iother])
+			return test_fail("Allocation failed");
+		uintptr_t other_page = (uintptr_t)other[iother] & ~(uintptr_t)(64 * 1024 - 1);
+		for (unsigned int i = 0; i < RETIRE_BLOCKS; ++i)
+			reused |= (((uintptr_t)block[i] & ~(uintptr_t)(64 * 1024 - 1)) == other_page);
+	}
+	for (unsigned int iother = 0; iother < OTHER_BLOCKS; ++iother)
+		rpfree(other[iother]);
+	if (!reused)
+		return test_fail("Page freed by another thread not retired and reused for another size class");
+
+	rpmalloc_finalize();
+	printf("Remote free retire tests passed\n");
+	return 0;
+}
+
+#if !RPMALLOC_TEST_OVERRIDE
+//! Initialize without the heaps and pages the tests before left, which a finalize keeps unless it unmaps them, so the
+//  test threads take new heaps and the pages of a size class hold only the blocks the test allocates. The finalize
+//  of the test unmaps its heaps too. Under the standard library override the C runtime allocates from the heaps the
+//  test threads take and unmap_on_finalize is ignored, the tests needing this run only in the no-override binary
+static void
+test_initialize_unmapped(void) {
+	rpmalloc_config_t config = {0};
+	config.unmap_on_finalize = 1;
+	rpmalloc_initialize_config(0, &config);
+	rpmalloc_finalize();
+	rpmalloc_initialize_config(0, &config);
+}
+
+// Pending page queue tests. An owner thread and a remote thread step through sequences of local and cross-thread
+// frees of the blocks of a page, the remote thread freeing the used blocks of a page so that the page is queued to
+// the pending list of the owner heap. The sequences use 3000 byte blocks, 21 per 64KiB small page, in new heaps
+enum { PENDING_SIZE = 3000, PENDING_OTHER_SIZE = 1200, PENDING_MAX_BLOCKS = 64, PENDING_ROUNDS = 400 };
+
+typedef struct pending_test_t {
+	void* block[2 * PENDING_MAX_BLOCKS];
+	//! First and last index of the blocks the remote thread frees in the current step
+	atomic_uint free_first;
+	atomic_uint free_end;
+	//! Step counter, the owner bumps it to an odd value to start a remote step, the remote thread to the next even
+	atomic_uint step;
+	atomic_int quit;
+} pending_test_t;
+
+static pending_test_t pending_test;
+
+static uintptr_t
+pending_page(void* block) {
+	return (uintptr_t)block & ~(uintptr_t)(64 * 1024 - 1);
+}
+
+static void
+pending_remote_thread(void* arg) {
+	(void)sizeof(arg);
+	unsigned int seen = 0;
+	while (!atomic_load(&pending_test.quit)) {
+		unsigned int step = atomic_load(&pending_test.step);
+		if ((step == seen) || !(step & 1)) {
+			thread_yield();
+			continue;
+		}
+		unsigned int end = atomic_load(&pending_test.free_end);
+		for (unsigned int i = atomic_load(&pending_test.free_first); i < end; ++i) {
+			rpfree(pending_test.block[i]);
+			pending_test.block[i] = 0;
+		}
+		// The frees wait in the thread free chain of this thread until a flush point, a thread that only frees
+		// reaches none, so flush the chain to the pages before the owner continues
+		rpmalloc_thread_collect();
+		seen = step + 1;
+		atomic_store(&pending_test.step, seen);
+	}
+	thread_exit(0);
+}
+
+//! Let the remote thread free blocks [first, end) and wait for it
+static void
+pending_remote_free(unsigned int first, unsigned int end) {
+	atomic_store(&pending_test.free_first, first);
+	atomic_store(&pending_test.free_end, end);
+	unsigned int step = atomic_load(&pending_test.step) + 1;
+	atomic_store(&pending_test.step, step);
+	while (atomic_load(&pending_test.step) == step)
+		thread_yield();
+}
+
+static int
+pending_fill(unsigned int first, unsigned int count, unsigned int round) {
+	for (unsigned int i = first; i < first + count; ++i) {
+		pending_test.block[i] = rpmalloc(PENDING_SIZE);
+		if (!pending_test.block[i])
+			return -1;
+		memset(pending_test.block[i], (int)((round + i) & 0xFF), PENDING_SIZE);
+	}
+	return 0;
+}
+
+static int
+pending_check(unsigned int first, unsigned int count, unsigned int round) {
+	for (unsigned int i = first; i < first + count; ++i) {
+		const unsigned char* data = pending_test.block[i];
+		if (!data)
+			continue;
+		for (size_t ibyte = 0; ibyte < PENDING_SIZE; ibyte += 97) {
+			if (data[ibyte] != (unsigned char)((round + i) & 0xFF))
+				return -1;
+		}
+	}
+	return 0;
+}
+
+static int pending_result;
+static uintptr_t pending_exit_page;
+
+#if RPMALLOC_TEST_YIELD_POINTS
+// Test builds hold the next push of a queued page to its heap pending list for this many milliseconds
+extern atomic_uint rpmalloc_test_pending_push_delay_ms;
+
+static void
+pending_window_free_thread(void* arg) {
+	rpfree(arg);
+	rpmalloc_thread_collect();
+	thread_exit(0);
+}
+
+//! The remote thread queues a page and is held before it pushes the page to the pending list of the owner heap. In
+//  that window the owner allocates every block of the page again and frees them, the page has no used block while
+//  queued and not in the pending list. It must stay out of the free pages until the owner takes it from the pending
+//  list, which the remote thread pushes it to after the owner may already have reused it. With full, the owner also
+//  fills the page and has it flagged full, and another thread frees a block of it, so the page goes through the full
+//  pages while queued
+static int
+pending_window(unsigned int n, int full) {
+	if (pending_fill(0, 2 * n, 0))
+		return test_fail("Allocation failed");
+	uintptr_t page = pending_page(pending_test.block[0]);
+	rpfree(pending_test.block[0]);
+	pending_test.block[0] = 0;
+	atomic_store(&rpmalloc_test_pending_push_delay_ms, 400);
+	atomic_store(&pending_test.free_first, 1);
+	atomic_store(&pending_test.free_end, n);
+	unsigned int step = atomic_load(&pending_test.step) + 1;
+	atomic_store(&pending_test.step, step);
+	// The remote thread frees the blocks and is then held in the push
+	thread_sleep(100);
+	if (pending_fill(0, n, 1))
+		return test_fail("Allocation failed");
+	for (unsigned int i = 0; i < n; ++i) {
+		if (pending_page(pending_test.block[i]) != page)
+			return test_fail("Queued page not allocated from before it is in the pending list");
+	}
+	if (full) {
+		// The next block takes another page and flags the queued page full, then another thread frees a block of it
+		// into the full pages list of the heap. The collect takes the pending list, still empty, and then the full
+		// pages list, making the queued page available again
+		void* extra = rpmalloc(PENDING_SIZE);
+		void* freed = pending_test.block[n - 1];
+		pending_test.block[n - 1] = 0;
+		thread_arg free_arg;
+		free_arg.fn = pending_window_free_thread;
+		free_arg.arg = freed;
+		thread_join(thread_run(&free_arg));
+		rpmalloc_thread_collect();
+		rpfree(extra);
+	}
+	if (pending_check(0, n, 1))
+		return test_fail("Block content changed while live");
+	for (unsigned int i = 0; i < n; ++i) {
+		rpfree(pending_test.block[i]);
+		pending_test.block[i] = 0;
+	}
+	while (atomic_load(&pending_test.step) == step)
+		thread_yield();
+	// The owner takes the page from the pending list and retires it. A page retired twice is in the free pages twice
+	// and given to two size classes, blocks of the two classes in it overlap
+	for (unsigned int i = n; i < 2 * n; ++i) {
+		rpfree(pending_test.block[i]);
+		pending_test.block[i] = 0;
+	}
+	enum { WINDOW_COUNT = 4 * (64 * 1024 / PENDING_OTHER_SIZE) };
+	static void* other[WINDOW_COUNT];
+	static void* same[2 * PENDING_MAX_BLOCKS];
+	for (unsigned int i = 0; i < WINDOW_COUNT; ++i) {
+		other[i] = rpmalloc(PENDING_OTHER_SIZE);
+		if (!other[i])
+			return test_fail("Allocation failed");
+		memset(other[i], 0x3c, PENDING_OTHER_SIZE);
+	}
+	for (unsigned int i = 0; i < 2 * n; ++i) {
+		same[i] = rpmalloc(PENDING_SIZE);
+		if (!same[i])
+			return test_fail("Allocation failed");
+		memset(same[i], 0xc3, PENDING_SIZE);
+	}
+	int overlap = 0;
+	for (unsigned int i = 0; i < WINDOW_COUNT; ++i) {
+		const unsigned char* data = other[i];
+		for (size_t ibyte = 0; ibyte < PENDING_OTHER_SIZE; ibyte += 61)
+			overlap |= (data[ibyte] != 0x3c);
+	}
+	for (unsigned int i = 0; i < 2 * n; ++i) {
+		const unsigned char* data = same[i];
+		for (size_t ibyte = 0; ibyte < PENDING_SIZE; ibyte += 61)
+			overlap |= (data[ibyte] != 0xc3);
+		rpfree(same[i]);
+	}
+	for (unsigned int i = 0; i < WINDOW_COUNT; ++i)
+		rpfree(other[i]);
+	if (overlap)
+		return test_fail("Page queued and emptied before it was in the pending list retired twice");
+	return 0;
+}
+#endif
+
+static void
+pending_owner_thread(void* arg) {
+	(void)sizeof(arg);
+	pending_result = -1;
+	// Count the blocks of a page of the size class from the first page the heap takes for it
+	unsigned int per_page = 0;
+	void* probe[PENDING_MAX_BLOCKS + 1];
+	for (unsigned int i = 0; i <= PENDING_MAX_BLOCKS; ++i) {
+		probe[i] = rpmalloc(PENDING_SIZE);
+		if (!probe[i] || (pending_page(probe[i]) != pending_page(probe[0])))
+			break;
+		++per_page;
+	}
+	for (unsigned int i = 0; (i <= per_page) && (i <= PENDING_MAX_BLOCKS); ++i)
+		rpfree(probe[i]);
+	if ((per_page < 4) || (per_page > PENDING_MAX_BLOCKS)) {
+		test_fail("Unexpected block count of a page");
+		thread_exit(1);
+	}
+	const unsigned int n = per_page;
+
+	// The page whose used blocks the remote thread frees is the last available page of its size class. The heap
+	// keeps it, with the blocks in its free list, and allocates every block of the next round from it again. Each
+	// round frees a different split of the blocks between the owner and the remote thread: none, one or two
+	// locally first, or all but one remotely with the last one freed locally after, which leaves the page with
+	// blocks in its thread free list without queuing it
+	if (pending_fill(0, n, 0)) {
+		test_fail("Allocation failed");
+		thread_exit(1);
+	}
+	uintptr_t page = pending_page(pending_test.block[0]);
+	for (unsigned int round = 1; round <= PENDING_ROUNDS; ++round) {
+		for (unsigned int i = 0; i < n; ++i) {
+			if (pending_page(pending_test.block[i]) != page) {
+				test_fail("Block of the last available page not allocated from it after the page was queued");
+				thread_exit(1);
+			}
+		}
+		if (pending_check(0, n, round - 1)) {
+			test_fail("Block content changed while live");
+			thread_exit(1);
+		}
+		unsigned int local = round % 4;
+		if (local == 3) {
+			pending_remote_free(1, n);
+			rpfree(pending_test.block[0]);
+			pending_test.block[0] = 0;
+		} else {
+			for (unsigned int i = 0; i < local; ++i) {
+				rpfree(pending_test.block[i]);
+				pending_test.block[i] = 0;
+			}
+			pending_remote_free(local, n);
+		}
+		if (pending_fill(0, n, round)) {
+			test_fail("Allocation failed");
+			thread_exit(1);
+		}
+		for (unsigned int i = 0; i < n; ++i) {
+			for (unsigned int j = i + 1; j < n; ++j) {
+				if (pending_test.block[i] == pending_test.block[j]) {
+					test_fail("Block allocated twice");
+					thread_exit(1);
+				}
+			}
+		}
+	}
+	if (pending_check(0, n, PENDING_ROUNDS)) {
+		test_fail("Block content changed while live");
+		thread_exit(1);
+	}
+	for (unsigned int i = 0; i < n; ++i) {
+		rpfree(pending_test.block[i]);
+		pending_test.block[i] = 0;
+	}
+
+	// A queued page that is not the last available page of its size class is retired by rpmalloc_thread_collect,
+	// and a block of another size class takes it from the free pages. The first page is filled and flagged full
+	// by the allocation from the second, one of its blocks is freed locally so it is available again, and the
+	// remote thread frees the rest
+	for (unsigned int round = 0; round < 8; ++round) {
+		if (pending_fill(0, 2 * n, round)) {
+			test_fail("Allocation failed");
+			thread_exit(1);
+		}
+		uintptr_t first_page = pending_page(pending_test.block[0]);
+		if ((pending_page(pending_test.block[n - 1]) != first_page) ||
+		    (pending_page(pending_test.block[n]) == first_page)) {
+			test_fail("Blocks of the size class not allocated page by page");
+			thread_exit(1);
+		}
+		rpfree(pending_test.block[0]);
+		pending_test.block[0] = 0;
+		pending_remote_free(1, n);
+		rpmalloc_thread_collect();
+		// The size class of the other blocks keeps its last available page from the previous round, two pages of
+		// blocks take the next page from the free pages, where the retired page is the most recently freed
+		enum { OTHER_COUNT = 2 * (64 * 1024 / PENDING_OTHER_SIZE) + 2 };
+		static void* other[OTHER_COUNT];
+		int reused = 0;
+		for (unsigned int iother = 0; iother < OTHER_COUNT; ++iother) {
+			other[iother] = rpmalloc(PENDING_OTHER_SIZE);
+			if (other[iother] && (pending_page(other[iother]) == first_page))
+				reused = 1;
+		}
+		for (unsigned int iother = 0; iother < OTHER_COUNT; ++iother)
+			rpfree(other[iother]);
+		if (pending_check(n, n, round)) {
+			test_fail("Block content changed while live");
+			thread_exit(1);
+		}
+		for (unsigned int i = n; i < 2 * n; ++i) {
+			rpfree(pending_test.block[i]);
+			pending_test.block[i] = 0;
+		}
+		if (!reused) {
+			test_fail("Queued page not retired by rpmalloc_thread_collect");
+			thread_exit(1);
+		}
+	}
+
+#if RPMALLOC_TEST_YIELD_POINTS
+	if (pending_window(n, 0) || pending_window(n, 1))
+		thread_exit(1);
+#endif
+
+	// The thread exits with a page queued and not yet collected, the heap release collects it and the next thread
+	// taking the heap reuses the page for another size class
+	if (pending_fill(0, 2 * n, 0)) {
+		test_fail("Allocation failed");
+		thread_exit(1);
+	}
+	pending_exit_page = pending_page(pending_test.block[0]);
+	// The second page is emptied first and stays as the last available page of the size class, the queued page is
+	// then not the last one and is retired
+	for (unsigned int i = n; i < 2 * n; ++i) {
+		rpfree(pending_test.block[i]);
+		pending_test.block[i] = 0;
+	}
+	rpfree(pending_test.block[0]);
+	pending_test.block[0] = 0;
+	pending_remote_free(1, n);
+	pending_result = 0;
+	thread_exit(0);
+}
+
+static int pending_exit_reused;
+
+static void
+pending_exit_check_thread(void* arg) {
+	(void)sizeof(arg);
+	enum { OTHER_COUNT = 2 * (64 * 1024 / PENDING_OTHER_SIZE) + 2 };
+	static void* other[OTHER_COUNT];
+	pending_exit_reused = 0;
+	for (unsigned int iother = 0; iother < OTHER_COUNT; ++iother) {
+		other[iother] = rpmalloc(PENDING_OTHER_SIZE);
+		if (other[iother] && (pending_page(other[iother]) == pending_exit_page))
+			pending_exit_reused = 1;
+	}
+	for (unsigned int iother = 0; iother < OTHER_COUNT; ++iother)
+		rpfree(other[iother]);
+	thread_exit(0);
+}
+
+static int
+test_remote_free_pending(void) {
+	test_initialize_unmapped();
+	memset(pending_test.block, 0, sizeof(pending_test.block));
+	atomic_store(&pending_test.step, 0);
+	atomic_store(&pending_test.quit, 0);
+	thread_arg remote_arg;
+	remote_arg.fn = pending_remote_thread;
+	remote_arg.arg = 0;
+	uintptr_t remote = thread_run(&remote_arg);
+	thread_arg owner_arg;
+	owner_arg.fn = pending_owner_thread;
+	owner_arg.arg = 0;
+	int owner_failed = (thread_join(thread_run(&owner_arg)) != 0) || pending_result;
+	if (!owner_failed) {
+		// The remote thread still holds its heap, the owner heap is the most recently released one
+		thread_arg check_arg;
+		check_arg.fn = pending_exit_check_thread;
+		check_arg.arg = 0;
+		thread_join(thread_run(&check_arg));
+	}
+	atomic_store(&pending_test.quit, 1);
+	thread_join(remote);
+	if (owner_failed)
+		return -1;
+	if (!pending_exit_reused)
+		return test_fail("Page queued when its thread exited not retired by the heap release");
+	rpmalloc_finalize();
+	printf("Remote free pending page tests passed\n");
+	return 0;
+}
+#endif
+
+// Concurrent pending page test. Producer threads allocate batches of blocks of a few size classes, write a tag
+// and a pattern in each block and keep one block of every few, and hand the rest of each batch to consumer
+// threads, which check the blocks and free them. The consumers empty pages of the producer heaps while the
+// producers keep allocating from the same size classes, freeing their kept blocks locally and collecting, so
+// pages are queued, collected, retired and taken again in every order. Producers exit after a number of batches
+// and new ones take their released heaps, with pages still being queued to them. A block handed out twice or a
+// broken free list shows as a changed tag or pattern, or trips an assert of the allocator
+enum { RACE_PRODUCERS = 3, RACE_CONSUMERS = 3, RACE_BATCH = 48, RACE_RING = 32, RACE_KEEP = 64, RACE_PATTERN = 64 };
+
+typedef struct race_batch_t {
+	void* block[RACE_BATCH];
+	size_t size[RACE_BATCH];
+	uint64_t seq[RACE_BATCH];
+	uint32_t count;
+} race_batch_t;
+
+typedef struct race_ring_t {
+	race_batch_t batch[RACE_RING];
+	atomic_uint head;
+	atomic_uint tail;
+} race_ring_t;
+
+static race_ring_t race_ring[RACE_PRODUCERS][RACE_CONSUMERS];
+static atomic_int race_stop;
+static atomic_int race_failed;
+static unsigned int race_batches;
+
+static const size_t race_size[] = {48, 512, 3000, 20000};
+
+//! Write a tag unique to this allocation of the block, and a pattern derived from it up to the last byte, which holds
+//  the low byte of the tag. A block handed out again while live is overwritten with another tag
+static void
+race_write(void* block, size_t size, uint64_t seq) {
+	uint64_t tag = (uint64_t)(uintptr_t)block ^ (seq * 0x9E3779B97F4A7C15ULL);
+	memcpy(block, &tag, sizeof(tag));
+	unsigned char* data = block;
+	size_t end = ((size - 1) < RACE_PATTERN) ? (size - 1) : RACE_PATTERN;
+	for (size_t ibyte = sizeof(tag); ibyte < end; ++ibyte)
+		data[ibyte] = (unsigned char)(tag >> (ibyte & 7));
+	data[size - 1] = (unsigned char)tag;
+}
+
+static int
+race_verify(void* block, size_t size, uint64_t seq) {
+	uint64_t tag = (uint64_t)(uintptr_t)block ^ (seq * 0x9E3779B97F4A7C15ULL);
+	uint64_t stored;
+	memcpy(&stored, block, sizeof(stored));
+	if (stored != tag)
+		return -1;
+	const unsigned char* data = block;
+	size_t end = ((size - 1) < RACE_PATTERN) ? (size - 1) : RACE_PATTERN;
+	for (size_t ibyte = sizeof(tag); ibyte < end; ++ibyte) {
+		if (data[ibyte] != (unsigned char)(tag >> (ibyte & 7)))
+			return -1;
+	}
+	return (data[size - 1] == (unsigned char)tag) ? 0 : -1;
+}
+
+static atomic_ullong race_seq;
+
+static uint32_t
+race_random(uint32_t* state) {
+	*state ^= *state << 13;
+	*state ^= *state >> 17;
+	*state ^= *state << 5;
+	return *state;
+}
+
+typedef struct race_producer_arg_t {
+	unsigned int index;
+	uint32_t seed;
+} race_producer_arg_t;
+
+static void
+race_producer_thread(void* arg) {
+	race_producer_arg_t* producer = arg;
+	uint32_t random_state = producer->seed;
+	void* keep[RACE_KEEP];
+	size_t keep_size[RACE_KEEP];
+	uint64_t keep_seq[RACE_KEEP];
+	unsigned int keep_count = 0;
+	for (unsigned int ibatch = 0; (ibatch < race_batches) && !atomic_load(&race_failed); ++ibatch) {
+		unsigned int consumer = race_random(&random_state) % RACE_CONSUMERS;
+		race_ring_t* ring = &race_ring[producer->index][consumer];
+		unsigned int head = atomic_load_explicit(&ring->head, memory_order_relaxed);
+		while ((head - atomic_load_explicit(&ring->tail, memory_order_acquire)) >= RACE_RING) {
+			if (atomic_load(&race_failed))
+				break;
+			thread_yield();
+		}
+		race_batch_t* batch = &ring->batch[head % RACE_RING];
+		size_t size = race_size[race_random(&random_state) % (sizeof(race_size) / sizeof(race_size[0]))];
+		unsigned int keep_every = 4 + (race_random(&random_state) % 13);
+		batch->count = 0;
+		for (unsigned int i = 0; i < RACE_BATCH; ++i) {
+			void* block = rpmalloc(size);
+			if (!block) {
+				atomic_store(&race_failed, 1);
+				break;
+			}
+			uint64_t seq = atomic_fetch_add_explicit(&race_seq, 1, memory_order_relaxed);
+			race_write(block, size, seq);
+			if (((i % keep_every) == 0) && (keep_count < RACE_KEEP)) {
+				keep[keep_count] = block;
+				keep_size[keep_count] = size;
+				keep_seq[keep_count++] = seq;
+			} else {
+				batch->block[batch->count] = block;
+				batch->size[batch->count] = size;
+				batch->seq[batch->count++] = seq;
+			}
+		}
+		atomic_store_explicit(&ring->head, head + 1, memory_order_release);
+		// Free some of the kept blocks locally, while the consumers free the other blocks of their pages
+		unsigned int release = keep_count ? (race_random(&random_state) % (keep_count + 1)) : 0;
+		for (unsigned int i = 0; i < release; ++i) {
+			unsigned int ikeep = race_random(&random_state) % keep_count;
+			if (race_verify(keep[ikeep], keep_size[ikeep], keep_seq[ikeep]))
+				atomic_store(&race_failed, 2);
+			rpfree(keep[ikeep]);
+			keep[ikeep] = keep[--keep_count];
+			keep_size[ikeep] = keep_size[keep_count];
+			keep_seq[ikeep] = keep_seq[keep_count];
+		}
+		if ((race_random(&random_state) % 16) == 0)
+			rpmalloc_thread_collect();
+	}
+	// Leave with some kept blocks live, freed by the next producer of this index from another heap
+	for (unsigned int i = 0; i < keep_count; ++i) {
+		if (race_verify(keep[i], keep_size[i], keep_seq[i]))
+			atomic_store(&race_failed, 2);
+		rpfree(keep[i]);
+	}
+	thread_exit(0);
+}
+
+static void
+race_consumer_thread(void* arg) {
+	unsigned int consumer = (unsigned int)(uintptr_t)arg;
+	while (1) {
+		int idle = 1;
+		for (unsigned int iproducer = 0; iproducer < RACE_PRODUCERS; ++iproducer) {
+			race_ring_t* ring = &race_ring[iproducer][consumer];
+			unsigned int tail = atomic_load_explicit(&ring->tail, memory_order_relaxed);
+			if (tail == atomic_load_explicit(&ring->head, memory_order_acquire))
+				continue;
+			race_batch_t* batch = &ring->batch[tail % RACE_RING];
+			for (uint32_t i = 0; i < batch->count; ++i) {
+				if (race_verify(batch->block[i], batch->size[i], batch->seq[i]))
+					atomic_store(&race_failed, 3);
+				rpfree(batch->block[i]);
+			}
+			atomic_store_explicit(&ring->tail, tail + 1, memory_order_release);
+			idle = 0;
+		}
+		if (idle) {
+			if (atomic_load(&race_stop))
+				break;
+			thread_yield();
+		}
+	}
+	thread_exit(0);
+}
+
+static int
+test_remote_free_race(void) {
+	rpmalloc_initialize(0);
+	memset(race_ring, 0, sizeof(race_ring));
+	atomic_store(&race_stop, 0);
+	atomic_store(&race_failed, 0);
+	// RPMALLOC_TEST_RACE_WAVES sets the number of producer waves for longer runs
+	race_batches = 300;
+	unsigned int waves = test_scale(200);
+	const char* env_waves = getenv("RPMALLOC_TEST_RACE_WAVES");
+	if (env_waves && (atol(env_waves) > 0))
+		waves = (unsigned int)atol(env_waves);
+	uintptr_t consumer[RACE_CONSUMERS];
+	thread_arg consumer_arg[RACE_CONSUMERS];
+	for (unsigned int i = 0; i < RACE_CONSUMERS; ++i) {
+		consumer_arg[i].fn = race_consumer_thread;
+		consumer_arg[i].arg = (void*)(uintptr_t)i;
+		consumer[i] = thread_run(&consumer_arg[i]);
+	}
+	// Waves of producers, each producer exits after its batches and the next wave takes the released heaps
+	race_producer_arg_t producer[RACE_PRODUCERS];
+	thread_arg producer_arg[RACE_PRODUCERS];
+	uintptr_t producer_thread[RACE_PRODUCERS];
+	for (unsigned int wave = 0; (wave < waves) && !atomic_load(&race_failed); ++wave) {
+		for (unsigned int i = 0; i < RACE_PRODUCERS; ++i) {
+			producer[i].index = i;
+			producer[i].seed = 0x9E3779B9U * (wave * RACE_PRODUCERS + i + 1);
+			producer_arg[i].fn = race_producer_thread;
+			producer_arg[i].arg = &producer[i];
+			producer_thread[i] = thread_run(&producer_arg[i]);
+		}
+		for (unsigned int i = 0; i < RACE_PRODUCERS; ++i)
+			thread_join(producer_thread[i]);
+	}
+	atomic_store(&race_stop, 1);
+	for (unsigned int i = 0; i < RACE_CONSUMERS; ++i)
+		thread_join(consumer[i]);
+	int failed = atomic_load(&race_failed);
+	if (failed == 1)
+		return test_fail("Allocation failed in concurrent pending page test");
+	if (failed)
+		return test_fail("Block content changed in concurrent pending page test");
+	rpmalloc_finalize();
+	printf("Remote free pending page race tests passed\n");
+	return 0;
+}
+
 static int
 test_page_decommit_other_type(void) {
 	// Committing pages of one page type decommits the free pages of another type held above the overflow
@@ -3374,6 +4037,14 @@ test_run(int argc, char** argv) {
 	}
 	// Runs first, while the heap has no free pages of the medium-large page type left by other tests
 	if (test_page_decommit_other_type())
+		return -1;
+	if (test_remote_free_retire())
+		return -1;
+#if !RPMALLOC_TEST_OVERRIDE
+	if (test_remote_free_pending())
+		return -1;
+#endif
+	if (test_remote_free_race())
 		return -1;
 	if (test_alloc())
 		return -1;

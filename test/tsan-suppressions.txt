@@ -10,3 +10,9 @@
 race:heap_allocate_block_aligned
 race:span_deallocate_block
 race:page_put_thread_free_block
+
+# A cross-thread free reads the used block count of the page, which the owner writes without synchronization,
+# to queue a page whose used blocks are then all in its thread free list. A stale count only queues a page the
+# owner does not retire, or leaves the page to be adopted when the owner allocates from it. See
+# page_thread_free_token in rpmalloc.c.
+race:page_thread_free_token

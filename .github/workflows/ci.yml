@@ -20,7 +20,7 @@ concurrency:
 env:
   RP_SRC: rpmalloc/rpmalloc.c test/thread.c test/main.c
   RP_INC: -Irpmalloc -Itest
-  RP_DEFS: -DENABLE_OVERRIDE=0 -DENABLE_ASSERTS=1 -DENABLE_STATISTICS=1 -DRPMALLOC_FIRST_CLASS_HEAPS=1
+  RP_DEFS: -DENABLE_OVERRIDE=0 -DENABLE_ASSERTS=1 -DENABLE_STATISTICS=1 -DRPMALLOC_FIRST_CLASS_HEAPS=1 -DRPMALLOC_TEST_YIELD_POINTS=7
 
 jobs:
   # ---------------------------------------------------------------------------
