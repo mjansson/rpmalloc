@@ -544,6 +544,16 @@ test_realloc(void) {
 
 	rpmalloc_initialize(0);
 
+	// An aligned reallocation of a null pointer allocates a block, whatever the size and alignment
+	for (size_t alignment = 16; alignment <= 256; alignment *= 2) {
+		for (size_t size = 0; size <= 64; size += 64) {
+			void* block = rpaligned_realloc(0, alignment, size, 0, 0);
+			if (!block || ((uintptr_t)block & (alignment - 1)))
+				return test_fail("Aligned reallocation of a null pointer did not allocate an aligned block");
+			rpfree(block);
+		}
+	}
+
 	size_t pointer_count = 4096;
 	void** pointers = rpmalloc(sizeof(void*) * pointer_count);
 	memset(pointers, 0, sizeof(void*) * pointer_count);
@@ -1480,6 +1490,8 @@ test_first_class_huge_free(void) {
 	if (!live)
 		return test_fail("Huge allocation failed");
 	rpmalloc_heap_t* heap = rpmalloc_heap_acquire();
+	// Freeing a null pointer does nothing, as with rpfree
+	rpmalloc_heap_free(heap, 0);
 
 	// A block whose mapping is cached when freed and reused by the thread heap before free_all
 	void* block = rpmalloc_heap_alloc(heap, 8 * mib);
@@ -2841,6 +2853,96 @@ test_commit_fail_decommit(void* address, size_t size) {
 
 #endif
 
+#if !defined(_WIN32)
+// Memory interface keeping the content of the pages it decommits, as an advisory decommit does
+static size_t test_keep_maps;
+
+static void*
+test_keep_map(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
+	size_t map_size = size + alignment;
+	void* ptr = mmap(0, map_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+	if (ptr == MAP_FAILED)
+		return 0;
+	uintptr_t unalign = alignment ? ((uintptr_t)ptr & (uintptr_t)(alignment - 1)) : 0;
+	*offset = unalign ? (alignment - unalign) : 0;
+	*mapped_size = map_size;
+	++test_keep_maps;
+	return pointer_offset(ptr, *offset);
+}
+
+static void
+test_keep_unmap(void* address, size_t offset, size_t mapped_size) {
+	munmap(pointer_offset(address, -(ptrdiff_t)offset), mapped_size);
+}
+
+static int
+test_keep_commit(void* address, size_t size) {
+	(void)address;
+	(void)size;
+	return 0;
+}
+
+static int
+test_keep_decommit(void* address, size_t size) {
+	(void)address;
+	(void)size;
+	return 0;
+}
+#endif
+
+static int
+test_custom_decommit_zero(void) {
+#if !defined(_WIN32)
+	// Zeroed allocations take recommitted pages as zero only with the default memory interface, a custom interface
+	// may keep the content of the pages it decommits. Skipped when the interface is not in use (the allocator was
+	// initialized by another allocation)
+	rpmalloc_interface_t iface = {0};
+	iface.memory_map = test_keep_map;
+	iface.memory_unmap = test_keep_unmap;
+	iface.memory_commit = test_keep_commit;
+	iface.memory_decommit = test_keep_decommit;
+	rpmalloc_config_t config = {0};
+	config.unmap_on_finalize = 1;
+	rpmalloc_initialize_config(0, &config);
+	rpmalloc_finalize();
+	test_keep_maps = 0;
+	rpmalloc_initialize_config(&iface, &config);
+	enum { BLOCKS = 48 * 16 };
+	const size_t size = 4000;
+	static void* block[BLOCKS];
+	for (unsigned int i = 0; i < BLOCKS; ++i) {
+		block[i] = rpmalloc(size);
+		if (!block[i])
+			return test_fail("Allocation failed");
+		memset(block[i], 0xcd, size);
+	}
+	int used = (test_keep_maps != 0);
+	for (unsigned int i = 0; i < BLOCKS; ++i)
+		rpfree(block[i]);
+	// Decommits the free pages, which keep their content
+	rpmalloc_thread_collect();
+	for (unsigned int i = 0; i < BLOCKS; ++i) {
+		const unsigned char* bytes = rpcalloc(1, size);
+		if (!bytes)
+			return test_fail("Allocation failed");
+		for (size_t ibyte = 0; ibyte < size; ++ibyte) {
+			if (bytes[ibyte] != 0)
+				return test_fail("Zeroed allocation from a page recommitted by a custom interface not zeroed");
+		}
+		block[i] = (void*)bytes;
+	}
+	for (unsigned int i = 0; i < BLOCKS; ++i)
+		rpfree(block[i]);
+	rpmalloc_finalize();
+	if (!used) {
+		printf("Custom interface decommit test skipped\n");
+		return 0;
+	}
+#endif
+	printf("Custom interface decommit tests passed\n");
+	return 0;
+}
+
 //! Check the huge allocation statistics are back at the given value once the test has freed its huge blocks, so
 //  reuse, growth and shrinking in place account the same committed bytes as the free
 //! Largest usable size of a huge block beyond its request: the page size, or with transparent huge pages in use a
@@ -4059,7 +4161,7 @@ orphan_reuse_thread(void* arg) {
 	(void)sizeof(arg);
 	static void* block[ORPHAN_BLOCKS];
 	rpfree(rpmalloc(16));
-	long long allocated = orphan_thread_allocated();
+	int counted = (orphan_thread_allocated() >= 0);
 	for (unsigned int i = 0; i < ORPHAN_BLOCKS; ++i) {
 		block[i] = rpmalloc(3500);
 		if (!block[i])
@@ -4069,8 +4171,9 @@ orphan_reuse_thread(void* arg) {
 		for (unsigned int iorphan = 1; iorphan < ORPHAN_BLOCKS; iorphan += 2)
 			orphan_reused |= (((uintptr_t)orphan_block[iorphan] & ~(uintptr_t)(64 * 1024 - 1)) == page);
 	}
-	// The blocks left in the orphan pages the heap took are counted as allocated by the heap, which counts their
-	// frees when another thread frees them
+	// The blocks left in the pages the heap reused are counted as allocated by the heap, which counts their frees
+	// when another thread frees them. That holds for orphan pages it took and for the pages of a released heap it
+	// took over before the heap was orphaned, as when the release of another thread had not yet put a heap above it
 	orphan_reuse_left = 0;
 	for (unsigned int iorphan = 1; iorphan < ORPHAN_BLOCKS; iorphan += 2) {
 		uintptr_t page = (uintptr_t)orphan_block[iorphan] & ~(uintptr_t)(64 * 1024 - 1);
@@ -4083,7 +4186,7 @@ orphan_reuse_thread(void* arg) {
 	}
 	for (unsigned int i = 0; i < ORPHAN_BLOCKS; ++i)
 		rpfree(block[i]);
-	orphan_reuse_counted = (allocated < 0) ? -1 : (orphan_thread_allocated() - allocated);
+	orphan_reuse_counted = counted ? orphan_thread_allocated() : -1;
 	thread_exit(0);
 }
 
@@ -4128,8 +4231,11 @@ test_orphan_pages(void) {
 	orphan_delay_end();
 	if (!orphan_reused)
 		return test_fail("Partly used pages of a released heap not reused by another thread");
-	if ((orphan_reuse_counted >= 0) && (orphan_reuse_counted != orphan_reuse_left))
+	if ((orphan_reuse_counted >= 0) && (orphan_reuse_counted != orphan_reuse_left)) {
+		fprintf(stderr, "Blocks counted %lld, left in the reused pages %lld\n", orphan_reuse_counted,
+		        orphan_reuse_left);
 		return test_fail("Allocation counters of a heap taking orphan pages do not count the blocks left in them");
+	}
 
 	rpmalloc_finalize();
 	printf("Orphan page tests passed\n");
@@ -4632,6 +4738,8 @@ test_run(int argc, char** argv) {
 	if (test_thread_statistics())
 		return -1;
 	if (test_page_decommit())
+		return -1;
+	if (test_custom_decommit_zero())
 		return -1;
 	if (test_huge_cache())
 		return -1;

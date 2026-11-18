@@ -147,13 +147,16 @@ typedef struct rpmalloc_interface_t {
 	//! returned pointer and spans at least offset plus size bytes. The whole region must be usable, as huge block
 	//! mappings are reused and grown in place within it, committing pages with the memory commit function. The mapped
 	//! size will also be passed to the memory unmap function as the release parameter once the entire mapped region is
-	//! ready to be released. If you set a memory_map function, you must also
+	//! ready to be released. The mapped memory must read as zero, as freshly mapped pages do, since the library keeps
+	//! its own structures in it. If you set a memory_map function, you must also
 	//! set a memory_unmap function or else the default implementation will be used for both. This function must be
 	//! thread safe, it can be called by multiple threads simultaneously.
 	void* (*memory_map)(size_t size, size_t alignment, size_t* offset, size_t* mapped_size);
 	//! Commit a range of memory pages. Return non-zero if the operation failed and the address range could not be committed.
 	int (*memory_commit)(void* address, size_t size);
 	//! Decommit a range of memory pages. Return non-zero if the operation failed and the address range could not be decommitted.
+	//! The pages may keep their content, zeroed allocations take recommitted pages as zero only with the default
+	//! implementation.
 	int (*memory_decommit)(void* address, size_t size);
 	//! Unmap the memory pages starting at address and spanning the given number of bytes. If you set a memory_unmap
 	//! function, you must also set a memory_map function or else the default implementation will be used for both. This
