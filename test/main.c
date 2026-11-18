@@ -3918,9 +3918,9 @@ race_consumer_thread(void* arg) {
 	thread_exit(0);
 }
 
+//! Run the producer waves and consumers, returns the failure code
 static int
-test_remote_free_race(void) {
-	rpmalloc_initialize(0);
+race_run(void) {
 	memset(race_ring, 0, sizeof(race_ring));
 	atomic_store(&race_stop, 0);
 	atomic_store(&race_failed, 0);
@@ -3955,7 +3955,13 @@ test_remote_free_race(void) {
 	atomic_store(&race_stop, 1);
 	for (unsigned int i = 0; i < RACE_CONSUMERS; ++i)
 		thread_join(consumer[i]);
-	int failed = atomic_load(&race_failed);
+	return atomic_load(&race_failed);
+}
+
+static int
+test_remote_free_race(void) {
+	rpmalloc_initialize(0);
+	int failed = race_run();
 	if (failed == 1)
 		return test_fail("Allocation failed in concurrent pending page test");
 	if (failed)
@@ -3964,6 +3970,505 @@ test_remote_free_race(void) {
 	printf("Remote free pending page race tests passed\n");
 	return 0;
 }
+
+#if RPMALLOC_TEST_YIELD_POINTS
+// Test builds orphan the heaps released for this many milliseconds, the tests shorten the delay
+extern atomic_uint rpmalloc_test_orphan_delay_ms;
+// Test builds hold the next push of a block freed into a full page for this many milliseconds
+extern atomic_uint rpmalloc_test_full_free_delay_ms;
+static unsigned int orphan_delay_saved;
+#endif
+
+#if !RPMALLOC_TEST_OVERRIDE || RPMALLOC_TEST_YIELD_POINTS
+//! Set the orphan delay of test builds with the hooks to the given time, returns the time to wait for a released heap
+//  to be orphaned by the next heap release
+static unsigned int
+orphan_delay_begin(unsigned int delay_ms) {
+#if RPMALLOC_TEST_YIELD_POINTS
+	orphan_delay_saved = atomic_exchange(&rpmalloc_test_orphan_delay_ms, delay_ms);
+	return delay_ms + 10;
+#else
+	(void)sizeof(delay_ms);
+	return 1100;
+#endif
+}
+
+static void
+orphan_delay_end(void) {
+#if RPMALLOC_TEST_YIELD_POINTS
+	atomic_store(&rpmalloc_test_orphan_delay_ms, orphan_delay_saved);
+#endif
+}
+#endif
+
+#if !RPMALLOC_TEST_OVERRIDE
+enum { ORPHAN_PAGES = 40, ORPHAN_BLOCKS_PER_PAGE = 18, ORPHAN_BLOCKS = ORPHAN_PAGES * ORPHAN_BLOCKS_PER_PAGE };
+static void* orphan_block[ORPHAN_BLOCKS];
+static int orphan_reused;
+static atomic_int orphan_hold;
+static long long orphan_reuse_counted;
+static long long orphan_reuse_left;
+
+//! Sum of the current allocation counters of the heap of the calling thread, -1 without statistics
+static long long
+orphan_thread_allocated(void) {
+	rpmalloc_thread_statistics_t stats;
+	rpmalloc_thread_statistics(&stats);
+	long long current = 0, total = 0;
+	for (unsigned int i = 0; i < 128; ++i) {
+		current += (long long)(int32_t)stats.size_use[i].alloc_current;
+		total += (long long)stats.size_use[i].alloc_total;
+	}
+	return total ? current : -1;
+}
+
+static void
+orphan_alloc_thread(void* arg) {
+	(void)sizeof(arg);
+	for (unsigned int i = 0; i < ORPHAN_BLOCKS; ++i) {
+		orphan_block[i] = rpmalloc(3500);
+		if (!orphan_block[i])
+			thread_exit(1);
+		memset(orphan_block[i], 0xcd, 3500);
+	}
+	for (unsigned int i = 0; i < ORPHAN_BLOCKS; i += 2) {
+		rpfree(orphan_block[i]);
+		orphan_block[i] = 0;
+	}
+	thread_exit(0);
+}
+
+static void
+orphan_hold_thread(void* arg) {
+	(void)sizeof(arg);
+	rpfree(rpmalloc(16));
+	while (atomic_load(&orphan_hold))
+		thread_sleep(1);
+	thread_exit(0);
+}
+
+static void
+orphan_release_thread(void* arg) {
+	(void)sizeof(arg);
+	rpfree(rpmalloc(16));
+	thread_exit(0);
+}
+
+static void
+orphan_reuse_thread(void* arg) {
+	(void)sizeof(arg);
+	static void* block[ORPHAN_BLOCKS];
+	rpfree(rpmalloc(16));
+	long long allocated = orphan_thread_allocated();
+	for (unsigned int i = 0; i < ORPHAN_BLOCKS; ++i) {
+		block[i] = rpmalloc(3500);
+		if (!block[i])
+			thread_exit(1);
+		memset(block[i], 0xab, 3500);
+		uintptr_t page = (uintptr_t)block[i] & ~(uintptr_t)(64 * 1024 - 1);
+		for (unsigned int iorphan = 1; iorphan < ORPHAN_BLOCKS; iorphan += 2)
+			orphan_reused |= (((uintptr_t)orphan_block[iorphan] & ~(uintptr_t)(64 * 1024 - 1)) == page);
+	}
+	// The blocks left in the orphan pages the heap took are counted as allocated by the heap, which counts their
+	// frees when another thread frees them
+	orphan_reuse_left = 0;
+	for (unsigned int iorphan = 1; iorphan < ORPHAN_BLOCKS; iorphan += 2) {
+		uintptr_t page = (uintptr_t)orphan_block[iorphan] & ~(uintptr_t)(64 * 1024 - 1);
+		for (unsigned int i = 0; i < ORPHAN_BLOCKS; ++i) {
+			if (((uintptr_t)block[i] & ~(uintptr_t)(64 * 1024 - 1)) == page) {
+				++orphan_reuse_left;
+				break;
+			}
+		}
+	}
+	for (unsigned int i = 0; i < ORPHAN_BLOCKS; ++i)
+		rpfree(block[i]);
+	orphan_reuse_counted = (allocated < 0) ? -1 : (orphan_thread_allocated() - allocated);
+	thread_exit(0);
+}
+
+static int
+test_orphan_pages(void) {
+	// The partly used pages of a heap left in the queue of released heaps for the orphan delay are handed to the
+	// orphan lists by the next heap release. Another thread takes them for blocks of the size class before it takes
+	// new pages, and the blocks left in them are freed into them from a third thread
+	test_initialize_unmapped();
+	unsigned int orphan_wait = orphan_delay_begin(20);
+	orphan_reused = 0;
+	atomic_store(&orphan_hold, 1);
+	// A second thread holds a heap until the allocating thread has released its heap, then releases its heap on
+	// top of it, so the heap of the allocating thread stays below in the queue
+	thread_arg hold_arg;
+	hold_arg.fn = orphan_hold_thread;
+	hold_arg.arg = 0;
+	uintptr_t hold = thread_run(&hold_arg);
+	thread_arg targ;
+	targ.fn = orphan_alloc_thread;
+	targ.arg = 0;
+	if (thread_join(thread_run(&targ)) != 0)
+		return test_fail("Allocation thread failed");
+	atomic_store(&orphan_hold, 0);
+	if (thread_join(hold) != 0)
+		return test_fail("Hold thread failed");
+	thread_sleep(orphan_wait);
+	targ.fn = orphan_release_thread;
+	if (thread_join(thread_run(&targ)) != 0)
+		return test_fail("Release thread failed");
+	targ.fn = orphan_reuse_thread;
+	if (thread_join(thread_run(&targ)) != 0)
+		return test_fail("Reuse thread failed");
+	for (unsigned int i = 1; i < ORPHAN_BLOCKS; i += 2) {
+		unsigned char* ptr = orphan_block[i];
+		for (size_t ibyte = 0; ibyte < 3500; ++ibyte) {
+			if (ptr[ibyte] != 0xcd)
+				return test_fail("Block of an orphan page overwritten");
+		}
+		rpfree(ptr);
+	}
+	orphan_delay_end();
+	if (!orphan_reused)
+		return test_fail("Partly used pages of a released heap not reused by another thread");
+	if ((orphan_reuse_counted >= 0) && (orphan_reuse_counted != orphan_reuse_left))
+		return test_fail("Allocation counters of a heap taking orphan pages do not count the blocks left in them");
+
+	rpmalloc_finalize();
+	printf("Orphan page tests passed\n");
+	return 0;
+}
+
+// The orphan sequence tests drive worker threads step by step. A worker takes a heap of its own when it starts, runs
+// the steps the test thread gives it one at a time, and releases its heap when it is stopped
+typedef struct orphan_worker_t {
+	void (*fn)(void*);
+	void* arg;
+	atomic_uint start;
+	atomic_uint done;
+	atomic_int quit;
+	uintptr_t thread;
+	thread_arg targ;
+} orphan_worker_t;
+
+static void
+orphan_worker_thread(void* arg) {
+	orphan_worker_t* worker = arg;
+	rpfree(rpmalloc(16));
+	unsigned int seen = atomic_load(&worker->start);
+	atomic_store(&worker->done, seen);
+	while (1) {
+		unsigned int start = atomic_load(&worker->start);
+		if (start == seen) {
+			if (atomic_load(&worker->quit))
+				break;
+			thread_yield();
+			continue;
+		}
+		worker->fn(worker->arg);
+		seen = start;
+		atomic_store(&worker->done, seen);
+	}
+	thread_exit(0);
+}
+
+static void
+orphan_worker_start(orphan_worker_t* worker) {
+	atomic_store(&worker->start, 1);
+	atomic_store(&worker->done, 0);
+	atomic_store(&worker->quit, 0);
+	worker->targ.fn = orphan_worker_thread;
+	worker->targ.arg = worker;
+	worker->thread = thread_run(&worker->targ);
+	while (atomic_load(&worker->done) != 1)
+		thread_yield();
+}
+
+//! Start a step on the worker without waiting for it
+static void
+orphan_worker_step(orphan_worker_t* worker, void (*fn)(void*), void* arg) {
+	worker->fn = fn;
+	worker->arg = arg;
+	atomic_store(&worker->start, atomic_load(&worker->start) + 1);
+}
+
+static void
+orphan_worker_wait(orphan_worker_t* worker) {
+	while (atomic_load(&worker->done) != atomic_load(&worker->start))
+		thread_yield();
+}
+
+static void
+orphan_worker_run(orphan_worker_t* worker, void (*fn)(void*), void* arg) {
+	orphan_worker_step(worker, fn, arg);
+	orphan_worker_wait(worker);
+}
+
+//! Stop the worker, its thread exits and releases its heap
+static void
+orphan_worker_stop(orphan_worker_t* worker) {
+	atomic_store(&worker->quit, 1);
+	thread_join(worker->thread);
+}
+
+enum { ORPHAN_STEP_BLOCKS = 256 };
+
+typedef struct orphan_alloc_t {
+	void* block[ORPHAN_STEP_BLOCKS];
+	size_t size;
+	unsigned int count;
+	//! Number of blocks to allocate, or zero to allocate until a block is in another page than the first
+	unsigned int alloc;
+	unsigned char fill;
+} orphan_alloc_t;
+
+static void
+orphan_step_alloc(void* arg) {
+	orphan_alloc_t* alloc = arg;
+	unsigned int end = alloc->alloc ? (alloc->count + alloc->alloc) : ORPHAN_STEP_BLOCKS;
+	while (alloc->count < end) {
+		void* block = rpmalloc(alloc->size);
+		if (!block)
+			break;
+		memset(block, alloc->fill, alloc->size);
+		alloc->block[alloc->count++] = block;
+		if (!alloc->alloc && (pending_page(block) != pending_page(alloc->block[0])))
+			break;
+	}
+}
+
+static void
+orphan_step_free_all(void* arg) {
+	orphan_alloc_t* alloc = arg;
+	for (unsigned int i = 0; i < alloc->count; ++i)
+		rpfree(alloc->block[i]);
+	alloc->count = 0;
+}
+
+static int
+orphan_alloc_check(const orphan_alloc_t* alloc, unsigned int first) {
+	for (unsigned int i = first; i < alloc->count; ++i) {
+		const unsigned char* data = alloc->block[i];
+		for (size_t ibyte = 0; ibyte < alloc->size; ibyte += 61) {
+			if (data[ibyte] != alloc->fill)
+				return -1;
+		}
+	}
+	return 0;
+}
+
+static int
+test_orphan_free_pages(void) {
+	// The free pages of a heap left in the queue of released heaps for the orphan delay are handed to the empty
+	// orphan pages and decommitted, and another thread takes them for blocks of another size class of the page type
+	// before it takes new pages
+	test_initialize_unmapped();
+	unsigned int orphan_wait = orphan_delay_begin(20);
+	static orphan_worker_t hold, owner, reuse;
+	static orphan_alloc_t freed, other;
+	orphan_worker_start(&hold);
+	orphan_worker_start(&owner);
+	// Eight pages of 3000 byte blocks, all freed, leave seven free pages and the last available page of the class.
+	// Blocks of 1200 bytes for four pages then take them
+	freed.size = 3000;
+	freed.count = 0;
+	freed.alloc = 8 * (64 * 1024 / 3000);
+	freed.fill = 0x3c;
+	orphan_worker_run(&owner, orphan_step_alloc, &freed);
+	if (freed.count != freed.alloc)
+		return test_fail("Allocation failed");
+	uintptr_t freed_page[8 * (64 * 1024 / 3000)];
+	for (unsigned int i = 0; i < freed.count; ++i)
+		freed_page[i] = pending_page(freed.block[i]);
+	unsigned int freed_count = freed.count;
+	orphan_worker_run(&owner, orphan_step_free_all, &freed);
+	orphan_worker_stop(&owner);
+	thread_sleep(orphan_wait);
+	// The hold heap is released on top of the owner heap, whose release time is past the delay, and orphans it
+	orphan_worker_stop(&hold);
+	orphan_worker_start(&reuse);
+	other.size = 1200;
+	other.count = 0;
+	other.alloc = 4 * (64 * 1024 / 1200);
+	other.fill = 0x5a;
+	orphan_worker_run(&reuse, orphan_step_alloc, &other);
+	if (other.count != other.alloc)
+		return test_fail("Allocation failed");
+	unsigned int reused = 0;
+	for (unsigned int i = 0; i < freed_count; i += 64 * 1024 / 3000) {
+		for (unsigned int iother = 0; iother < other.count; ++iother) {
+			if (pending_page(other.block[iother]) == freed_page[i]) {
+				++reused;
+				break;
+			}
+		}
+	}
+	if (orphan_alloc_check(&other, 0))
+		return test_fail("Block content changed while live");
+	orphan_worker_run(&reuse, orphan_step_free_all, &other);
+	orphan_worker_stop(&reuse);
+	orphan_delay_end();
+	if (reused < 4)
+		return test_fail("Free pages of a released heap not reused by another thread");
+
+	rpmalloc_finalize();
+	printf("Orphan free page tests passed\n");
+	return 0;
+}
+
+#if RPMALLOC_TEST_YIELD_POINTS
+static void
+orphan_step_collect(void* arg) {
+	(void)sizeof(arg);
+	rpmalloc_thread_collect();
+}
+
+static void
+orphan_step_free(void* arg) {
+	rpfree(arg);
+	// The free waits in the thread free chain until a flush point, flush it to the page
+	rpmalloc_thread_collect();
+}
+
+static int
+orphan_alloc_has(const orphan_alloc_t* alloc, const void* block) {
+	for (unsigned int i = 0; i < alloc->count; ++i) {
+		if (alloc->block[i] == block)
+			return 1;
+	}
+	return 0;
+}
+
+//! Free a block into a full page of the released heap, pushed to the heap list at once, and chain a second block of
+//  the page, then flush the chain with the flush held after it found the page full
+static void
+orphan_step_free_chain_held(void* arg) {
+	void** block = arg;
+	rpfree(block[0]);
+	rpfree(block[1]);
+	atomic_store(&rpmalloc_test_full_free_delay_ms, 400);
+	rpmalloc_thread_collect();
+}
+
+enum { ORPHAN_WINDOW_TAKEN, ORPHAN_WINDOW_LATE, ORPHAN_WINDOW_CHAIN };
+
+//! A thread freeing a block into a full page of an orphaned heap is held after it found the page full. In that window
+//  another thread frees a block of the page, which orphans the page, and a thread takes the page from the orphan
+//  list. The held block must be freed into the page, or the heap list of the heap that took it, and the thread must
+//  allocate it again. With late, the taking thread fills the page again before the held block is freed. With chain,
+//  the held thread flushes a chain of the page and the orphan pass of the heap collects the block it pushed before
+//  and hands the page to the orphan list in the window
+static int
+orphan_full_window(int mode) {
+	int late = (mode == ORPHAN_WINDOW_LATE);
+	test_initialize_unmapped();
+	orphan_delay_begin(0);
+	static orphan_worker_t hold, producer, free_held, free_other, taker;
+	static orphan_alloc_t produced, taken;
+	orphan_worker_start(&free_held);
+	orphan_worker_start(&free_other);
+	orphan_worker_start(&taker);
+	orphan_worker_start(&hold);
+	orphan_worker_start(&producer);
+	// The producer fills a page, which is flagged full when the next block is allocated from a new page
+	produced.size = PENDING_SIZE;
+	produced.count = 0;
+	produced.alloc = 0;
+	produced.fill = 0xcd;
+	orphan_worker_run(&producer, orphan_step_alloc, &produced);
+	unsigned int n = produced.count - 1;
+	if ((n < 4) || (pending_page(produced.block[n]) == pending_page(produced.block[0])))
+		return test_fail("Blocks of the size class not allocated page by page");
+	uintptr_t page = pending_page(produced.block[0]);
+	// The producer heap is released below the hold heap, whose release orphans it with the delay at zero
+	orphan_worker_stop(&producer);
+	if (mode == ORPHAN_WINDOW_CHAIN) {
+		static void* chain[2];
+		chain[0] = produced.block[0];
+		chain[1] = produced.block[1];
+		orphan_worker_step(&free_held, orphan_step_free_chain_held, chain);
+		thread_sleep(100);
+		orphan_worker_stop(&hold);
+	} else {
+		orphan_worker_stop(&hold);
+		atomic_store(&rpmalloc_test_full_free_delay_ms, 400);
+		orphan_worker_step(&free_held, orphan_step_free, produced.block[0]);
+		thread_sleep(100);
+		orphan_worker_run(&free_other, orphan_step_free, produced.block[1]);
+	}
+	taken.size = PENDING_SIZE;
+	taken.count = 0;
+	taken.fill = 0x77;
+	if (late) {
+		taken.alloc = 2;
+		orphan_worker_run(&taker, orphan_step_alloc, &taken);
+		if ((taken.count != 2) || (pending_page(taken.block[0]) != page))
+			return test_fail("Orphaned full page not taken by another thread");
+	}
+	orphan_worker_wait(&free_held);
+	taken.alloc = late ? n : (n + 1);
+	orphan_worker_run(&taker, orphan_step_alloc, &taken);
+	if (!orphan_alloc_has(&taken, produced.block[1]))
+		return test_fail("Block freed into an orphaned full page not allocated again");
+	if (!orphan_alloc_has(&taken, produced.block[0]))
+		return test_fail("Block freed into a full page while the page was orphaned not allocated again");
+	if (orphan_alloc_check(&produced, 2) || orphan_alloc_check(&taken, 0))
+		return test_fail("Block content changed while live");
+	// The pages taken from the orphan lists are pages of the taking heap. Once the other blocks are freed from this
+	// thread they are queued to its pending list, the heap retires one and blocks of another size class reuse it
+	uintptr_t next_page = pending_page(produced.block[n]);
+	orphan_worker_run(&taker, orphan_step_free_all, &taken);
+	for (unsigned int i = 2; i < produced.count; ++i)
+		rpfree(produced.block[i]);
+	rpmalloc_thread_collect();
+	static orphan_alloc_t other;
+	other.size = PENDING_OTHER_SIZE;
+	other.count = 0;
+	other.alloc = 2 * (64 * 1024 / PENDING_OTHER_SIZE) + 2;
+	other.fill = 0x11;
+	orphan_worker_run(&taker, orphan_step_collect, 0);
+	orphan_worker_run(&taker, orphan_step_alloc, &other);
+	int reused = 0;
+	for (unsigned int i = 0; i < other.count; ++i)
+		reused |= (pending_page(other.block[i]) == page) || (pending_page(other.block[i]) == next_page);
+	orphan_worker_run(&taker, orphan_step_free_all, &other);
+	if (!reused)
+		return test_fail("Page taken from the orphan lists not retired when its blocks were freed");
+	orphan_worker_stop(&taker);
+	orphan_worker_stop(&free_other);
+	orphan_worker_stop(&free_held);
+	orphan_delay_end();
+	rpmalloc_finalize();
+	return 0;
+}
+
+static int
+test_orphan_full_window(void) {
+	if (orphan_full_window(ORPHAN_WINDOW_TAKEN) || orphan_full_window(ORPHAN_WINDOW_LATE) ||
+	    orphan_full_window(ORPHAN_WINDOW_CHAIN))
+		return -1;
+	printf("Orphan full page window tests passed\n");
+	return 0;
+}
+#endif
+#endif
+
+#if RPMALLOC_TEST_YIELD_POINTS
+static int
+test_orphan_race(void) {
+	// The concurrent pending page test with the orphan delay at zero. Each heap release orphans the heaps released
+	// before it in the queue, while consumers free blocks into their full pages and orphan pages, the producers of
+	// the next wave take the orphan pages and adopt the orphaned heaps, and the sweep empties orphan pages
+	rpmalloc_initialize(0);
+	orphan_delay_begin(0);
+	int failed = race_run();
+	orphan_delay_end();
+	if (failed == 1)
+		return test_fail("Allocation failed in concurrent orphan page test");
+	if (failed)
+		return test_fail("Block content changed in concurrent orphan page test");
+	rpmalloc_finalize();
+	printf("Orphan page race tests passed\n");
+	return 0;
+}
+#endif
 
 static int
 test_page_decommit_other_type(void) {
@@ -4046,6 +4551,20 @@ test_run(int argc, char** argv) {
 #endif
 	if (test_remote_free_race())
 		return -1;
+#if !RPMALLOC_TEST_OVERRIDE
+	if (test_orphan_pages())
+		return -1;
+	if (test_orphan_free_pages())
+		return -1;
+#if RPMALLOC_TEST_YIELD_POINTS
+	if (test_orphan_full_window())
+		return -1;
+#endif
+#endif
+#if RPMALLOC_TEST_YIELD_POINTS
+	if (test_orphan_race())
+		return -1;
+#endif
 	if (test_alloc())
 		return -1;
 	if (test_zero_alloc())

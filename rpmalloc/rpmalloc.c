@@ -396,6 +396,15 @@ typedef struct heap_size_use_t {
 	do {                                             \
 		++(heap)->span_map_calls[page_type];         \
 	} while (0)
+//! Move the used blocks of a page changing heaps to or from the counters of a heap, so the counters of every heap
+//  stay at the blocks live in its pages when the heap taking the page counts their frees
+#define _rpmalloc_stat_add_used(heap, class_idx, count)        \
+	do {                                                       \
+		heap_size_use_t* _su = (heap)->size_use + (class_idx); \
+		_su->alloc_current += (int32_t)(count);                \
+		if (_su->alloc_current > _su->alloc_peak)              \
+			_su->alloc_peak = _su->alloc_current;              \
+	} while (0)
 
 #else
 
@@ -407,6 +416,9 @@ typedef struct heap_size_use_t {
 	} while (0)
 #define _rpmalloc_stat_inc_span_map(heap, page_type) \
 	do {                                             \
+	} while (0)
+#define _rpmalloc_stat_add_used(heap, class_idx, count) \
+	do {                                                \
 	} while (0)
 
 #endif
@@ -513,15 +525,12 @@ wait_spin(uint32_t* spin_count) {
 atomic_uint rpmalloc_test_pending_push_delay_ms;
 static atomic_uint test_pending_push_count;
 
-//! Hold the thread pushing a queued page, for the delay the tests set or 100us on every eighth push
+//! Milliseconds the next push of a block freed into a full page waits before it reads the heap of the page, set by
+//  the tests to hold a thread that found the page full while other threads orphan the page and take it
+atomic_uint rpmalloc_test_full_free_delay_ms;
+
 static void
-test_pending_push_delay(void) {
-	unsigned int delay_us =
-	    atomic_exchange_explicit(&rpmalloc_test_pending_push_delay_ms, 0, memory_order_relaxed) * 1000;
-	if (!delay_us && !(atomic_fetch_add_explicit(&test_pending_push_count, 1, memory_order_relaxed) & 7))
-		delay_us = 100;
-	if (!delay_us)
-		return;
+test_sleep_us(unsigned int delay_us) {
 #if PLATFORM_WINDOWS
 	Sleep((delay_us + 999) / 1000);
 #else
@@ -529,9 +538,35 @@ test_pending_push_delay(void) {
 	nanosleep(&ts, 0);
 #endif
 }
+
+//! Hold the thread pushing a queued page, for the delay the tests set or 100us on every eighth push
+static void
+test_pending_push_delay(void) {
+	unsigned int delay_us =
+	    atomic_exchange_explicit(&rpmalloc_test_pending_push_delay_ms, 0, memory_order_relaxed) * 1000;
+	if (!delay_us && !(atomic_fetch_add_explicit(&test_pending_push_count, 1, memory_order_relaxed) & 7))
+		delay_us = 100;
+	if (delay_us)
+		test_sleep_us(delay_us);
+}
+
+//! Hold the thread pushing a block freed into a full page for the delay the tests set, or yield at a yield point
+static void
+test_full_free_delay(void) {
+	unsigned int delay_ms = 0;
+	if (atomic_load_explicit(&rpmalloc_test_full_free_delay_ms, memory_order_relaxed))
+		delay_ms = atomic_exchange_explicit(&rpmalloc_test_full_free_delay_ms, 0, memory_order_relaxed);
+	if (delay_ms)
+		test_sleep_us(delay_ms * 1000);
+	else
+		test_yield_point();
+}
 #else
 #define test_pending_push_delay() \
 	do {                          \
+	} while (0)
+#define test_full_free_delay() \
+	do {                       \
 	} while (0)
 #endif
 
@@ -707,6 +742,9 @@ typedef struct page_slot_t {
 //! Fast free key of a page that takes the generic free path
 #define PAGE_KEY_GENERIC ((uintptr_t)0)
 
+//! Owner thread of the orphan heap holding the orphan pages, which no thread owns
+#define ORPHAN_HEAP_OWNER ((uintptr_t)1)
+
 //! A span contains pages of a given type, or a single huge block. The span starts with the slot table, followed
 //  by the page structures, both committed on demand. The span header overlays the first slot table entries, which
 //  in a span of pages map slots holding metadata and are never looked up. A huge block span holds the span header,
@@ -790,6 +828,14 @@ struct heap_t {
 	uint32_t finalize;
 	//! Set when the heap was released without being trimmed, the thread adopting it trims it first
 	uint32_t release_trim;
+	//! Set while the heap is in the queue of released heaps with its pages handed to the orphan lists, written
+	//  under the heap lock
+	atomic_uint orphaned;
+	//! Set while the orphan pass hands the pages of the released heap to the orphan lists under the heap lock, the
+	//  pages it frees are then not decommitted, the pass hands them on and decommits them after the lock
+	uint32_t orphaning;
+	//! Time (monotonic ms) the heap was released, while in the queue of released heaps
+	uint64_t release_ms;
 	//! Set for a first class heap, written before the heap has any page and cleared when a thread takes the
 	//  released heap over. Copied to the pages initialized for a size class, other threads never hold blocks of
 	//  such a page in their free chain, since rpmalloc_heap_free_all unmaps the pages regardless
@@ -847,6 +893,8 @@ static heap_t* global_heap_default = &global_heap_fallback;
 //! Released heaps available for reuse. These have been used and may hold caches, so they are
 //  only handed to ordinary thread heaps, never to first-class heaps (which require pristine state)
 static heap_t* global_heap_queue;
+//! Heap of the queue of released heaps the next orphan pass starts at, the queue below it is not yet orphaned
+static heap_t* global_heap_orphan_cursor;
 //! Pristine, never-used heaps carved from a shared block but not yet handed out. Safe for any
 //  request including first-class, which needs a heap with no prior allocations
 static heap_t* global_heap_pristine;
@@ -1104,6 +1152,41 @@ heap_release_free_pages(heap_t* heap);
 
 static NOINLINE void
 heap_collect_pending_pages(heap_t* heap);
+
+static NOINLINE void
+heap_collect_thread_free(heap_t* heap);
+
+static void
+heap_orphan_pages(heap_t* heap);
+
+static page_t*
+heap_orphan_free_pages(heap_t* heap, page_t* chain);
+
+static void
+page_orphan_empty_add(page_t* page);
+
+static void
+page_orphan_sweep(uint64_t now);
+
+static inline int
+heap_make_free_page_available(heap_t* heap, uint32_t size_class, page_t* page);
+
+#ifndef HEAP_ORPHAN_DELAY_MS
+//! Time in milliseconds a released heap stays in the queue of released heaps with its pages, for a thread adopting
+//  it, before the pages are handed to the orphan lists
+#define HEAP_ORPHAN_DELAY_MS 1000
+#endif
+#ifndef HEAP_ORPHAN_BATCH
+//! Number of released heaps whose pages are handed to the orphan lists at most per heap release
+#define HEAP_ORPHAN_BATCH 4
+#endif
+#if RPMALLOC_TEST_YIELD_POINTS
+//! Orphan delay of test builds, the tests shorten it to orphan the heaps of exiting threads right away
+atomic_uint rpmalloc_test_orphan_delay_ms = HEAP_ORPHAN_DELAY_MS;
+#define heap_orphan_delay_ms() atomic_load_explicit(&rpmalloc_test_orphan_delay_ms, memory_order_relaxed)
+#else
+#define heap_orphan_delay_ms() HEAP_ORPHAN_DELAY_MS
+#endif
 
 static NOINLINE void
 heap_page_free_overflow(heap_t* heap, uint32_t page_type);
@@ -1956,11 +2039,41 @@ heap_put_thread_free_block_retry(atomic_uintptr_t* list, block_t* block, uintptr
 	                                                memory_order_relaxed));
 }
 
+static int
+page_orphan_full(page_t* page, heap_t* heap, block_t* head, block_t** tail_link, uint32_t count);
+
+static NOINLINE void
+page_put_thread_free_block(page_t* page, block_t* block);
+
+static NOINLINE void
+page_put_thread_free_chain(page_t* page, block_t* head, block_t** tail_link, uint32_t count);
+
+//! Heap owning the orphan pages, which no thread owns (see the orphan lists)
+static RPMALLOC_CACHE_ALIGNED heap_t global_heap_orphan;
+
 //! Push a block freed into a full page to the heap level thread free list, otherwise the heap would
-//  not pick up the block until a thread local free happens
+//  not pick up the block until a thread local free happens. A page another thread orphaned since the full flag was
+//  read is no longer full, and the block goes to its thread free list instead, the orphan heap collects no list
 static NOINLINE void
 heap_put_thread_free_block(page_t* page, block_t* block) {
-	atomic_uintptr_t* list = &page->heap->thread_free[page->page_type];
+	test_full_free_delay();
+	// The owner wrote the heap of a page it took from the orphan lists before it flagged the page full
+	atomic_thread_fence(memory_order_acquire);
+	heap_t* heap = page->heap;
+	if (UNEXPECTED(heap == &global_heap_orphan)) {
+		page_put_thread_free_block(page, block);
+		return;
+	}
+	if (UNEXPECTED(atomic_load_explicit(&heap->orphaned, memory_order_relaxed))) {
+		int orphaned = page_orphan_full(page, heap, block, &block->next, 1);
+		if (orphaned > 0)
+			return;
+		if (orphaned < 0) {
+			page_put_thread_free_block(page, block);
+			return;
+		}
+	}
+	atomic_uintptr_t* list = &heap->thread_free[page->page_type];
 	uintptr_t prev_head = atomic_load_explicit(list, memory_order_relaxed);
 	block->next = (void*)prev_head;
 	if (UNEXPECTED(!atomic_compare_exchange_weak_explicit(list, &prev_head, (uintptr_t)block, memory_order_release,
@@ -1973,6 +2086,8 @@ heap_put_thread_free_block(page_t* page, block_t* block) {
 static NOINLINE void
 heap_push_pending_page(page_t* page) {
 	test_pending_push_delay();
+	// A heap taking the page from the orphan lists wrote the heap before it cleared the queued flag
+	atomic_thread_fence(memory_order_acquire);
 	heap_t* heap = page->heap;
 	uintptr_t head = atomic_load_explicit(&heap->page_pending, memory_order_relaxed);
 	do {
@@ -2042,8 +2157,25 @@ page_put_thread_free_block(page_t* page, block_t* block) {
 //! Push a chain of blocks freed into a full page to the heap level thread free list, the chain is spliced
 //  in front of the list by storing the list head in the next pointer of the last chained block
 static void
-heap_put_thread_free_chain(page_t* page, block_t* head, block_t** tail_link) {
-	atomic_uintptr_t* list = &page->heap->thread_free[page->page_type];
+heap_put_thread_free_chain(page_t* page, block_t* head, block_t** tail_link, uint32_t count) {
+	test_full_free_delay();
+	// The owner wrote the heap of a page it took from the orphan lists before it flagged the page full
+	atomic_thread_fence(memory_order_acquire);
+	heap_t* heap = page->heap;
+	if (UNEXPECTED(heap == &global_heap_orphan)) {
+		page_put_thread_free_chain(page, head, tail_link, count);
+		return;
+	}
+	if (UNEXPECTED(atomic_load_explicit(&heap->orphaned, memory_order_relaxed))) {
+		int orphaned = page_orphan_full(page, heap, head, tail_link, count);
+		if (orphaned > 0)
+			return;
+		if (orphaned < 0) {
+			page_put_thread_free_chain(page, head, tail_link, count);
+			return;
+		}
+	}
+	atomic_uintptr_t* list = &heap->thread_free[page->page_type];
 	uintptr_t prev_head = atomic_load_explicit(list, memory_order_relaxed);
 	uint32_t spin = 0;
 	while (1) {
@@ -2066,7 +2198,7 @@ page_put_thread_free_chain(page_t* page, block_t* head, block_t** tail_link, uin
 	uint32_t spin = 0;
 	while (1) {
 		if (prev_thread_free & THREAD_FREE_FULL) {
-			heap_put_thread_free_chain(page, head, tail_link);
+			heap_put_thread_free_chain(page, head, tail_link, count);
 			return;
 		}
 		uint32_t list_size = page_block_from_thread_free_list(page, prev_thread_free, tail_link) + count;
@@ -3079,6 +3211,9 @@ heap_allocate_new(int first_class) {
 		if (!first_class && global_heap_queue) {
 			heap_t* heap = global_heap_queue;
 			global_heap_queue = heap->next;
+			if (global_heap_orphan_cursor == heap)
+				global_heap_orphan_cursor = 0;
+			atomic_store_explicit(&heap->orphaned, 0, memory_order_relaxed);
 			heap_lock_release();
 			if (heap->release_trim) {
 				heap->release_trim = 0;
@@ -3201,9 +3336,41 @@ heap_release(heap_t* heap) {
 		heap->next->prev = heap->prev;
 	if (global_heap_used == heap)
 		global_heap_used = heap->next;
+	uint64_t now = monotonic_time_ms();
+	heap->release_ms = now;
 	heap->next = global_heap_queue;
 	global_heap_queue = heap;
+	// A heap left in the queue for the orphan delay is unlikely to be adopted soon, as when a thread pool retires
+	// idle workers and starts fewer, its pages go to the orphan lists for the running threads to reuse. The queue
+	// is a stack changing only at its top, the heaps below are released earlier the deeper they are, and the pass
+	// continues where the previous one stopped
+	uint32_t orphan_count = 0;
+	page_t* orphan_free = 0;
+	heap_t* queued = global_heap_orphan_cursor ? global_heap_orphan_cursor : heap->next;
+	while (queued && (orphan_count < HEAP_ORPHAN_BATCH)) {
+		if ((now - queued->release_ms) >= heap_orphan_delay_ms()) {
+			if (!queued->first_class && !atomic_load_explicit(&queued->orphaned, memory_order_relaxed)) {
+				queued->orphaning = 1;
+				if (atomic_load_explicit(&queued->page_pending, memory_order_relaxed))
+					heap_collect_pending_pages(queued);
+				heap_collect_thread_free(queued);
+				heap_orphan_pages(queued);
+				orphan_free = heap_orphan_free_pages(queued, orphan_free);
+				queued->orphaning = 0;
+				atomic_store_explicit(&queued->orphaned, 1, memory_order_relaxed);
+				++orphan_count;
+			}
+		} else if (global_heap_orphan_cursor) {
+			// Heaps below the cursor were released before it, none is younger than the delay
+			break;
+		}
+		queued = queued->next;
+	}
+	if (global_heap_orphan_cursor || orphan_count)
+		global_heap_orphan_cursor = queued;
 	heap_lock_release();
+	page_orphan_empty_add(orphan_free);
+	page_orphan_sweep(now);
 }
 
 //! Count a free page of the heap that is no longer committed and free, decommitted or taken for reuse, lowering the
@@ -3320,6 +3487,8 @@ heap_page_free_window_end(heap_t* heap, uint32_t page_type, uint64_t now) {
 //  at the hard limit is decommitted right away, so the limit bounds the committed free pages of a burst
 static NOINLINE void
 heap_page_free_overflow(heap_t* heap, uint32_t page_type) {
+	if (heap->orphaning)
+		return;
 	uint64_t limit = (uint64_t)global_page_free_overflow[page_type] * PAGE_DECOMMIT_LIMIT_FACTOR;
 	uint64_t now = monotonic_time_ms();
 #if HUGE_CACHE_SLOT_COUNT
@@ -3344,6 +3513,8 @@ heap_page_free_overflow(heap_t* heap, uint32_t page_type) {
 //  check the windows of the other types too
 static NOINLINE void
 heap_page_free_overflow_other(heap_t* heap, uint32_t page_type) {
+	if (heap->orphaning)
+		return;
 	uint64_t now = monotonic_time_ms();
 	uint32_t delay = heap_page_decommit_delay(heap, now);
 	for (uint32_t itype = 0; itype < 4; ++itype) {
@@ -3394,6 +3565,312 @@ heap_page_commit_trim_pending(heap_t* heap, uint32_t page_type) {
 			return 1;
 	}
 	return heap->page_commit_credit != 0;
+}
+
+////////////
+///
+/// Orphan pages
+///
+//////
+
+//! A thread heap released by its exiting thread keeps its pages until another thread adopts the heap. With fewer
+//  threads than released heaps, as when a thread pool retires idle workers and starts others later, the free blocks
+//  in the partly used pages of the queued heaps were never reused, while the running threads took new pages. A
+//  released thread heap instead hands its available pages to per size class orphan lists, and a thread heap takes
+//  an orphan page of the size class before it takes a new page. An orphan page has the queued flag set in its
+//  thread free token, so threads freeing into it neither push it to a pending list nor read its heap, and it is
+//  owned by the orphan heap, which no thread owns, so every free into it takes the cross-thread path. Orphan pages
+//  of each size class, linked through the page next pointer
+static atomic_uintptr_t global_page_orphan[SIZE_CLASS_COUNT];
+//! Lock of the orphan page lists
+static atomic_uintptr_t global_page_orphan_lock;
+
+static void
+page_orphan_lock_acquire(void) {
+	uintptr_t lock = 0;
+	uint32_t spin = 0;
+	while (!atomic_compare_exchange_weak_explicit(&global_page_orphan_lock, &lock, 1, memory_order_acquire,
+	                                              memory_order_relaxed)) {
+		lock = 0;
+		wait_spin(&spin);
+	}
+}
+
+static void
+page_orphan_lock_release(void) {
+	atomic_store_explicit(&global_page_orphan_lock, 0, memory_order_release);
+}
+
+//! Empty orphan pages of each page type, the free pages of orphaned heaps and the orphan pages the sweep emptied,
+//  decommitted, linked through the page next pointer
+static atomic_uintptr_t global_page_orphan_empty[4];
+//! Time (monotonic ms) of the last sweep of the orphan lists
+static atomic_ullong global_page_orphan_sweep_ms;
+
+//! Move the orphan pages whose blocks have all been freed to the empty orphan pages of their page type and decommit
+//  them, at most once per orphan delay. Blocks are freed into orphan pages by other threads after the pages were
+//  orphaned, and a page of a size class no running thread takes pages of would otherwise stay resident. An empty
+//  orphan page is taken for a page of any size class of its page type
+static void
+page_orphan_sweep(uint64_t now) {
+	unsigned long long last = atomic_load_explicit(&global_page_orphan_sweep_ms, memory_order_relaxed);
+	if (((now - last) < heap_orphan_delay_ms()) ||
+	    !atomic_compare_exchange_strong_explicit(&global_page_orphan_sweep_ms, &last, now, memory_order_relaxed,
+	                                             memory_order_relaxed))
+		return;
+	page_t* empty = 0;
+	page_orphan_lock_acquire();
+	for (uint32_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
+		page_t* page = (page_t*)atomic_load_explicit(&global_page_orphan[iclass], memory_order_relaxed);
+		page_t* prev = 0;
+		while (page) {
+			page_t* next = page->next;
+			unsigned long long token = atomic_load_explicit(&page->thread_free, memory_order_acquire);
+			if ((uint32_t)((token >> 32ULL) & THREAD_FREE_COUNT_MASK) == page->block_used) {
+				if (prev)
+					prev->next = next;
+				else
+					atomic_store_explicit(&global_page_orphan[iclass], (uintptr_t)next, memory_order_relaxed);
+				_rpmalloc_stat_add_free(&global_heap_orphan, iclass, page->block_used);
+				page->next = empty;
+				empty = page;
+			} else {
+				prev = page;
+			}
+			page = next;
+		}
+	}
+	page_orphan_lock_release();
+	for (page_t* page = empty; page; page = page->next) {
+		// No thread holds a block of the page, every used block is in its thread free list
+		atomic_store_explicit(&page->thread_free, 0, memory_order_relaxed);
+		page->block_used = 0;
+		page->block_initialized = 0;
+		page->local_free = 0;
+		page->is_full = 0;
+		page->is_free = 1;
+		page->is_zero = 0;
+	}
+	page_orphan_empty_add(empty);
+}
+
+//! Decommit a chain of free pages, linked through the page next pointer, and add them to the empty orphan pages of
+//  their page type. Called without the heap lock, a decommit is a system call
+static void
+page_orphan_empty_add(page_t* page) {
+	while (page) {
+		page_t* next = page->next;
+		page_decommit_memory_pages(page);
+		page_orphan_lock_acquire();
+		page->next = (page_t*)atomic_load_explicit(&global_page_orphan_empty[page->page_type], memory_order_relaxed);
+		atomic_store_explicit(&global_page_orphan_empty[page->page_type], (uintptr_t)page, memory_order_relaxed);
+		page_orphan_lock_release();
+		page = next;
+	}
+}
+
+//! Take the free pages of a released heap the orphan pass hands to the orphan lists, chained in front of the given
+//  pages. The decommit window of a heap only runs while its thread frees pages, a heap left in the queue for the
+//  orphan delay would otherwise keep its free pages committed until a thread adopts it
+static page_t*
+heap_orphan_free_pages(heap_t* heap, page_t* chain) {
+	for (uint32_t itype = 0; itype < 4; ++itype) {
+		page_t* page = heap->page_free[itype];
+		while (page) {
+			page_t* next = page->next;
+#if RPMALLOC_HEAP_STATISTICS && ENABLE_DECOMMIT
+			if (!page->is_decommitted)
+				heap->stats.committed_size -= page_get_size(page);
+#endif
+			page->heap = &global_heap_orphan;
+			page->next = chain;
+			chain = page;
+			page = next;
+		}
+		heap->page_free[itype] = 0;
+		heap->page_free_tail[itype] = 0;
+		heap->page_free_commit_count[itype] = 0;
+		heap->page_free_low[itype] = 0;
+		heap->page_free_overflow_ms[itype] = 0;
+	}
+	return chain;
+}
+
+//! Take an empty orphan page of the page type as a page of the heap for the size class, returns 0 if there is none
+static NOINLINE page_t*
+heap_take_orphan_empty_page(heap_t* heap, uint32_t page_type, uint32_t size_class) {
+	page_orphan_lock_acquire();
+	page_t* page = (page_t*)atomic_load_explicit(&global_page_orphan_empty[page_type], memory_order_relaxed);
+	if (page)
+		atomic_store_explicit(&global_page_orphan_empty[page_type], (uintptr_t)page->next, memory_order_relaxed);
+	page_orphan_lock_release();
+	if (!page)
+		return 0;
+#if RPMALLOC_HEAP_STATISTICS && ENABLE_DECOMMIT
+	if (!page->is_decommitted)
+		heap->stats.committed_size += page_get_size(page);
+#endif
+	if (heap_make_free_page_available(heap, size_class, page) != 0)
+		return 0;
+	return page;
+}
+
+//! Hand the available pages of a released thread heap to the orphan lists. A page queued to the heap pending
+//  list by a cross-thread free stays with the heap, which retires it once a thread adopts the heap
+static void
+heap_orphan_pages(heap_t* heap) {
+	for (uint32_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass) {
+		// The blocks in the heap list are counted as used in their page, give them back to the page first, they
+		// would otherwise stay unused and keep the page from being emptied until a thread adopted the heap
+		block_t* block = heap->local_free[iclass];
+		heap->local_free[iclass] = 0;
+		while (block) {
+			block_t* next = block->next;
+			page_t* block_page = block_get_page(block);
+			block->next = block_page->local_free;
+			block_page->local_free = block;
+			--block_page->block_used;
+			if (block_page->is_full)
+				page_full_to_available(block_page);
+			block = next;
+		}
+		page_t* page = heap->page_available[iclass];
+		if (!page)
+			continue;
+		page_t* keep = 0;
+		page_t* keep_tail = 0;
+		page_t* orphan = 0;
+		page_t* orphan_tail = 0;
+#if ENABLE_STATISTICS
+		uint32_t orphan_used = 0;
+#endif
+		while (page) {
+			page_t* next = page->next;
+			unsigned long long token = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
+			int claimed = 0;
+			test_yield_point();
+			while (!claimed && !(token & (THREAD_FREE_QUEUED | THREAD_FREE_FULL)))
+				claimed = atomic_compare_exchange_weak_explicit(&page->thread_free, &token, token | THREAD_FREE_QUEUED,
+				                                                memory_order_acquire, memory_order_relaxed);
+			page->next = 0;
+			if (claimed) {
+				page_set_key(page, PAGE_KEY_GENERIC);
+				page->heap = &global_heap_orphan;
+#if RPMALLOC_HEAP_STATISTICS && ENABLE_DECOMMIT
+				heap->stats.committed_size -= page_get_size(page);
+#endif
+				_rpmalloc_stat_add_used(heap, iclass, -(int32_t)page->block_used);
+#if ENABLE_STATISTICS
+				orphan_used += page->block_used;
+#endif
+				if (orphan_tail)
+					orphan_tail->next = page;
+				else
+					orphan = page;
+				orphan_tail = page;
+			} else {
+				if (keep_tail) {
+					keep_tail->next = page;
+					page->prev = keep_tail;
+				} else {
+					keep = page;
+				}
+				keep_tail = page;
+			}
+			page = next;
+		}
+		if (keep)
+			keep->prev = keep_tail;
+		heap->page_available[iclass] = keep;
+		if (orphan) {
+			page_orphan_lock_acquire();
+			_rpmalloc_stat_add_used(&global_heap_orphan, iclass, orphan_used);
+			orphan_tail->next = (page_t*)atomic_load_explicit(&global_page_orphan[iclass], memory_order_relaxed);
+			atomic_store_explicit(&global_page_orphan[iclass], (uintptr_t)orphan, memory_order_relaxed);
+			page_orphan_lock_release();
+		}
+	}
+}
+
+//! Orphan a full page of the given released heap a thread frees blocks into, returns 1 if orphaned, zero if the page
+//! stays with its heap, and -1 if the page is no longer full, orphaned by another thread or taken back by its heap.
+//  The pages of a released heap that were full when it was released are in none of its lists, and the blocks freed
+//  into them would wait in the heap level list until a thread adopted the heap. The freeing thread takes the heap
+//  lock, which keeps the heap from being adopted, and hands the page with the blocks in its thread free list to the
+//  orphan list of its size class. A thread holding the lock leaves the page to its heap as before
+static int
+page_orphan_full(page_t* page, heap_t* heap, block_t* head, block_t** tail_link, uint32_t count) {
+	test_yield_point();
+	uintptr_t unlocked = 0;
+	if (atomic_load_explicit(&global_heap_lock, memory_order_relaxed) ||
+	    !atomic_compare_exchange_strong_explicit(&global_heap_lock, &unlocked, get_thread_id(), memory_order_acquire,
+	                                             memory_order_relaxed))
+		return 0;
+	int orphaned = 0;
+	if (atomic_load_explicit(&heap->orphaned, memory_order_relaxed) && !heap->first_class) {
+		unsigned long long token = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
+		uint64_t list = page_block_to_thread_free_list(page, page_block_offset(page, head), count) | THREAD_FREE_QUEUED;
+		*tail_link = 0;
+		while ((token & THREAD_FREE_FULL) && !(token & THREAD_FREE_QUEUED) && !orphaned)
+			orphaned = atomic_compare_exchange_weak_explicit(&page->thread_free, &token, list, memory_order_acq_rel,
+			                                                 memory_order_relaxed);
+		// Another thread orphaned the page, or its heap took it back, since the full flag was read
+		if (!(token & THREAD_FREE_FULL))
+			orphaned = -1;
+		if (orphaned > 0) {
+			page->heap = &global_heap_orphan;
+#if RPMALLOC_HEAP_STATISTICS && ENABLE_DECOMMIT
+			heap->stats.committed_size -= page_get_size(page);
+#endif
+			_rpmalloc_stat_add_used(heap, page->size_class, -(int32_t)page->block_used);
+			page_orphan_lock_acquire();
+			_rpmalloc_stat_add_used(&global_heap_orphan, page->size_class, page->block_used);
+			page->next = (page_t*)atomic_load_explicit(&global_page_orphan[page->size_class], memory_order_relaxed);
+			atomic_store_explicit(&global_page_orphan[page->size_class], (uintptr_t)page, memory_order_relaxed);
+			page_orphan_lock_release();
+		}
+	}
+	atomic_store_explicit(&global_heap_lock, 0, memory_order_release);
+	return orphaned;
+}
+
+//! Take an orphan page of the size class as an available page of the heap, returns 0 if there is none
+static NOINLINE page_t*
+heap_take_orphan_page(heap_t* heap, uint32_t size_class) {
+	page_orphan_lock_acquire();
+	page_t* page = (page_t*)atomic_load_explicit(&global_page_orphan[size_class], memory_order_relaxed);
+	if (page) {
+		atomic_store_explicit(&global_page_orphan[size_class], (uintptr_t)page->next, memory_order_relaxed);
+		_rpmalloc_stat_add_used(&global_heap_orphan, size_class, -(int32_t)page->block_used);
+	}
+	page_orphan_lock_release();
+	if (!page)
+		return 0;
+	_rpmalloc_stat_add_used(heap, size_class, page->block_used);
+	page->heap = heap;
+	page->is_full = 0;
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	page->heap_first_class = 0;
+#endif
+#if RPMALLOC_HEAP_STATISTICS && ENABLE_DECOMMIT
+	heap->stats.committed_size += page_get_size(page);
+#endif
+	page_t* head = heap->page_available[size_class];
+	page->next = head;
+	page->prev = head ? head->prev : page;
+	if (head)
+		head->prev = page;
+	heap->page_available[size_class] = page;
+	if (page->has_aligned_block == 0)
+		page_set_key(page, page_key(heap));
+	// The heap is written before the queued flag is cleared, with release ordering, so a thread whose free queues
+	// the page again pushes it to the pending list of the new heap
+	unsigned long long token = atomic_load_explicit(&page->thread_free, memory_order_relaxed);
+	test_yield_point();
+	while (!atomic_compare_exchange_weak_explicit(&page->thread_free, &token, token & ~THREAD_FREE_QUEUED,
+	                                              memory_order_release, memory_order_relaxed))
+		;
+	return page;
 }
 
 //! Trims the memory a released heap holds for reuse. Until another thread adopts the heap nothing
@@ -3588,7 +4065,8 @@ heap_collect_thread_free(heap_t* heap) {
 		// Claim the whole list in one exchange, concurrent pushes either land before (and are claimed) or after
 		block_t* block = (block_t*)atomic_exchange_explicit(&heap->thread_free[itype], 0, memory_order_acquire);
 		// A thread free chain is pushed as a run of blocks of one page, each run is put in the page free list
-		// at once. The blocks belong to pages of this heap and are block starts
+		// at once. The blocks are block starts of pages of this heap, or of pages the heap gave to the orphan lists
+		// after a thread freeing into them found them full, which are freed into their pages again
 		page_t* block_page = block ? block_get_page(block) : 0;
 		while (block) {
 			block_t* last = block;
@@ -3603,7 +4081,10 @@ heap_collect_thread_free(heap_t* heap) {
 				next_block = next_block->next;
 				++count;
 			}
-			page_put_thread_free_run(block_page, block, last, count);
+			if (EXPECTED(block_page->heap == heap))
+				page_put_thread_free_run(block_page, block, last, count);
+			else
+				page_put_thread_free_chain(block_page, block, &last->next, count);
 			block = next_block;
 			block_page = next_page;
 		}
@@ -3631,8 +4112,17 @@ heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 			return page;
 	}
 
-	// Check if there is a free page
+	// Take a partly used orphan page before a free page or a new page. Its free blocks would otherwise stay unused,
+	// while a free page left unused is decommitted after the decommit delay
 	page_t* page = heap->page_free[page_type];
+	if (UNEXPECTED(atomic_load_explicit(&global_page_orphan[size_class], memory_order_relaxed) != 0) && heap->id &&
+	    !heap->first_class) {
+		page_t* orphan = heap_take_orphan_page(heap, size_class);
+		if (orphan)
+			return orphan;
+	}
+
+	// Check if there is a free page
 	if (EXPECTED(page != 0)) {
 		heap->page_free[page_type] = page->next;
 		if (!page->next)
@@ -3654,6 +4144,16 @@ heap_get_page_generic(heap_t* heap, uint32_t size_class) {
 		// Thread has not yet initialized, assign heap and try again
 		rpmalloc_initialize(0);
 		return heap_get_page(get_thread_heap(), size_class);
+	}
+
+	// A thread heap takes an empty orphan page of the page type before a new page from its spans
+	if (UNEXPECTED(atomic_load_explicit(&global_page_orphan_empty[page_type], memory_order_relaxed) != 0) &&
+	    !heap->first_class) {
+		page = heap_take_orphan_empty_page(heap, page_type, size_class);
+		if (page) {
+			heap_page_commit_check(heap, page_type);
+			return page;
+		}
 	}
 
 	// Fallback path, find or allocate span for given size class
@@ -4896,6 +5396,7 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 #endif
 
 	global_main_thread_id = get_thread_id();
+	global_heap_orphan.owner_thread = ORPHAN_HEAP_OWNER;
 
 	atomic_store_explicit(&global_rpmalloc_init_state, RPMALLOC_INIT_DONE, memory_order_release);
 
@@ -4922,6 +5423,9 @@ statistics_outstanding_blocks(void) {
 				outstanding += heap->size_use[iclass].alloc_current;
 		}
 	}
+	// The used blocks of the orphan pages are counted on the orphan heap
+	for (uint32_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass)
+		outstanding += global_heap_orphan.size_use[iclass].alloc_current;
 	return outstanding;
 }
 
@@ -4994,6 +5498,13 @@ rpmalloc_finalize(void) {
 		// Heaps can share a mapping (heap_allocate_new); only the owner carries mapped_size != 0.
 		// Resources are freed while every heap is still mapped, then owners are unmapped in a
 		// separate pass so a heap is never dereferenced after its shared mapping is gone.
+		for (uint32_t iclass = 0; iclass < SIZE_CLASS_COUNT; ++iclass)
+			atomic_store_explicit(&global_page_orphan[iclass], 0, memory_order_relaxed);
+		for (uint32_t itype = 0; itype < 4; ++itype)
+			atomic_store_explicit(&global_page_orphan_empty[itype], 0, memory_order_relaxed);
+#if ENABLE_STATISTICS
+		memset(global_heap_orphan.size_use, 0, sizeof(global_heap_orphan.size_use));
+#endif
 		heap_t* owners = 0;
 		heap_t* heap = global_heap_pristine;
 		global_heap_pristine = 0;
@@ -5008,6 +5519,7 @@ rpmalloc_finalize(void) {
 		}
 		heap = global_heap_queue;
 		global_heap_queue = 0;
+		global_heap_orphan_cursor = 0;
 		while (heap) {
 			heap_t* heap_next = heap->next;
 			heap_free_all(heap);
