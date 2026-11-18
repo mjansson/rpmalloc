@@ -4161,7 +4161,7 @@ orphan_reuse_thread(void* arg) {
 	(void)sizeof(arg);
 	static void* block[ORPHAN_BLOCKS];
 	rpfree(rpmalloc(16));
-	long long allocated = orphan_thread_allocated();
+	int counted = (orphan_thread_allocated() >= 0);
 	for (unsigned int i = 0; i < ORPHAN_BLOCKS; ++i) {
 		block[i] = rpmalloc(3500);
 		if (!block[i])
@@ -4171,8 +4171,9 @@ orphan_reuse_thread(void* arg) {
 		for (unsigned int iorphan = 1; iorphan < ORPHAN_BLOCKS; iorphan += 2)
 			orphan_reused |= (((uintptr_t)orphan_block[iorphan] & ~(uintptr_t)(64 * 1024 - 1)) == page);
 	}
-	// The blocks left in the orphan pages the heap took are counted as allocated by the heap, which counts their
-	// frees when another thread frees them
+	// The blocks left in the pages the heap reused are counted as allocated by the heap, which counts their frees
+	// when another thread frees them. That holds for orphan pages it took and for the pages of a released heap it
+	// took over before the heap was orphaned, as when the release of another thread had not yet put a heap above it
 	orphan_reuse_left = 0;
 	for (unsigned int iorphan = 1; iorphan < ORPHAN_BLOCKS; iorphan += 2) {
 		uintptr_t page = (uintptr_t)orphan_block[iorphan] & ~(uintptr_t)(64 * 1024 - 1);
@@ -4185,7 +4186,7 @@ orphan_reuse_thread(void* arg) {
 	}
 	for (unsigned int i = 0; i < ORPHAN_BLOCKS; ++i)
 		rpfree(block[i]);
-	orphan_reuse_counted = (allocated < 0) ? -1 : (orphan_thread_allocated() - allocated);
+	orphan_reuse_counted = counted ? orphan_thread_allocated() : -1;
 	thread_exit(0);
 }
 
@@ -4230,8 +4231,11 @@ test_orphan_pages(void) {
 	orphan_delay_end();
 	if (!orphan_reused)
 		return test_fail("Partly used pages of a released heap not reused by another thread");
-	if ((orphan_reuse_counted >= 0) && (orphan_reuse_counted != orphan_reuse_left))
+	if ((orphan_reuse_counted >= 0) && (orphan_reuse_counted != orphan_reuse_left)) {
+		fprintf(stderr, "Blocks counted %lld, left in the reused pages %lld\n", orphan_reuse_counted,
+		        orphan_reuse_left);
 		return test_fail("Allocation counters of a heap taking orphan pages do not count the blocks left in them");
+	}
 
 	rpmalloc_finalize();
 	printf("Orphan page tests passed\n");
