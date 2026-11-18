@@ -1856,10 +1856,11 @@ page_commit_memory_pages(page_t* page) {
 	if (page->heap)
 		page->heap->stats.committed_size += page_size;
 #endif
-#if !defined(__APPLE__)
+#if OS_DECOMMIT_ZEROES
 	// All of the page memory was decommitted, so the OS zero fills it when recommitted - take advantage in
-	// zalloc/calloc calls
-	page->is_zero = 1;
+	// zalloc/calloc calls. A custom memory interface may keep the content of decommitted pages
+	if (global_memory_interface->memory_decommit == os_mdecommit)
+		page->is_zero = 1;
 #endif
 #endif
 	return 0;
@@ -4732,7 +4733,7 @@ heap_reallocate_block_aligned(heap_t* heap, void* block, size_t alignment, size_
 
 	int no_alloc = !!(flags & RPMALLOC_GROW_OR_FAIL);
 	size_t usable_size = (block ? block_usable_size(block) : 0);
-	if ((usable_size >= size) && !((uintptr_t)block & (alignment - 1))) {
+	if (block && (usable_size >= size) && !((uintptr_t)block & (alignment - 1))) {
 		if (no_alloc || (size >= (usable_size / 2)))
 			return block;
 	}
@@ -5859,6 +5860,8 @@ rpmalloc_heap_aligned_realloc(rpmalloc_heap_t* heap, void* ptr, size_t alignment
 
 void
 rpmalloc_heap_free(rpmalloc_heap_t* heap, void* ptr) {
+	if (UNEXPECTED(ptr == 0))
+		return;
 	// A first class heap without an owner thread is owned by the caller. A heap that is the current heap of
 	// a thread is owned by that thread only, so it and a null heap compare against the calling thread heap
 	block_deallocate_heap(ptr, (heap && !heap->owner_thread) ? heap : 0);

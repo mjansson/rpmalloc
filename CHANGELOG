@@ -58,6 +58,12 @@ as when a thread pool retires idle workers, the free blocks in them were never r
 the orphan pages whose blocks have all been freed, checked at most once a second, are decommitted and taken for pages
 of any size class of their page type.
 
+Zeroed allocations take a page recommitted after a decommit as zero filled only where the system decommit zero fills
+pages (Windows, Linux and Android) and the default memory interface is in use. On the BSDs, and with a custom memory
+interface whose decommit keeps the page content, rpcalloc and rpzalloc could return blocks holding old data.
+rpmalloc_heap_free with a null pointer no longer crashes, and an aligned reallocation of a null pointer allocates a
+block for alignments above 16 bytes and a size of zero as for smaller alignments.
+
 Unloading a DLL or shared object that has rpmalloc compiled in no longer leaves the thread exit
 destructor (a fiber local storage slot on Windows, a pthread key elsewhere) registered in unmapped
 code, which crashed the next exit of a thread that had allocated through the module, and on Windows
