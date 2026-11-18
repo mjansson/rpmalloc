@@ -86,6 +86,7 @@ typedef DWORD(WINAPI* active_processor_count_fn)(WORD);
 #endif
 #if PLATFORM_POSIX
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sched.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -953,6 +954,21 @@ static size_t os_huge_page_shift;
 static size_t os_map_granularity;
 //! OS memory page size
 static size_t os_page_size;
+//! Huge block mappings reserve the address range up to the next multiple of the span size, which the span alignment
+//  leaves unusable for other spans and huge blocks, and commit only the block. A cached mapping is then reused for any
+//  request up to its range and a block grows in place up to it. Only where the reserved range is not charged as
+//  committed memory, which strict overcommit accounting and an address space limit both do
+static int os_huge_reserve;
+
+//! Size of the mapping of a huge block of the given size, the address range a mapping reserves. With transparent huge
+//  pages only a block ending on a huge page boundary reserves beyond it, the fault of the last partial huge page of a
+//  block would otherwise fill the whole huge page within the reserved range
+static size_t
+os_huge_reserve_size(size_t alloc_size) {
+	if (!os_huge_reserve || ((global_thp_mask & (1U << PAGE_HUGE)) && (alloc_size & (os_thp_size - 1))))
+		return alloc_size;
+	return (alloc_size + (SPAN_SIZE - 1)) & ~(size_t)(SPAN_SIZE - 1);
+}
 
 ////////////
 ///
@@ -2236,18 +2252,18 @@ span_allocate_page(span_t* span) {
 //! of the requested bytes of live huge blocks over the current and the previous epoch, plus a headroom of
 //! HUGE_CACHE_HEADROOM_PERCENT of the peak and at least HUGE_CACHE_HEADROOM_MIN bytes, and the cached bytes
 //! alone stay within HUGE_CACHE_CACHED_LIMIT whatever the demand. Mappings idle for an epoch are unmapped, then
-//! the least recently freed ones while over either bound. Idle mappings are unmapped by the huge block paths and
-//! by the page refill, page free overflow, thread exit and collect paths, so a program that keeps allocating
-//! releases them without a further huge block allocation or free. A mapping that can decommit is reused for a
-//! request within its address range and of at least a quarter of its committed size: it is committed up to the
-//! request and keeps at most the request size again as committed slack, within the room left under the budget,
-//! the tail beyond is decommitted. The span page count holds the committed pages, the page request the usable size
-//! and the mapped size the address range.
+//! the least recently freed ones while over either bound, the first one holding more than the excess trimmed by
+//! it instead. Idle mappings are unmapped by the huge block paths and by the page refill, page free overflow,
+//! thread exit and collect paths, so a program that keeps allocating releases them without a further huge block
+//! allocation or free. A mapping that can decommit is reused for a request within its address range and of at
+//! least two fifths of its committed size: it is committed up to the request and keeps at most the request size
+//! again as committed slack, within the room left under the budget, the tail beyond is decommitted. The span page
+//! count holds the committed pages, the page request the usable size and the mapped size the address range.
 #ifndef HUGE_CACHE_SLOT_COUNT
 #define HUGE_CACHE_SLOT_COUNT 32
 #endif
 #ifndef HUGE_CACHE_HEADROOM_PERCENT
-#define HUGE_CACHE_HEADROOM_PERCENT 25
+#define HUGE_CACHE_HEADROOM_PERCENT 20
 #endif
 #ifndef HUGE_CACHE_HEADROOM_MIN
 #define HUGE_CACHE_HEADROOM_MIN (64 * 1024 * 1024)
@@ -2282,6 +2298,20 @@ statistics_add_huge_alloc(size_t size) {
 
 #if HUGE_CACHE_SLOT_COUNT
 
+//! A cached mapping, with what the lookup compares kept in the slot instead of the span header
+typedef struct huge_cache_slot_t {
+	//! Cached mapping
+	span_t* span;
+	//! Committed bytes of the mapping
+	size_t committed;
+	//! Address range the mapping can commit
+	size_t range;
+	//! Time the mapping was freed
+	uint64_t free_ms;
+	//! Nonzero if the mapping can commit and decommit its tail
+	uint32_t decommit;
+} huge_cache_slot_t;
+
 typedef struct huge_cache_t {
 	//! Cache lock
 	atomic_uintptr_t lock;
@@ -2297,17 +2327,20 @@ typedef struct huge_cache_t {
 	uint64_t epoch_ms;
 	//! Time the least recently freed cached mapping has been idle for an epoch, zero when the cache is empty
 	atomic_ullong idle_ms;
-	//! Free sequence counter, orders cached mappings by recency (the coarse clock has many ties)
-	uint64_t free_seq;
-	//! Cached mappings with their free timestamp and sequence number
-	struct {
-		span_t* span;
-		uint64_t free_ms;
-		uint64_t free_seq;
-	} slot[HUGE_CACHE_SLOT_COUNT];
+	//! Number of cached mappings
+	uint32_t count;
+	//! Cached mappings, least recently freed first
+	huge_cache_slot_t slot[HUGE_CACHE_SLOT_COUNT];
 } huge_cache_t;
 
 static huge_cache_t global_huge_cache;
+
+//! A cached mapping taken out of the cache to decommit the committed bytes beyond the given size outside the lock
+typedef struct huge_cache_trim_t {
+	span_t* span;
+	size_t committed;
+	uint64_t free_ms;
+} huge_cache_trim_t;
 
 static inline void
 huge_cache_lock_acquire(void) {
@@ -2356,64 +2389,126 @@ huge_cache_budget(void) {
 	return peak + headroom;
 }
 
+//! Remove the slot from the cache, keeping the order of the others (lock held)
+static void
+huge_cache_remove(uint32_t islot) {
+	huge_cache_slot_t* slot = global_huge_cache.slot;
+	global_huge_cache.cached -= slot[islot].committed;
+	--global_huge_cache.count;
+	memmove(slot + islot, slot + islot + 1, (global_huge_cache.count - islot) * sizeof(huge_cache_slot_t));
+}
+
 //! Remove the mappings idle for an epoch, then the least recently freed ones while cached and live bytes plus the
-//! given extra bytes are over the budget or cached bytes plus the extra bytes are over the cached limit. Removed
-//! spans are stored in the purge array, to be unmapped outside the lock (lock held)
-static uint32_t
-huge_cache_evict(uint64_t now, size_t extra, span_t** purge) {
-	size_t budget = huge_cache_budget();
-	size_t cached_limit = (size_t)HUGE_CACHE_CACHED_LIMIT;
-	uint32_t purge_count = 0;
-	uint32_t oldest;
-	while (1) {
-		oldest = HUGE_CACHE_SLOT_COUNT;
-		for (uint32_t islot = 0; islot < HUGE_CACHE_SLOT_COUNT; ++islot) {
-			span_t* span = global_huge_cache.slot[islot].span;
-			if (!span)
-				continue;
-			if (now >= (global_huge_cache.slot[islot].free_ms + HUGE_CACHE_EPOCH_MS)) {
-				global_huge_cache.slot[islot].span = 0;
-				global_huge_cache.cached -= span_huge_committed(span);
-				purge[purge_count++] = span;
-			} else if ((oldest == HUGE_CACHE_SLOT_COUNT) ||
-			           (global_huge_cache.slot[islot].free_seq < global_huge_cache.slot[oldest].free_seq)) {
-				oldest = islot;
+//! given extra bytes are over the given budget or cached bytes plus the extra bytes are over the cached limit. The
+//! removed mappings are chained to the purge list through the span next pointer, to be unmapped outside the lock.
+//! The mappings are ordered by the time they were freed, so both are the first ones. A mapping over the bounds that
+//! can decommit and holds more than the excess is taken out to be trimmed by it outside the lock instead, as
+//! unmapping the whole mapping would leave the budget unused by that much and the next request reusing a mapping
+//! would fault in the pages again (lock held)
+static span_t*
+huge_cache_evict(uint64_t now, size_t extra, size_t budget, span_t* purge, huge_cache_trim_t* trim) {
+	huge_cache_slot_t* slot = global_huge_cache.slot;
+	uint32_t count = global_huge_cache.count;
+	uint32_t evict = 0;
+	while (evict < count) {
+		size_t used = global_huge_cache.live + global_huge_cache.cached + extra;
+		size_t cached = global_huge_cache.cached + extra;
+		int idle = (now >= (slot[evict].free_ms + HUGE_CACHE_EPOCH_MS));
+		if (!idle && (used <= budget) && (cached <= (size_t)HUGE_CACHE_CACHED_LIMIT))
+			break;
+		global_huge_cache.cached -= slot[evict].committed;
+		if (!idle && !trim->span && slot[evict].decommit) {
+			size_t over = (used > budget) ? (used - budget) : 0;
+			if ((cached > (size_t)HUGE_CACHE_CACHED_LIMIT) && ((cached - (size_t)HUGE_CACHE_CACHED_LIMIT) > over))
+				over = cached - (size_t)HUGE_CACHE_CACHED_LIMIT;
+			// The tail is decommitted from a huge page boundary in transparent huge page mode
+			size_t granularity = (global_thp_mask & (1U << PAGE_HUGE)) ? os_thp_size : slot[evict].span->page_size;
+			size_t committed = slot[evict].committed;
+			if (committed > (over + granularity)) {
+				size_t keep = committed - over;
+				trim->span = slot[evict].span;
+				trim->committed = keep - (keep % granularity);
+				trim->free_ms = slot[evict].free_ms;
+				++evict;
+				break;
 			}
 		}
-		if ((oldest == HUGE_CACHE_SLOT_COUNT) ||
-		    (((global_huge_cache.live + global_huge_cache.cached + extra) <= budget) &&
-		     ((global_huge_cache.cached + extra) <= cached_limit)))
-			break;
-		span_t* span = global_huge_cache.slot[oldest].span;
-		global_huge_cache.slot[oldest].span = 0;
-		global_huge_cache.cached -= span_huge_committed(span);
-		purge[purge_count++] = span;
+		slot[evict].span->next = purge;
+		purge = slot[evict].span;
+		++evict;
 	}
-	uint64_t idle_ms = 0;
-	if (oldest != HUGE_CACHE_SLOT_COUNT)
-		idle_ms = global_huge_cache.slot[oldest].free_ms + HUGE_CACHE_EPOCH_MS;
+	if (evict) {
+		count -= evict;
+		memmove(slot, slot + evict, count * sizeof(huge_cache_slot_t));
+		global_huge_cache.count = count;
+	}
+	uint64_t idle_ms = count ? (slot[0].free_ms + HUGE_CACHE_EPOCH_MS) : 0;
 	atomic_store_explicit(&global_huge_cache.idle_ms, idle_ms, memory_order_relaxed);
-	return purge_count;
+	return purge;
 }
 
 static void
-huge_cache_unmap(span_t** purge, uint32_t purge_count) {
-	for (uint32_t ispan = 0; ispan < purge_count; ++ispan)
-		global_memory_interface->memory_unmap(purge[ispan], purge[ispan]->offset, purge[ispan]->mapped_size);
+huge_cache_unmap(span_t* purge) {
+	while (purge) {
+		span_t* next = purge->next;
+		global_memory_interface->memory_unmap(purge, purge->offset, purge->mapped_size);
+		purge = next;
+	}
+}
+
+//! Decommit the tail of a mapping taken out of the cache to be trimmed, and cache it again at its place in the order
+//! of the time it was freed if it still fits the bounds, otherwise unmap it
+static void
+huge_cache_trim(huge_cache_trim_t* trim) {
+	span_t* span = trim->span;
+	if (!span)
+		return;
+	size_t committed = span_huge_committed(span);
+	if (global_memory_interface->memory_decommit(pointer_offset(span, trim->committed), committed - trim->committed)) {
+		global_memory_interface->memory_unmap(span, span->offset, span->mapped_size);
+		return;
+	}
+	span->page_count = (uint32_t)(trim->committed / span->page_size);
+	committed = trim->committed;
+	int cached = 0;
+	huge_cache_lock_acquire();
+	uint32_t count = global_huge_cache.count;
+	if ((count < HUGE_CACHE_SLOT_COUNT) &&
+	    ((global_huge_cache.live + global_huge_cache.cached + committed) <= huge_cache_budget()) &&
+	    ((global_huge_cache.cached + committed) <= (size_t)HUGE_CACHE_CACHED_LIMIT)) {
+		huge_cache_slot_t* slot = global_huge_cache.slot;
+		uint32_t islot = count;
+		while (islot && (slot[islot - 1].free_ms > trim->free_ms))
+			--islot;
+		memmove(slot + islot + 1, slot + islot, (count - islot) * sizeof(huge_cache_slot_t));
+		slot[islot].span = span;
+		slot[islot].committed = committed;
+		slot[islot].range = (size_t)span->mapped_size - span->offset;
+		slot[islot].free_ms = trim->free_ms;
+		slot[islot].decommit = 1;
+		global_huge_cache.count = count + 1;
+		global_huge_cache.cached += committed;
+		atomic_store_explicit(&global_huge_cache.idle_ms, slot[0].free_ms + HUGE_CACHE_EPOCH_MS, memory_order_relaxed);
+		cached = 1;
+	}
+	huge_cache_lock_release();
+	if (!cached)
+		global_memory_interface->memory_unmap(span, span->offset, span->mapped_size);
 }
 
 //! Add committed and requested bytes to the live huge blocks, evicting cached mappings over the budget
 static void
 huge_cache_live_add(size_t committed, size_t request) {
-	span_t* purge[HUGE_CACHE_SLOT_COUNT];
 	uint64_t now = monotonic_time_ms();
 	huge_cache_lock_acquire();
 	global_huge_cache.live += committed;
 	global_huge_cache.live_request += request;
 	huge_cache_epoch(now);
-	uint32_t purge_count = huge_cache_evict(now, 0, purge);
+	huge_cache_trim_t trim = {0};
+	span_t* purge = huge_cache_evict(now, 0, huge_cache_budget(), 0, &trim);
 	huge_cache_lock_release();
-	huge_cache_unmap(purge, purge_count);
+	huge_cache_unmap(purge);
+	huge_cache_trim(&trim);
 }
 
 //! Remove committed and requested bytes from the live huge blocks
@@ -2428,17 +2523,18 @@ huge_cache_live_sub(size_t committed, size_t request) {
 //! Unmap cached huge mappings idle for an epoch and the ones over the decayed budget. Called from paths outside
 //! the huge block paths, so a program that stops using huge blocks does not keep the cache until its next huge
 //! block allocation or free
-static void
+static NOINLINE void
 huge_cache_collect(uint64_t now) {
 	uint64_t idle_ms = (uint64_t)atomic_load_explicit(&global_huge_cache.idle_ms, memory_order_relaxed);
 	if (!idle_ms || (now < idle_ms))
 		return;
-	span_t* purge[HUGE_CACHE_SLOT_COUNT];
 	huge_cache_lock_acquire();
 	huge_cache_epoch(now);
-	uint32_t purge_count = huge_cache_evict(now, 0, purge);
+	huge_cache_trim_t trim = {0};
+	span_t* purge = huge_cache_evict(now, 0, huge_cache_budget(), 0, &trim);
 	huge_cache_lock_release();
-	huge_cache_unmap(purge, purge_count);
+	huge_cache_unmap(purge);
+	huge_cache_trim(&trim);
 }
 
 //! Unmap cached huge mappings idle for an epoch from the page refill path. The clock is read only while the cache
@@ -2452,30 +2548,26 @@ huge_cache_collect_idle(void) {
 //! Unmap all cached huge mappings, the cache must not outlive allocator finalization
 static void
 huge_cache_flush(void) {
-	span_t* purge[HUGE_CACHE_SLOT_COUNT];
-	uint32_t purge_count = 0;
+	span_t* purge = 0;
 	huge_cache_lock_acquire();
-	for (uint32_t islot = 0; islot < HUGE_CACHE_SLOT_COUNT; ++islot) {
-		span_t* span = global_huge_cache.slot[islot].span;
-		if (span) {
-			global_huge_cache.slot[islot].span = 0;
-			purge[purge_count++] = span;
-		}
+	for (uint32_t islot = 0; islot < global_huge_cache.count; ++islot) {
+		global_huge_cache.slot[islot].span->next = purge;
+		purge = global_huge_cache.slot[islot].span;
 	}
+	global_huge_cache.count = 0;
 	global_huge_cache.cached = 0;
 	atomic_store_explicit(&global_huge_cache.idle_ms, 0, memory_order_relaxed);
 	global_huge_cache.peak[0] = global_huge_cache.live_request;
 	global_huge_cache.peak[1] = global_huge_cache.live_request;
 	global_huge_cache.epoch_ms = 0;
 	huge_cache_lock_release();
-	huge_cache_unmap(purge, purge_count);
+	huge_cache_unmap(purge);
 }
 
 //! Remove a freed huge block from the live blocks and try to cache its mapping, returns nonzero if cached
 static int
 huge_cache_push(span_t* span) {
 	size_t committed = span_huge_committed(span);
-	span_t* purge[HUGE_CACHE_SLOT_COUNT];
 	int cached = 0;
 	uint64_t now = monotonic_time_ms();
 	huge_cache_lock_acquire();
@@ -2490,70 +2582,78 @@ huge_cache_push(span_t* span) {
 	// mappings
 	int cacheable = (span->page_size == global_config.page_size) && (committed <= (size_t)HUGE_CACHE_CACHED_LIMIT) &&
 	                ((global_huge_cache.live + committed) <= huge_cache_budget());
-	uint32_t purge_count = huge_cache_evict(now, cacheable ? committed : 0, purge);
+	huge_cache_trim_t trim = {0};
+	span_t* purge = huge_cache_evict(now, cacheable ? committed : 0, huge_cache_budget(), 0, &trim);
 	if (cacheable && ((global_huge_cache.live + global_huge_cache.cached + committed) <= huge_cache_budget()) &&
 	    ((global_huge_cache.cached + committed) <= (size_t)HUGE_CACHE_CACHED_LIMIT)) {
-		uint32_t free_slot = HUGE_CACHE_SLOT_COUNT;
-		uint32_t oldest = 0;
-		for (uint32_t islot = 0; islot < HUGE_CACHE_SLOT_COUNT; ++islot) {
-			if (!global_huge_cache.slot[islot].span) {
-				free_slot = islot;
-				break;
-			}
-			if (global_huge_cache.slot[islot].free_seq < global_huge_cache.slot[oldest].free_seq)
-				oldest = islot;
-		}
-		if (free_slot == HUGE_CACHE_SLOT_COUNT) {
+		huge_cache_slot_t* slot = global_huge_cache.slot;
+		if (global_huge_cache.count == HUGE_CACHE_SLOT_COUNT) {
 			// All slots in use (and none evicted above), replace the least recently freed mapping
-			span_t* evicted = global_huge_cache.slot[oldest].span;
-			global_huge_cache.cached -= span_huge_committed(evicted);
-			purge[purge_count++] = evicted;
-			free_slot = oldest;
+			slot[0].span->next = purge;
+			purge = slot[0].span;
+			huge_cache_remove(0);
 		}
-		global_huge_cache.slot[free_slot].span = span;
-		global_huge_cache.slot[free_slot].free_ms = now;
-		global_huge_cache.slot[free_slot].free_seq = ++global_huge_cache.free_seq;
+		uint32_t count = global_huge_cache.count;
+		// The clock was read before taking the lock, keep the slots ordered by the time they were freed
+		uint64_t free_ms = now;
+		if (count && (slot[count - 1].free_ms > free_ms))
+			free_ms = slot[count - 1].free_ms;
+		slot[count].span = span;
+		slot[count].committed = committed;
+		slot[count].range = (size_t)span->mapped_size - span->offset;
+		slot[count].free_ms = free_ms;
+		slot[count].decommit = span->commit_on_demand;
+		global_huge_cache.count = count + 1;
 		global_huge_cache.cached += committed;
-		if (!atomic_load_explicit(&global_huge_cache.idle_ms, memory_order_relaxed))
-			atomic_store_explicit(&global_huge_cache.idle_ms, now + HUGE_CACHE_EPOCH_MS, memory_order_relaxed);
+		atomic_store_explicit(&global_huge_cache.idle_ms, slot[0].free_ms + HUGE_CACHE_EPOCH_MS, memory_order_relaxed);
 		cached = 1;
 	}
 	huge_cache_lock_release();
-	huge_cache_unmap(purge, purge_count);
+	huge_cache_unmap(purge);
+	huge_cache_trim(&trim);
 	return cached;
 }
 
 //! Add a huge block allocation of the given (page aligned) size to the live blocks and take the cached mapping
 //! that fits it best, returns 0 on a miss. A mapping that can decommit fits a request within its address range
-//! and of at least a quarter of its committed size, the best one needs the fewest bytes committed up to the
-//! request or decommitted down to twice the request. A larger mapping is left for a larger request, since
-//! decommitting more than twice the request to save the faults of a fresh mapping of the request size loses
-//! more committed memory than it saves. A reused mapping keeps committed pages beyond the request, up to twice
-//! the request, only within the room left under the budget. Other mappings are reused only for requests of at
-//! least half their committed size and keep all their committed pages. The committed size the block is accounted
-//! with, the request size on a miss, is returned in commit_size.
+//! and of at least two fifths of its committed size, the best one needs the fewest bytes committed up to the
+//! request or decommitted down to twice the request, the most recently freed of those. A larger mapping is left
+//! for a larger request: reusing it decommits more than half the request beyond twice the request, pages a larger
+//! request would reuse, and with the cache full of large mappings the smaller requests of a program decommitted
+//! their pages for the larger requests to fault in again. A reused mapping keeps committed pages beyond the
+//! request, up to twice the request, only within the room left under the budget. Other mappings are reused only
+//! for requests of at least half their committed size and keep all their committed pages. The committed size the
+//! block is accounted with, the request size on a miss, is returned in commit_size. A request missing the cache
+//! while it holds mappings too large for it takes the committed bytes it maps out of the cache, trimming or
+//! unmapping the least recently freed mappings by them, as a program allocating smaller blocks after freeing
+//! larger ones would otherwise keep the larger mappings cached on top of the smaller blocks until they are idle.
 static span_t*
 huge_cache_pop(size_t alloc_size, size_t* commit_size) {
 	size_t slack_limit = (alloc_size <= (SIZE_MAX / 2)) ? (alloc_size * 2) : SIZE_MAX;
-	size_t reuse_limit = (slack_limit <= (SIZE_MAX / 2)) ? (slack_limit * 2) : SIZE_MAX;
-	span_t* purge[HUGE_CACHE_SLOT_COUNT];
+	size_t reuse_limit = (alloc_size <= (SIZE_MAX / 5)) ? ((alloc_size * 5) / 2) : SIZE_MAX;
 	span_t* best = 0;
 	size_t best_cost = 0;
 	size_t best_committed = 0;
-	uint32_t best_slot = 0;
+	uint32_t best_decommit = 0;
 	uint64_t now = monotonic_time_ms();
 	huge_cache_lock_acquire();
 	global_huge_cache.live_request += alloc_size;
 	huge_cache_epoch(now);
-	for (uint32_t islot = 0; islot < HUGE_CACHE_SLOT_COUNT; ++islot) {
-		span_t* span = global_huge_cache.slot[islot].span;
-		if (!span)
-			continue;
-		size_t committed = span_huge_committed(span);
+	size_t used = global_huge_cache.live + global_huge_cache.cached;
+	uint32_t count = global_huge_cache.count;
+	uint32_t best_slot = count;
+	int too_large = 0;
+	for (uint32_t islot = 0; islot < count; ++islot) {
+		const huge_cache_slot_t* slot = global_huge_cache.slot + islot;
+		size_t committed = slot->committed;
 		size_t cost = 0;
-		if (span->commit_on_demand) {
-			if ((((size_t)span->mapped_size - span->offset) < alloc_size) || (committed > reuse_limit))
+		if (slot->decommit) {
+			if (slot->range < alloc_size)
 				continue;
+			if (committed > reuse_limit) {
+				too_large = 1;
+				continue;
+			}
 			if (committed < alloc_size)
 				cost = alloc_size - committed;
 			else if (committed > slack_limit)
@@ -2561,34 +2661,37 @@ huge_cache_pop(size_t alloc_size, size_t* commit_size) {
 		} else if ((committed < alloc_size) || (committed > slack_limit)) {
 			continue;
 		}
-		if (!best || (cost < best_cost) || ((cost == best_cost) && (committed < best_committed))) {
-			best = span;
+		if ((best_slot == count) || (cost < best_cost) || ((cost == best_cost) && (committed <= best_committed))) {
+			best_slot = islot;
 			best_cost = cost;
 			best_committed = committed;
-			best_slot = islot;
 		}
 	}
 	size_t commit = alloc_size;
 	size_t spare = 0;
-	if (best) {
-		global_huge_cache.slot[best_slot].span = 0;
-		global_huge_cache.cached -= best_committed;
+	if (best_slot < count) {
+		best = global_huge_cache.slot[best_slot].span;
+		best_decommit = global_huge_cache.slot[best_slot].decommit;
+		huge_cache_remove(best_slot);
 		if (best_committed > alloc_size)
 			spare = ((best_committed > slack_limit) ? slack_limit : best_committed) - alloc_size;
 		// A mapping that cannot decommit keeps all its committed pages
-		if (!best->commit_on_demand) {
+		if (!best_decommit) {
 			commit += spare;
 			spare = 0;
 		}
 	}
 	global_huge_cache.live += commit;
-	uint32_t purge_count = huge_cache_evict(now, 0, purge);
+	size_t budget = huge_cache_budget();
+	if (!best && too_large && (budget > used))
+		budget = used;
+	huge_cache_trim_t trim = {0};
+	span_t* purge = huge_cache_evict(now, 0, budget, 0, &trim);
 	if (spare) {
 		// Keep the spare committed pages of the reused mapping only within the room left under the budget, the
 		// cached mappings save more faults than the spare pages. The rest of the tail is decommitted, from a huge
 		// page boundary in transparent huge page mode
-		size_t used = global_huge_cache.live + global_huge_cache.cached;
-		size_t budget = huge_cache_budget();
+		used = global_huge_cache.live + global_huge_cache.cached;
 		size_t room = (budget > used) ? (budget - used) : 0;
 		size_t granularity = (global_thp_mask & (1U << PAGE_HUGE)) ? os_thp_size : best->page_size;
 		if (spare > room) {
@@ -2600,7 +2703,8 @@ huge_cache_pop(size_t alloc_size, size_t* commit_size) {
 		global_huge_cache.live += spare;
 	}
 	huge_cache_lock_release();
-	huge_cache_unmap(purge, purge_count);
+	huge_cache_unmap(purge);
+	huge_cache_trim(&trim);
 	*commit_size = commit;
 	return best;
 }
@@ -3559,7 +3663,8 @@ heap_allocate_block_huge(heap_t* heap, size_t size, size_t zero_size) {
 		size_t offset = 0;
 		size_t mapped_size = 0;
 		int commit_on_demand = os_commit_on_demand();
-		span = memory_interface_map(alloc_size, SPAN_SIZE, &offset, &mapped_size);
+		size_t reserve_size = commit_on_demand ? os_huge_reserve_size(alloc_size) : alloc_size;
+		span = memory_interface_map(reserve_size, SPAN_SIZE, &offset, &mapped_size);
 #if ENABLE_DECOMMIT
 		if (span && commit_on_demand && (global_memory_interface->memory_commit(span, alloc_size) != 0)) {
 			global_memory_interface->memory_unmap(span, offset, mapped_size);
@@ -3575,7 +3680,7 @@ heap_allocate_block_huge(heap_t* heap, size_t size, size_t zero_size) {
 		rpmalloc_assert(!((uintptr_t)span & (SPAN_SIZE - 1)),
 		                "memory_map returned a block not aligned to the span size");
 		_rpmalloc_stat_inc_span_map(heap, PAGE_HUGE);
-		thp_advise(span, alloc_size, PAGE_HUGE);
+		thp_advise(span, reserve_size, PAGE_HUGE);
 		// Huge blocks never use the per-page commit path, the flag records whether the mapping is reserve-only
 		// so the cache can commit and decommit its tail
 		span->commit_on_demand = (uint32_t)commit_on_demand;
@@ -3828,7 +3933,8 @@ span_huge_remap(span_t* span, size_t size) {
 		return 0;
 	size_t offset = 0;
 	size_t mapped_size = 0;
-	void* target = os_mmap(alloc_size, SPAN_SIZE, &offset, &mapped_size);
+	size_t reserve_size = os_commit_on_demand() ? os_huge_reserve_size(alloc_size) : alloc_size;
+	void* target = os_mmap(reserve_size, SPAN_SIZE, &offset, &mapped_size);
 	if (!target)
 		return 0;
 	void* moved = mremap(span, old_mapped_size, mapped_size, MREMAP_MAYMOVE | MREMAP_FIXED, target);
@@ -4530,6 +4636,24 @@ rpmalloc_initialize(rpmalloc_interface_t* memory_interface) {
 	// Large pages on Windows must be committed when mapped and can never be decommitted
 	if (global_config.enable_huge_pages)
 		global_config.disable_decommit = 1;
+#endif
+
+	os_huge_reserve = 0;
+#if ARCH_64BIT && ENABLE_DECOMMIT
+	if (!global_config.disable_decommit && !os_huge_pages && (global_memory_interface->memory_map == os_mmap)) {
+		os_huge_reserve = 1;
+#if PLATFORM_POSIX
+		struct rlimit address_limit;
+		if (!getrlimit(RLIMIT_AS, &address_limit) && (address_limit.rlim_cur != RLIM_INFINITY))
+			os_huge_reserve = 0;
+#endif
+#if defined(__linux__) || defined(__ANDROID__)
+		char overcommit[16];
+		if (os_read_system_file("/proc/sys/vm/overcommit_memory", overcommit, sizeof(overcommit)) &&
+		    (overcommit[0] == '2'))
+			os_huge_reserve = 0;
+#endif
+	}
 #endif
 
 	int thp_always = 0;
