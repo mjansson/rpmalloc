@@ -16,7 +16,7 @@ The code should be easily portable to any platform with atomic operations and an
 This library is put in the public domain; you can redistribute it and/or modify it without any restrictions. Or, if you choose, you can use it under the MIT license. The license is declared as the SPDX expression `Unlicense OR MIT`.
 
 # Performance
-We believe rpmalloc is faster than most popular memory allocators like tcmalloc, hoard, ptmalloc3 and others without causing extra allocated memory overhead in the thread caches compared to these allocators. We also believe the implementation to be easier to read and modify compared to these allocators, as it is a single source file of ~3300 lines of C code. All allocations have a natural 16-byte alignment.
+We believe rpmalloc is faster than most popular memory allocators like tcmalloc, hoard, ptmalloc3 and others without causing extra allocated memory overhead in the thread caches compared to these allocators. We also believe the implementation to be easier to read and modify compared to these allocators, as it is a single source file of ~5900 lines of C code. All allocations have a natural 16-byte alignment.
 
 The chart below shows throughput on the `rptest` benchmark, allocating randomly sized blocks in the `[16, 8000]` bytes range with a linear falloff distribution and cross-thread frees, as the number of threads scales from 1 to 16. Higher is better.
 

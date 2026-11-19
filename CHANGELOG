@@ -1,4 +1,4 @@
-2.0.2
+2.1.0
 
 The page structure keeps the fields the owning thread writes on every free in a cache line apart from the cross-thread
 free list and the fields threads freeing into the page read, and the malloc, free, calloc, realloc and usable size
