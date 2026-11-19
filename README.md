@@ -16,7 +16,7 @@ The code should be easily portable to any platform with atomic operations and an
 This library is put in the public domain; you can redistribute it and/or modify it without any restrictions. Or, if you choose, you can use it under the MIT license. The license is declared as the SPDX expression `Unlicense OR MIT`.
 
 # Performance
-We believe rpmalloc is faster than most popular memory allocators like tcmalloc, hoard, ptmalloc3 and others without causing extra allocated memory overhead in the thread caches compared to these allocators. We also believe the implementation to be easier to read and modify compared to these allocators, as it is a single source file of ~3300 lines of C code. All allocations have a natural 16-byte alignment.
+We believe rpmalloc is faster than most popular memory allocators like tcmalloc, hoard, ptmalloc3 and others without causing extra allocated memory overhead in the thread caches compared to these allocators. We also believe the implementation to be easier to read and modify compared to these allocators, as it is a single source file of ~5900 lines of C code. All allocations have a natural 16-byte alignment.
 
 The chart below shows throughput on the `rptest` benchmark, allocating randomly sized blocks in the `[16, 8000]` bytes range with a linear falloff distribution and cross-thread frees, as the number of threads scales from 1 to 16. Higher is better.
 
@@ -26,7 +26,7 @@ Peak resident memory for the same benchmark, lower is better:
 
 ![rptest peak memory, random [16,8000] bytes, 1-16 threads](benchmark/images/rptest-memory.png)
 
-The numbers were collected on a 13th Gen Intel Core i7-13800H (14 cores / 20 threads) running Ubuntu 26.04, comparing rpmalloc against the current releases of several popular allocators. The actual numbers are not to be interpreted as absolute performance figures, but rather as relative comparisons between the different allocators. For a full allocator comparison across the mimalloc-bench benchmark suite, including peak memory usage, see the [BENCHMARKS](BENCHMARKS.md) file. The captured results and the script that produces these graphs live in the [benchmark](benchmark) directory.
+The numbers were collected on a 13th Gen Intel Core i7-13800H (14 cores / 20 threads) running Ubuntu 26.04, comparing rpmalloc against the current releases of several popular allocators. The actual numbers are not to be interpreted as absolute performance figures, but rather as relative comparisons between the different allocators. For a full allocator comparison across the mimalloc-bench benchmark suite, including peak memory usage, see the [BENCHMARKS](BENCHMARKS.md) file. The captured results and the script that produces these graphs live in the [benchmark](benchmark) directory. To measure rpmalloc in your own program, see [benchmarking your use case](#benchmarking-your-use-case).
 
 # Required functions
 
@@ -75,12 +75,50 @@ To include __malloc.c__ in compilation and provide overrides of standard library
 
 To enable support for first class heaps, define __RPMALLOC_FIRST_CLASS_HEAPS__ to 1 (default is 0, or disabled).
 
+To use transparent huge pages by default in system mode `madvise`, define __ENABLE_THP__ to 1 (default is 0), see [transparent huge pages](#transparent-huge-pages).
+
 The thread heap is a thread local variable declared with the TLS model in __TLS_MODEL__. It defaults to the initial-exec model on most platforms, and to the local-dynamic model in shared objects on Linux with a C library other than glibc, such as musl, which cannot load a library using initial-exec TLS with `dlopen`. Define __TLS_MODEL__ to override it, for example to `__attribute__((tls_model("initial-exec")))` in a shared object that is only loaded at program start, to `__attribute__((tls_model("local-dynamic")))` if loading a library fails because the static TLS space is exhausted, or to nothing to use the compiler default.
 
 # Huge pages
 The allocator has support for huge/large pages on Windows, Linux and MacOS. To enable it, pass a non-zero value in the config value `enable_huge_pages` when initializing the allocator with `rpmalloc_initialize_config`. Explicit huge pages require system configuration (a preallocated huge page pool on Linux, the `SeLockMemoryPrivilege` on Windows). At initialization rpmalloc checks whether huge pages are actually available (on Linux by probing a real huge page mapping, not just reading the configured huge page size). If huge pages were requested but are not available on the system, `rpmalloc_initialize`/`rpmalloc_initialize_config` returns a non-zero value and leaves the allocator uninitialized (the effective `enable_huge_pages` is cleared), so you can detect this and re-initialize without huge pages if desired. On Linux, if an individual huge page backed mapping cannot later be served from the pool the allocator falls back to a normal mapping promoted to transparent huge pages. On Windows, large pages cannot be decommitted, so unused memory ranges are kept committed until unmapped when huge pages are enabled - on Linux unused memory ranges are decommitted if the kernel supports it (5.18 or later for huge page backed mappings).
 
-On Linux and Android the allocator can alternatively use transparent huge pages without requiring any system configuration or preallocated huge page pool. Pass a non-zero value in the config value `enable_thp` and the allocator will advise the kernel to back the memory mappings with transparent huge pages using `madvise(MADV_HUGEPAGE)`. Unlike `enable_huge_pages` this does not affect page size or commit/decommit behaviour. The two modes are mutually exclusive, with `enable_huge_pages` taking precedence.
+On Linux and Android the allocator can instead use transparent huge pages, which need no system configuration or preallocated huge page pool, see [transparent huge pages](#transparent-huge-pages). The two are mutually exclusive, with `enable_huge_pages` taking precedence.
+
+# Transparent huge pages
+On Linux and Android the kernel can back memory by transparent huge pages (usually 2MiB). They mean fewer page faults and TLB misses, but a huge page is resident as soon as any part of it is used, so partly used memory costs more. rpmalloc follows the system mode in `/sys/kernel/mm/transparent_hugepage/enabled`:
+
+| System mode | Default | `enable_thp` = 1 | `disable_thp` = 1 |
+|---|---|---|---|
+| `always` | managed by rpmalloc | managed by rpmalloc | off for the process |
+| `madvise` | off | managed by rpmalloc | off for the process |
+| `never` | off | off | off |
+
+When rpmalloc manages huge pages, it uses them for huge blocks and for the small page spans of heaps using more than one huge page of them. It keeps the spans of the larger page types in normal pages, as their partly used pages would each hold a whole huge page.
+
+Set `enable_thp` or `disable_thp` in the configuration passed to __rpmalloc_initialize_config__. Afterwards `enable_thp` tells whether transparent huge pages are in use. `disable_thp` turns them off for the whole process, including other libraries and child processes. With the standard library override, including `LD_PRELOAD`, rpmalloc is usually initialized before `main`, so instead define __ENABLE_THP__ to 1 when building to turn `enable_thp` on by default.
+
+To check or change the system mode (the selected mode is in brackets; changing it requires root and lasts until reboot, add `transparent_hugepage=madvise` to the kernel command line to keep it):
+
+```
+cat /sys/kernel/mm/transparent_hugepage/enabled
+echo madvise | sudo tee /sys/kernel/mm/transparent_hugepage/enabled
+```
+
+`AnonHugePages` in `/proc/<pid>/smaps_rollup` shows how much of a process is in huge pages. In mimalloc-bench, `enable_thp` in mode `madvise` was 1-3% faster on average for 17-18% more peak memory, and it costs most in programs with many threads using little memory each.
+
+# Benchmarking your use case
+Allocator performance depends on the allocation pattern, the thread count and the system configuration, so measure your own program with its real workload. On Linux, build rpmalloc as a dynamic library and preload it, with no need to relink (`DYLD_INSERT_LIBRARIES` on macOS):
+
+```
+cc -O2 -fPIC -shared -pthread -o librpmalloc.so rpmalloc/rpmalloc.c
+LD_PRELOAD=$PWD/librpmalloc.so /usr/bin/time -f "%e s, %M KiB peak" ./program arguments
+```
+
+- Use the compiler flags, defines and transparent huge page mode of production. In mode `madvise`, compare with a build with `-DENABLE_THP=1`.
+- Run on an idle machine, pinned to the cores and thread count of production (for example `taskset -c 0-7`), at least three times per configuration.
+- On machines with many cores the peak reported by `time` can miss memory of multi-threaded programs; sampling `Rss` in `/proc/<pid>/smaps_rollup` gives the exact peak.
+- When comparing with other allocators, check whether they use huge pages by default, as mimalloc does (`MIMALLOC_ALLOW_THP=0` turns it off).
+- To see where memory goes, build with __ENABLE_STATISTICS__ defined to 1 and call `rpmalloc_dump_statistics(stdout)` before exit (not for timing runs).
 
 # Quick overview
 The allocator uses separate heaps for each thread and partitions memory blocks according to a preconfigured set of size classes, up to 2MiB. Huge blocks above this limit are mapped and unmapped directly. Blocks are allocated from a `page` of multiple blocks, all of the same size class. Each `page` is one of four page types, small, medium-small, medium-large or large, depending on the size class. Each `page` belongs to an even larger `span` of pages, each of the same page type.
