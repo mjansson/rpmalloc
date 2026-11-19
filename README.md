@@ -71,6 +71,8 @@ Integer safety checks on all calls are enabled if __ENABLE_VALIDATE_ARGS__ is de
 
 Asserts are enabled if __ENABLE_ASSERTS__ is defined to 1 (default is 0, or disabled), either on compile command line or by setting the value in `rpmalloc.c`.
 
+An 8 byte size class for blocks of 8 bytes or less is enabled if __ENABLE_8_BYTE_CLASS__ is defined to 1 (default is 0, or disabled). Such blocks are only aligned to 8 bytes, which is enough for any object of that size, while all other blocks keep the 16 byte alignment. Programs making many allocations of 8 bytes or less use less memory, but code relying on every block being 16 byte aligned breaks.
+
 To include __malloc.c__ in compilation and provide overrides of standard library malloc entry points define __ENABLE_OVERRIDE__ to 1 (this is the default).
 
 To enable support for first class heaps, define __RPMALLOC_FIRST_CLASS_HEAPS__ to 1 (default is 0, or disabled).

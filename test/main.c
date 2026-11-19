@@ -101,7 +101,11 @@ test_alloc(void) {
 
 	void* zero_alloc = rpmalloc(0);
 	size_t small_granularity = rpmalloc_usable_size(zero_alloc);
+#if defined(ENABLE_8_BYTE_CLASS) && ENABLE_8_BYTE_CLASS
+	if (small_granularity != 8)
+#else
 	if (small_granularity != 16)
+#endif
 		return test_fail("Unexpected block granularity");
 	rpfree(zero_alloc);
 
@@ -129,6 +133,37 @@ test_alloc(void) {
 	if (rpmalloc_usable_size(testptr) < (128 + small_granularity))
 		return test_fail("Bad base alloc usable size");
 	rpfree(testptr);
+#if defined(ENABLE_8_BYTE_CLASS) && ENABLE_8_BYTE_CLASS
+	// Requests of up to 8 bytes take 8 byte blocks unless they ask for more alignment, and the 16 byte classes above
+	// keep their sizes
+	testptr = rpmalloc(17);
+	if (rpmalloc_usable_size(testptr) != 32)
+		return test_fail("Bad base alloc usable size");
+	rpfree(testptr);
+	for (size_t size = 0; size <= 8; ++size) {
+		unsigned char* small = rpmalloc(size);
+		if (!small || ((uintptr_t)small & 7) || (rpmalloc_usable_size(small) != 8))
+			return test_fail("Allocation of 8 bytes or less not an 8 byte block");
+		memset(small, 0xfe, size);
+		unsigned char* aligned = rpaligned_realloc(small, 16, 8, size, 0);
+		if (!aligned || ((uintptr_t)aligned & 15) || (size && ((aligned[0] != 0xfe) || (aligned[size - 1] != 0xfe))))
+			return test_fail("Aligned reallocation of an 8 byte block not aligned to 16 bytes");
+		rpfree(aligned);
+		void* aligned_small = rpaligned_alloc(16, size);
+		if (!aligned_small || ((uintptr_t)aligned_small & 15) || (rpmalloc_usable_size(aligned_small) < 16))
+			return test_fail("Aligned allocation of 8 bytes or less not aligned to 16 bytes");
+		rpfree(aligned_small);
+		small = rpmalloc(8);
+		memset(small, 0xfe, 8);
+		rpfree(small);
+		small = rpcalloc(1, 8);
+		for (size_t ibyte = 0; ibyte < 8; ++ibyte) {
+			if (small[ibyte])
+				return test_fail("Zeroed allocation of an 8 byte block not zero");
+		}
+		rpfree(small);
+	}
+#endif
 	for (iloop = 128; iloop <= 128 * 1024; ++iloop) {
 		testptr = rpmalloc(iloop);
 		size_t usable_size = rpmalloc_usable_size(testptr);
