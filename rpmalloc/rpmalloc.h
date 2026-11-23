@@ -243,9 +243,18 @@ rpmalloc_thread_initialize(void);
 RPMALLOC_EXPORT void
 rpmalloc_thread_finalize(void);
 
-//! Perform deferred deallocations pending for the calling thread heap
+//! Perform deferred deallocations pending for the calling thread heap: collect the blocks other threads freed into
+//  its full pages, and decommit its free pages beyond the retain count right away. Cheap enough to call often, it
+//  leaves the heap the free blocks and pages it keeps for its next allocations
 RPMALLOC_EXPORT void
 rpmalloc_thread_collect(void);
+
+//! Collect all of the memory the calling thread heap holds without using it: the blocks other threads freed into its
+//  pages, the free blocks it keeps for its next allocations and the pages left without used blocks, including the
+//  last available page of each size class, and decommit its free pages beyond the few small pages it keeps for reuse.
+//  For a thread about to wait for work or stop allocating for a while, its next allocations initialize pages again
+RPMALLOC_EXPORT void
+rpmalloc_thread_collect_unused(void);
 
 //! Query if allocator is initialized for calling thread
 RPMALLOC_EXPORT int

@@ -47,6 +47,8 @@ __rpmalloc_thread_initialize__: Call at each thread start to initialize the thre
 
 __rpmalloc_thread_finalize__: Call at each thread exit to finalize and release the thread heap for reuse by other threads (done automatically at thread exit on platforms supporting thread destructors)
 
+__rpmalloc_thread_collect_unused__: Optionally call to collect all of the memory the calling thread heap holds without using it and decommit its free pages right away, as a thread about to stop allocating for a while can, instead of when the thread next allocates and frees through the decommit delay. __rpmalloc_thread_collect__ is the cheaper collect of what other threads freed into the heap, which leaves the heap what it keeps for its next allocations
+
 __rpmalloc_config__: Get the current runtime configuration of the allocator
 
 Then simply use the __rpmalloc__/__rpfree__ and the other malloc style replacement functions. Remember all allocations are 16-byte aligned, so no need to call the explicit rpmemalign/rpaligned_alloc/rpposix_memalign functions unless you need greater alignment, they are simply wrappers to make it easier to replace in existing code.

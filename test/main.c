@@ -2809,6 +2809,7 @@ test_page_decommit(void) {
 // extends beyond the requested size. It counts the unmapped mappings and the decommitted bytes. The memory is mapped
 // accessible and a decommit discards it, as on Linux, and on Windows too
 static int test_commit_fail_next;
+static int test_commit_collect_next;
 static int test_decommit_fail_next;
 static size_t test_commit_calls;
 static size_t test_commit_fail_maps;
@@ -2850,6 +2851,11 @@ test_commit_fail_commit(void* address, size_t size) {
 	(void)address;
 	(void)size;
 	++test_commit_calls;
+	if (test_commit_collect_next) {
+		// Collects as a map fail callback can before the commit is retried
+		test_commit_collect_next = 0;
+		rpmalloc_thread_collect_unused();
+	}
 	if (!test_commit_fail_next)
 		return 0;
 	test_commit_fail_next = 0;
@@ -3431,7 +3437,8 @@ test_initialize_unmapped(void);
 static int
 test_page_commit_parts(void) {
 	// A page of a span committing on demand commits its memory in parts as its blocks are initialized, so the first
-	// block of a 16MiB large page does not commit the whole page. The parts initialized later read as zero
+	// block of a 16MiB large page does not commit the whole page. The parts initialized later read as zero, and
+	// freeing the blocks and collecting decommits the parts committed
 #if !RPMALLOC_TEST_OVERRIDE
 	test_initialize_unmapped();
 #else
@@ -3468,8 +3475,23 @@ test_page_commit_parts(void) {
 		memset(ptr, 0x5a, size);
 		block[i] = ptr;
 	}
+	rpmalloc_global_statistics(&before);
 	for (unsigned int i = 0; i < PARTS_BLOCKS; ++i)
 		rpfree(block[i]);
+	rpmalloc_thread_collect_unused();
+	rpmalloc_global_statistics(&after);
+	if (can_decommit && before.mapped && ((after.decommitted - before.decommitted) < (PARTS_BLOCKS * size)))
+		return test_fail("Committed parts of a free large page not decommitted after thread collect");
+	// A page holding one block decommits only the parts the block committed
+	block[0] = rpmalloc(size);
+	if (!block[0])
+		return test_fail("Allocation failed");
+	rpfree(block[0]);
+	rpmalloc_global_statistics(&before);
+	rpmalloc_thread_collect_unused();
+	rpmalloc_global_statistics(&after);
+	if (can_decommit && before.mapped && ((after.decommitted - before.decommitted) >= (8 * mib)))
+		return test_fail("Page holding one block decommitted more than the parts it committed");
 	rpmalloc_finalize();
 
 	// When committing the next part of a page fails the allocation fails, and the next allocation commits it. Skipped
@@ -3511,8 +3533,22 @@ test_page_commit_parts(void) {
 			return test_fail("Page filled up committed its memory in more calls than doubling it takes");
 		for (unsigned int i = 0; i < PARTS_BLOCKS; ++i)
 			memset(block[i], 0x5a, size);
-		for (unsigned int i = 1; i < PARTS_BLOCKS; ++i)
+		for (unsigned int i = 0; i < PARTS_BLOCKS; ++i)
 			rpfree(block[i]);
+
+		// A collect from the commit of the first part of a page, as by a map fail callback, leaves the page to the
+		// allocation committing it, which hands out its first block once
+		rpmalloc_thread_collect_unused();
+		test_commit_collect_next = 1;
+		block[0] = rpmalloc(size);
+		block[1] = rpmalloc(size);
+		if (!block[0] || !block[1] || test_commit_collect_next)
+			return test_fail("Allocation failed");
+		if (block[0] == block[1])
+			return test_fail("Block handed out twice after a collect from the commit of its page");
+		memset(block[0], 0x5a, size);
+		memset(block[1], 0x5a, size);
+		rpfree(block[1]);
 	} else {
 		printf("Page commit part failure test skipped\n");
 	}
@@ -3520,6 +3556,210 @@ test_page_commit_parts(void) {
 	rpmalloc_finalize();
 
 	printf("Page commit part tests passed\n");
+	return 0;
+}
+
+enum { UNUSED_SIZE = 200 * 1024, UNUSED_BLOCKS = 10 };
+
+static void
+collect_unused_free_thread(void* arg) {
+	void** block = arg;
+	rpmalloc_thread_initialize();
+	for (unsigned int i = 0; i < UNUSED_BLOCKS; i += 2)
+		rpfree(block[i]);
+	rpmalloc_thread_finalize();
+	thread_exit(0);
+}
+
+static int
+test_collect_unused(void) {
+	// rpmalloc_thread_collect_unused retires the pages holding no used block and decommits them: the last available
+	// page of a size class, which the heap keeps, and a page whose used blocks are in its thread free list and local
+	// free list together. The free medium-large pages are all decommitted
+#if !RPMALLOC_TEST_OVERRIDE
+	test_initialize_unmapped();
+#else
+	rpmalloc_initialize(0);
+#endif
+	const rpmalloc_config_t* config = rpmalloc_config();
+	int can_decommit = !config->disable_decommit && !config->enable_huge_pages && (config->page_size < (1024 * 1024));
+	static void* block[UNUSED_BLOCKS];
+
+	// The last available page of the size class, kept when its only block is freed
+	block[0] = rpmalloc(UNUSED_SIZE);
+	if (!block[0])
+		return test_fail("Allocation failed");
+	memset(block[0], 0xcd, UNUSED_SIZE);
+	rpfree(block[0]);
+	rpmalloc_global_statistics_t before;
+	rpmalloc_global_statistics(&before);
+	rpmalloc_thread_collect_unused();
+	rpmalloc_global_statistics_t after;
+	rpmalloc_global_statistics(&after);
+	if (can_decommit && before.mapped && (after.decommitted <= before.decommitted))
+		return test_fail("Last available page of a size class not decommitted after thread collect");
+
+	// A page whose free blocks the heap keeps for its next allocations: two blocks freed to the page, the next
+	// allocation takes one and hands the other to the heap list, then the others are freed
+	block[0] = rpmalloc(UNUSED_SIZE);
+	block[1] = rpmalloc(UNUSED_SIZE);
+	block[2] = rpmalloc(UNUSED_SIZE);
+	if (!block[0] || !block[1] || !block[2])
+		return test_fail("Allocation failed");
+	rpfree(block[0]);
+	rpfree(block[1]);
+	block[3] = rpmalloc(UNUSED_SIZE);
+	if (!block[3])
+		return test_fail("Allocation failed");
+	rpfree(block[2]);
+	rpfree(block[3]);
+	rpmalloc_global_statistics(&before);
+	rpmalloc_thread_collect_unused();
+	rpmalloc_global_statistics(&after);
+	if (can_decommit && before.mapped && (after.decommitted <= before.decommitted))
+		return test_fail("Page of the free blocks the heap keeps not decommitted after thread collect");
+
+	// Half the blocks of a page freed by another thread and the others by the owner, the page stays available
+	for (unsigned int i = 0; i < UNUSED_BLOCKS; ++i) {
+		block[i] = rpmalloc(UNUSED_SIZE);
+		if (!block[i])
+			return test_fail("Allocation failed");
+		memset(block[i], 0xcd, UNUSED_SIZE);
+	}
+	thread_arg targ;
+	targ.fn = collect_unused_free_thread;
+	targ.arg = block;
+	if (thread_join(thread_run(&targ)) != 0)
+		return test_fail("Free thread failed");
+	for (unsigned int i = 1; i < UNUSED_BLOCKS; i += 2)
+		rpfree(block[i]);
+	rpmalloc_global_statistics(&before);
+	rpmalloc_thread_collect_unused();
+	rpmalloc_global_statistics(&after);
+	if (can_decommit && before.mapped && (after.decommitted <= before.decommitted))
+		return test_fail("Page emptied by thread free and local free not decommitted after thread collect");
+
+	rpmalloc_global_statistics(&before);
+	for (unsigned int i = 0; i < UNUSED_BLOCKS; ++i) {
+		unsigned char* ptr = rpcalloc(1, UNUSED_SIZE);
+		if (!ptr)
+			return test_fail("Allocation failed");
+		for (size_t ibyte = 0; ibyte < UNUSED_SIZE; ++ibyte) {
+			if (ptr[ibyte] != 0)
+				return test_fail("Zeroed allocation not zeroed after collect");
+		}
+		block[i] = ptr;
+	}
+	rpmalloc_global_statistics(&after);
+	if (can_decommit && before.mapped && ((after.committed - before.committed) < (UNUSED_BLOCKS * UNUSED_SIZE)))
+		return test_fail("Blocks of decommitted pages reused without committing them again");
+	for (unsigned int i = 0; i < UNUSED_BLOCKS; ++i)
+		rpfree(block[i]);
+
+	rpmalloc_finalize();
+	printf("Collect unused tests passed\n");
+	return 0;
+}
+
+//! Sort block pointers and check none is handed out twice
+static int
+test_blocks_unique(void** block, size_t count) {
+	for (size_t i = 1; i < count; ++i) {
+		void* value = block[i];
+		size_t j = i;
+		while ((j > 0) && ((uintptr_t)block[j - 1] > (uintptr_t)value)) {
+			block[j] = block[j - 1];
+			--j;
+		}
+		block[j] = value;
+	}
+	for (size_t i = 1; i < count; ++i) {
+		if (block[i] == block[i - 1])
+			return 0;
+	}
+	return 1;
+}
+
+enum { COLLECT_RACE_SIZE = 3000, COLLECT_RACE_BLOCKS = 21 * 16, COLLECT_RACE_ROUNDS = 64 };
+
+typedef struct collect_race_t {
+	void* block[COLLECT_RACE_BLOCKS];
+	atomic_uint round;
+	atomic_uint done;
+} collect_race_t;
+
+static collect_race_t collect_race;
+
+static void
+collect_race_free_thread(void* arg) {
+	(void)sizeof(arg);
+	rpmalloc_thread_initialize();
+	unsigned int rounds = test_scale(COLLECT_RACE_ROUNDS);
+	for (unsigned int round = 1; round <= rounds; ++round) {
+		while (atomic_load_explicit(&collect_race.round, memory_order_acquire) != round)
+			thread_yield();
+		// Every other block, the owner frees the rest, so pages empty from a free by either thread
+		for (unsigned int i = 0; i < COLLECT_RACE_BLOCKS; i += 2)
+			rpfree(collect_race.block[i]);
+		atomic_store_explicit(&collect_race.done, round, memory_order_release);
+	}
+	rpmalloc_thread_finalize();
+	thread_exit(0);
+}
+
+static int
+test_collect_race(void) {
+	// The owner collects while another thread frees blocks into its available pages. A free emptying a page the
+	// collect claims the thread free list of queues the page to the pending list, which retires it, and the collect
+	// leaves the page, so no page is retired twice and no block handed out twice
+	rpmalloc_initialize(0);
+	static void* check[2 * COLLECT_RACE_BLOCKS];
+	atomic_store_explicit(&collect_race.round, 0, memory_order_relaxed);
+	atomic_store_explicit(&collect_race.done, 0, memory_order_relaxed);
+	thread_arg targ;
+	targ.fn = collect_race_free_thread;
+	targ.arg = 0;
+	uintptr_t thread = thread_run(&targ);
+	if (!thread)
+		return test_fail("Unable to create thread");
+	unsigned int rounds = test_scale(COLLECT_RACE_ROUNDS);
+	for (unsigned int round = 1; round <= rounds; ++round) {
+		for (unsigned int i = 0; i < COLLECT_RACE_BLOCKS; ++i) {
+			collect_race.block[i] = rpmalloc(COLLECT_RACE_SIZE);
+			if (!collect_race.block[i])
+				return test_fail("Allocation failed");
+		}
+		atomic_store_explicit(&collect_race.round, round, memory_order_release);
+		for (unsigned int i = 1; i < COLLECT_RACE_BLOCKS; i += 2) {
+			rpfree(collect_race.block[i]);
+			if (!((i + 1) % 8))
+				rpmalloc_thread_collect_unused();
+		}
+		while (atomic_load_explicit(&collect_race.done, memory_order_acquire) != round) {
+			rpmalloc_thread_collect_unused();
+			thread_yield();
+		}
+		rpmalloc_thread_collect_unused();
+		for (unsigned int i = 0; i < 2 * COLLECT_RACE_BLOCKS; ++i) {
+			check[i] = rpmalloc(COLLECT_RACE_SIZE);
+			if (!check[i])
+				return test_fail("Allocation failed");
+		}
+		if (!test_blocks_unique(check, 2 * COLLECT_RACE_BLOCKS))
+			return test_fail("Block handed out twice after collecting alongside thread frees");
+		for (unsigned int i = 0; i < 2 * COLLECT_RACE_BLOCKS; ++i)
+			*(unsigned int*)check[i] = i;
+		for (unsigned int i = 0; i < 2 * COLLECT_RACE_BLOCKS; ++i) {
+			if (*(unsigned int*)check[i] != i)
+				return test_fail("Blocks overlap after collecting alongside thread frees");
+		}
+		for (unsigned int i = 0; i < 2 * COLLECT_RACE_BLOCKS; ++i)
+			rpfree(check[i]);
+	}
+	if (thread_join(thread) != 0)
+		return test_fail("Free thread failed");
+	rpmalloc_finalize();
+	printf("Collect race tests passed\n");
 	return 0;
 }
 
@@ -4865,6 +5105,10 @@ test_run(int argc, char** argv) {
 	if (test_collect_crossthread())
 		return -1;
 	if (test_page_commit_parts())
+		return -1;
+	if (test_collect_unused())
+		return -1;
+	if (test_collect_race())
 		return -1;
 	printf("All tests passed\n");
 	return 0;

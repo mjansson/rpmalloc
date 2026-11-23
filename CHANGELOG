@@ -65,6 +65,13 @@ block of a large size class charged the process commit for 16MiB, which made the
 than the memory it touched. A page filled up makes at most five commit calls. A failed commit fails the allocation
 instead.
 
+New rpmalloc_thread_collect_unused collects all of the memory the heap holds without using it: the free blocks the heap
+keeps for its next allocations of each size class, and the blocks other threads freed into its available pages,
+retiring the pages left without used blocks, including the last available page of each size class the heap keeps to
+spare initializing a page again. The free medium-large and large pages are all decommitted, beyond the free small and
+medium-small pages it keeps for reuse. rpmalloc_thread_collect is unchanged, the cheap collect of what other threads
+freed into the heap.
+
 Zeroed allocations take a page recommitted after a decommit as zero filled only where the system decommit zero fills
 pages (Windows, Linux and Android) and the default memory interface is in use. On the BSDs, and with a custom memory
 interface whose decommit keeps the page content, rpcalloc and rpzalloc could return blocks holding old data.
