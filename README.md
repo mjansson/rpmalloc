@@ -49,7 +49,7 @@ __rpmalloc_thread_finalize__: Call at each thread exit to finalize and release t
 
 __rpmalloc_thread_collect_unused__: Optionally call to collect all of the memory the calling thread heap holds without using it and decommit its free pages right away, as a thread about to stop allocating for a while can, instead of when the thread next allocates and frees through the decommit delay. __rpmalloc_thread_collect__ is the cheaper collect of what other threads freed into the heap, which leaves the heap what it keeps for its next allocations
 
-__rpmalloc_thread_idle_begin__ / __rpmalloc_thread_idle_end__: Optionally call as a thread begins and ends waiting for work, as a worker of a thread pool does. A heap holds memory its thread does not use, freed by other threads or kept for its next allocations, and collects it as its thread allocates, which a waiting thread does not do. While the thread waits, __rpmalloc_reap_idle_heaps__ called periodically from any other thread collects that memory for it. The thread gets the same heap back at __rpmalloc_thread_idle_end__ or its first allocation, so the calls cost about an atomic operation each
+__rpmalloc_thread_idle_begin__ / __rpmalloc_thread_idle_end__: Optionally call as a thread begins and ends waiting for work, as a worker of a thread pool does. A heap holds memory its thread does not use, freed by other threads or kept for its next allocations, and collects it as its thread allocates, which a waiting thread does not do. While the thread waits, __rpmalloc_reap_idle_heaps__ called periodically from any other thread collects that memory for it. The thread gets the same heap back at __rpmalloc_thread_idle_end__ or its first allocation, so the calls cost about an atomic operation each. See [collecting unused memory](#collecting-unused-memory) for an example
 
 __rpmalloc_config__: Get the current runtime configuration of the allocator
 
@@ -155,6 +155,41 @@ rpmalloc provides a first class heap type with explicit heap control API. Heaps 
 
 # Producer-consumer scenario
 Compared to the some other allocators, rpmalloc does not suffer as much from a producer-consumer thread scenario where one thread allocates memory blocks and another thread frees the blocks. In some allocators the free blocks need to traverse both the thread cache of the thread doing the free operations as well as the global cache before being reused in the allocating thread. In rpmalloc the freed blocks are deferred to the owning thread and will be reused as soon as that thread needs more blocks. This enables faster release of completely freed memory pages as blocks in a memory page will not be aliased between different owning threads.
+
+# Collecting unused memory
+A thread heap holds memory its thread does not use: blocks other threads freed into it, and free blocks and pages kept for its next allocations. The heap collects this memory as its thread allocates, so a thread that stops allocating keeps it. Two calls give it back:
+
+- __rpmalloc_thread_collect_unused__ collects it right away, on the calling thread. Call it when a thread is about to stop allocating for a while, for example a loader thread that has finished and sleeps until the next load.
+- __rpmalloc_thread_idle_begin__ and __rpmalloc_thread_idle_end__ around the wait of a thread pool worker leave the collection to another thread calling __rpmalloc_reap_idle_heaps__. Only heaps idle for the given time are reaped, so a worker that gets work again soon pays only for the two calls, about an atomic operation each.
+
+As an example, a server runs 32 worker threads. A burst of requests leaves each worker heap holding blocks freed by the other workers and pages emptied at the end of the burst, and then the server is idle for an hour. With the idle calls around the wait and a reap every second, most of that memory is decommitted within a couple of seconds of the workers going idle, rather than staying committed until the next burst.
+
+```
+static void
+worker_thread(work_queue_t* queue) {
+	for (;;) {
+		job_t* job = work_queue_try_pop(queue);
+		if (!job) {
+			rpmalloc_thread_idle_begin();
+			job = work_queue_wait_pop(queue);  // Blocks until work arrives, without allocating
+			rpmalloc_thread_idle_end();
+		}
+		job_run(job);
+	}
+}
+
+static void
+reap_thread(void) {
+	for (;;) {
+		thread_sleep_ms(1000);
+		// Heaps idle for at least 1000ms, until a call reaps fewer than its limit of 64
+		while (rpmalloc_reap_idle_heaps(1000, 0) == 64)
+			;
+	}
+}
+```
+
+Allocating and freeing between the two calls is safe. An allocation takes the heap back as __rpmalloc_thread_idle_end__ does, waiting for a reap of the heap to finish if one is running, and the __rpmalloc_thread_idle_end__ call after it does nothing. The heap is then not idle for the rest of the wait, and reaps skip it until the thread calls __rpmalloc_thread_idle_begin__ again, so the wait itself should not allocate. A free leaves the heap idle, and is handled as a free by another thread. Calling either function twice in a row does nothing more. Threads using first class heaps are not left idle.
 
 # Best case scenarios
 Threads that keep ownership of allocated memory blocks within the thread and free the blocks from the same thread will have optimal performance.
