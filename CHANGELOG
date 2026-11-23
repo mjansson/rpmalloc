@@ -72,6 +72,14 @@ spare initializing a page again. The free medium-large and large pages are all d
 medium-small pages it keeps for reuse. rpmalloc_thread_collect is unchanged, the cheap collect of what other threads
 freed into the heap.
 
+rpmalloc_thread_idle_begin and rpmalloc_thread_idle_end leave the heap of a thread idle while the thread waits for work,
+and rpmalloc_reap_idle_heaps collects the memory the idle heaps hold without using it from any thread, as
+rpmalloc_thread_collect_unused does for the calling thread. A heap collects the blocks other threads free into its
+pages and decommits its free pages as its thread allocates, so the heap of a thread waiting for work, as the worker
+threads of a pool are most of the time, kept that memory until the thread had work again. The thread gets back the heap
+it left idle, at rpmalloc_thread_idle_end or its first allocation before that, with one atomic operation unless a reap
+of the heap is running, and a heap is only reaped once it has been idle for the time given and used since its last reap.
+
 Zeroed allocations take a page recommitted after a decommit as zero filled only where the system decommit zero fills
 pages (Windows, Linux and Android) and the default memory interface is in use. On the BSDs, and with a custom memory
 interface whose decommit keeps the page content, rpcalloc and rpzalloc could return blocks holding old data.
