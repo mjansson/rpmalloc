@@ -41,7 +41,10 @@
 #include <unistd.h>
 #endif
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
 #include <sys/mman.h>
 #include <pthread.h>
 #endif
@@ -2801,13 +2804,13 @@ test_page_decommit(void) {
 	return 0;
 }
 
-#if !defined(_WIN32)
-
-// Memory interface failing the next commit or decommit when asked to, used by test_huge_cache. It keeps the
-// alignment padding mapped and reports it in the mapped size, so the mapped region extends beyond the requested size.
-// It counts the unmapped mappings and the decommitted bytes
+// Memory interface failing the next commit or decommit when asked to, used by test_huge_cache and
+// test_page_commit_parts. It keeps the alignment padding mapped and reports it in the mapped size, so the mapped region
+// extends beyond the requested size. It counts the unmapped mappings and the decommitted bytes. The memory is mapped
+// accessible and a decommit discards it, as on Linux, and on Windows too
 static int test_commit_fail_next;
 static int test_decommit_fail_next;
+static size_t test_commit_calls;
 static size_t test_commit_fail_maps;
 static size_t test_commit_fail_unmaps;
 static size_t test_commit_fail_decommitted;
@@ -2815,9 +2818,15 @@ static size_t test_commit_fail_decommitted;
 static void*
 test_commit_fail_map(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
 	size_t map_size = size + alignment;
+#if defined(_WIN32)
+	void* ptr = VirtualAlloc(0, map_size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	if (!ptr)
+		return 0;
+#else
 	void* ptr = mmap(0, map_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
 	if (ptr == MAP_FAILED)
 		return 0;
+#endif
 	uintptr_t unalign = alignment ? ((uintptr_t)ptr & (uintptr_t)(alignment - 1)) : 0;
 	*offset = unalign ? (alignment - unalign) : 0;
 	*mapped_size = map_size;
@@ -2827,7 +2836,12 @@ test_commit_fail_map(size_t size, size_t alignment, size_t* offset, size_t* mapp
 
 static void
 test_commit_fail_unmap(void* address, size_t offset, size_t mapped_size) {
+#if defined(_WIN32)
+	(void)sizeof(mapped_size);
+	VirtualFree(pointer_offset(address, -(ptrdiff_t)offset), 0, MEM_RELEASE);
+#else
 	munmap(pointer_offset(address, -(ptrdiff_t)offset), mapped_size);
+#endif
 	++test_commit_fail_unmaps;
 }
 
@@ -2835,6 +2849,7 @@ static int
 test_commit_fail_commit(void* address, size_t size) {
 	(void)address;
 	(void)size;
+	++test_commit_calls;
 	if (!test_commit_fail_next)
 		return 0;
 	test_commit_fail_next = 0;
@@ -2848,10 +2863,14 @@ test_commit_fail_decommit(void* address, size_t size) {
 		return 1;
 	}
 	test_commit_fail_decommitted += size;
+#if defined(_WIN32)
+	if (!VirtualFree(address, size, MEM_DECOMMIT))
+		return 1;
+	return VirtualAlloc(address, size, MEM_COMMIT, PAGE_READWRITE) ? 0 : 1;
+#else
 	return madvise(address, size, MADV_DONTNEED);
-}
-
 #endif
+}
 
 #if !defined(_WIN32)
 // Memory interface keeping the content of the pages it decommits, as an advisory decommit does
@@ -3401,6 +3420,106 @@ test_collect_crossthread(void) {
 
 	rpmalloc_finalize();
 	printf("Cross thread collect tests passed\n");
+	return 0;
+}
+
+#if !RPMALLOC_TEST_OVERRIDE
+static void
+test_initialize_unmapped(void);
+#endif
+
+static int
+test_page_commit_parts(void) {
+	// A page of a span committing on demand commits its memory in parts as its blocks are initialized, so the first
+	// block of a 16MiB large page does not commit the whole page. The parts initialized later read as zero
+#if !RPMALLOC_TEST_OVERRIDE
+	test_initialize_unmapped();
+#else
+	rpmalloc_initialize(0);
+#endif
+	const size_t mib = 1024 * 1024;
+	const size_t size = 1200 * 1024;  // Large page type, 16MiB pages committed in 1MiB parts
+	enum { PARTS_BLOCKS = 13 };
+	static void* block[PARTS_BLOCKS];
+	const rpmalloc_config_t* config = rpmalloc_config();
+	int can_decommit = !config->disable_decommit && !config->enable_huge_pages && (config->page_size < (1024 * 1024));
+
+	rpmalloc_global_statistics_t before;
+	rpmalloc_global_statistics(&before);
+	block[0] = rpmalloc(size);
+	if (!block[0])
+		return test_fail("Allocation failed");
+	rpmalloc_global_statistics_t after;
+	rpmalloc_global_statistics(&after);
+	if (can_decommit && before.mapped && ((after.committed - before.committed) >= (8 * mib)))
+		return test_fail("First block of a large page committed the whole page");
+	if (can_decommit && before.mapped && ((after.committed - before.committed) < size))
+		return test_fail("First block of a large page not committed");
+	memset(block[0], 0x5a, size);
+
+	for (unsigned int i = 1; i < PARTS_BLOCKS; ++i) {
+		unsigned char* ptr = rpcalloc(1, size);
+		if (!ptr)
+			return test_fail("Allocation failed");
+		for (size_t ibyte = 0; ibyte < size; ++ibyte) {
+			if (ptr[ibyte] != 0)
+				return test_fail("Zeroed allocation from a part committed later not zeroed");
+		}
+		memset(ptr, 0x5a, size);
+		block[i] = ptr;
+	}
+	for (unsigned int i = 0; i < PARTS_BLOCKS; ++i)
+		rpfree(block[i]);
+	rpmalloc_finalize();
+
+	// When committing the next part of a page fails the allocation fails, and the next allocation commits it. Skipped
+	// when the interface is not in use (the allocator was initialized by another allocation)
+	rpmalloc_interface_t iface = {0};
+	iface.memory_map = test_commit_fail_map;
+	iface.memory_unmap = test_commit_fail_unmap;
+	iface.memory_commit = test_commit_fail_commit;
+	iface.memory_decommit = test_commit_fail_decommit;
+	test_commit_fail_next = 0;
+	test_commit_fail_maps = 0;
+	rpmalloc_initialize_config(&iface, 0);
+	block[0] = rpmalloc(size);
+	if (!block[0])
+		return test_fail("Allocation failed");
+	if (test_commit_fail_maps && !rpmalloc_config()->disable_decommit) {
+		// The first block committed the first two 1MiB parts, the second block ends in the third part
+		test_commit_fail_next = 1;
+		block[1] = rpmalloc(size);
+		if (block[1] || test_commit_fail_next)
+			return test_fail("Allocation did not fail when committing the next part of the page failed");
+		block[1] = rpmalloc(size);
+		if (!block[1])
+			return test_fail("Allocation failed after a failed commit of the next part of the page");
+		// Each commit at least doubles the committed memory of the page, the second block committed 4MiB, so filling
+		// the page up commits 8MiB and 16MiB. The blocks beyond the page take the next page
+		unsigned int page_blocks = (unsigned int)((16 * mib) / rpmalloc_usable_size(block[0]));
+		if (page_blocks > PARTS_BLOCKS)
+			page_blocks = PARTS_BLOCKS;
+		test_commit_calls = 0;
+		for (unsigned int i = 2; i < PARTS_BLOCKS; ++i) {
+			if ((i == page_blocks) && (test_commit_calls > 2))
+				return test_fail("Page filled up committed its memory in more calls than doubling it takes");
+			block[i] = rpmalloc(size);
+			if (!block[i])
+				return test_fail("Allocation failed");
+		}
+		if ((page_blocks == PARTS_BLOCKS) && (test_commit_calls > 2))
+			return test_fail("Page filled up committed its memory in more calls than doubling it takes");
+		for (unsigned int i = 0; i < PARTS_BLOCKS; ++i)
+			memset(block[i], 0x5a, size);
+		for (unsigned int i = 1; i < PARTS_BLOCKS; ++i)
+			rpfree(block[i]);
+	} else {
+		printf("Page commit part failure test skipped\n");
+	}
+	rpfree(block[0]);
+	rpmalloc_finalize();
+
+	printf("Page commit part tests passed\n");
 	return 0;
 }
 
@@ -4744,6 +4863,8 @@ test_run(int argc, char** argv) {
 	if (test_huge_cache())
 		return -1;
 	if (test_collect_crossthread())
+		return -1;
+	if (test_page_commit_parts())
 		return -1;
 	printf("All tests passed\n");
 	return 0;

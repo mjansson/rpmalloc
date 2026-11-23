@@ -678,6 +678,9 @@ struct page_t {
 			page_t* prev;
 			//! Block count
 			uint32_t block_count;
+			//! Bytes of page memory committed from the page start. A page of a span committing on demand
+			//  commits its memory in parts as its blocks are initialized, the other pages are committed whole
+			uint32_t commit_size;
 			//! Flag set if part of heap full list
 			uint32_t is_full : 1;
 			//! Flag set if part of heap free list
@@ -1758,6 +1761,50 @@ page_get_size(page_t* page) {
 		return page_get_span(page)->page_size;
 }
 
+#ifndef PAGE_COMMIT_PART_SHIFT
+//! A page committing on demand commits its memory as its blocks are initialized, first a part of
+//  1/2^PAGE_COMMIT_PART_SHIFT of the page, of at least a small page and the commit unit, then at least doubling
+//  the committed memory each time. A page of large blocks most often holds a few of them, committing all of it up
+//  front charged the process commit for memory it never touched, and the doubling bounds the commit calls of a page
+//  filled up to PAGE_COMMIT_PART_SHIFT + 1
+#define PAGE_COMMIT_PART_SHIFT 4
+#endif
+
+//! Size of the parts a page of the given size commits its memory in
+static inline size_t
+page_commit_part_size(size_t page_size, uint32_t commit_shift) {
+	size_t part = page_size >> PAGE_COMMIT_PART_SHIFT;
+	if (part < SMALL_PAGE_SIZE)
+		part = SMALL_PAGE_SIZE;
+	if (part < ((size_t)1 << commit_shift))
+		part = (size_t)1 << commit_shift;
+	return (part < page_size) ? part : page_size;
+}
+
+#if ENABLE_DECOMMIT
+//! Commit the memory of a page committing on demand up to at least the given offset from the page start, in whole
+//  parts and at least doubling the committed memory. Returns non-zero if the memory could not be committed
+static NOINLINE int
+page_commit_extend(page_t* page, size_t end) {
+	size_t page_size = page_get_size(page);
+	size_t part = page_commit_part_size(page_size, page->commit_shift);
+	size_t commit_size = page->commit_size;
+	size_t commit_end = (end + (part - 1)) & ~(part - 1);
+	if (commit_end < (commit_size << 1))
+		commit_end = commit_size << 1;
+	if (commit_end > page_size)
+		commit_end = page_size;
+	if (global_memory_interface->memory_commit(pointer_offset(page->block_start, commit_size),
+	                                           commit_end - commit_size) != 0)
+		return 1;
+#if RPMALLOC_HEAP_STATISTICS
+	page->heap->stats.committed_size += commit_end - commit_size;
+#endif
+	page->commit_size = (uint32_t)commit_end;
+	return 0;
+}
+#endif
+
 //! Check if the page is owned by the calling thread. Compares the owning heap with the thread heap
 //  rather than loading heap->owner_thread: the thread heap load does not depend on the page header,
 //  so the check is one dependent load shorter, and a cross-thread free no longer reads the first
@@ -1836,28 +1883,25 @@ page_decommit_memory_pages(page_t* page) {
 	size_t page_size = page_get_size(page);
 	if (page_size < ((size_t)1 << page->commit_shift))
 		return;
-	if (global_memory_interface->memory_decommit(page->block_start, page_size) != 0)
+	// Only the committed part of the page memory is decommitted, the rest was never committed
+	size_t commit_size = page->commit_size;
+	if (commit_size && (global_memory_interface->memory_decommit(page->block_start, commit_size) != 0))
 		return;
 #if RPMALLOC_HEAP_STATISTICS && ENABLE_DECOMMIT
 	if (page->heap)
-		page->heap->stats.committed_size -= page_size;
+		page->heap->stats.committed_size -= commit_size;
 #endif
+	page->commit_size = 0;
 	page->is_decommitted = 1;
 }
 
+//! Make a decommitted page usable again. Its memory is committed in parts as its blocks are initialized
 static inline int
 page_commit_memory_pages(page_t* page) {
 	if (!page->is_decommitted)
 		return 0;
-	size_t page_size = page_get_size(page);
-	if (global_memory_interface->memory_commit(page->block_start, page_size) != 0)
-		return 1;
 	page->is_decommitted = 0;
 #if ENABLE_DECOMMIT
-#if RPMALLOC_HEAP_STATISTICS
-	if (page->heap)
-		page->heap->stats.committed_size += page_size;
-#endif
 #if OS_DECOMMIT_ZEROES
 	// All of the page memory was decommitted, so the OS zero fills it when recommitted - take advantage in
 	// zalloc/calloc calls. A custom memory interface may keep the content of decommitted pages
@@ -2337,6 +2381,13 @@ page_push_local_free_to_heap(page_t* page) {
 static NOINLINE void*
 page_initialize_blocks(page_t* page) {
 	rpmalloc_assert(page->block_initialized < page->block_count, "Block initialization internal failure");
+#if ENABLE_DECOMMIT
+	// Blocks are initialized in address order, the committed part of the page grows ahead of them. A small
+	// page commits all of its memory with its first block, the free list linked below stays within it
+	size_t block_end = ((size_t)page->block_initialized + 1) * page->block_size;
+	if (UNEXPECTED(block_end > page->commit_size) && (page_commit_extend(page, block_end) != 0))
+		return 0;
+#endif
 	block_t* block = page_block(page, page->block_initialized);
 	++page->block_initialized;
 	++page->block_used;
@@ -2393,6 +2444,11 @@ page_allocate_block(page_t* page, size_t zero_size) {
 				return 0;
 			}
 			block = page_initialize_blocks(page);
+#if ENABLE_DECOMMIT
+			// Committing the memory of the block failed
+			if (UNEXPECTED(block == 0))
+				return 0;
+#endif
 			is_zero = page->is_zero;
 		}
 	}
@@ -2456,19 +2512,14 @@ span_allocate_page(span_t* span) {
 	if (UNEXPECTED(page_index == global_thp_small_page) && (span->page_type == PAGE_SMALL))
 		thp_advise_small_span(span);
 
+	// Reserve-only spans commit the page structure here and the page memory in parts as its blocks are
+	// initialized; fully committed spans are already committed from the map and must not be committed per page
 #if ENABLE_DECOMMIT
-	// Reserve-only spans commit the page structure and the page on demand; fully committed spans are
-	// already committed from the map and must not be committed per page
-	if (span->commit_on_demand) {
-		if (span_commit_metadata(span, (size_t)pointer_diff(page, span) + PAGE_HEADER_SIZE) != 0)
-			return 0;
-		if (global_memory_interface->memory_commit(page_memory, span->page_size) != 0)
-			return 0;
-#if RPMALLOC_HEAP_STATISTICS
-		heap->stats.committed_size += span->page_size;
+	if (span->commit_on_demand &&
+	    (span_commit_metadata(span, (size_t)pointer_diff(page, span) + PAGE_HEADER_SIZE) != 0))
+		return 0;
 #endif
-	}
-#endif
+	page->commit_size = span->commit_on_demand ? 0 : span->page_size;
 	++span->page_initialized;
 
 	page->page_type = (uint16_t)span->page_type;
@@ -3683,7 +3734,7 @@ heap_orphan_free_pages(heap_t* heap, page_t* chain) {
 			page_t* next = page->next;
 #if RPMALLOC_HEAP_STATISTICS && ENABLE_DECOMMIT
 			if (!page->is_decommitted)
-				heap->stats.committed_size -= page_get_size(page);
+				heap->stats.committed_size -= page->commit_size;
 #endif
 			page->heap = &global_heap_orphan;
 			page->next = chain;
@@ -3711,7 +3762,7 @@ heap_take_orphan_empty_page(heap_t* heap, uint32_t page_type, uint32_t size_clas
 		return 0;
 #if RPMALLOC_HEAP_STATISTICS && ENABLE_DECOMMIT
 	if (!page->is_decommitted)
-		heap->stats.committed_size += page_get_size(page);
+		heap->stats.committed_size += page->commit_size;
 #endif
 	if (heap_make_free_page_available(heap, size_class, page) != 0)
 		return 0;
@@ -3760,7 +3811,7 @@ heap_orphan_pages(heap_t* heap) {
 				page_set_key(page, PAGE_KEY_GENERIC);
 				page->heap = &global_heap_orphan;
 #if RPMALLOC_HEAP_STATISTICS && ENABLE_DECOMMIT
-				heap->stats.committed_size -= page_get_size(page);
+				heap->stats.committed_size -= page->commit_size;
 #endif
 				_rpmalloc_stat_add_used(heap, iclass, -(int32_t)page->block_used);
 #if ENABLE_STATISTICS
@@ -3823,7 +3874,7 @@ page_orphan_full(page_t* page, heap_t* heap, block_t* head, block_t** tail_link,
 		if (orphaned > 0) {
 			page->heap = &global_heap_orphan;
 #if RPMALLOC_HEAP_STATISTICS && ENABLE_DECOMMIT
-			heap->stats.committed_size -= page_get_size(page);
+			heap->stats.committed_size -= page->commit_size;
 #endif
 			_rpmalloc_stat_add_used(heap, page->size_class, -(int32_t)page->block_used);
 			page_orphan_lock_acquire();
@@ -3856,7 +3907,7 @@ heap_take_orphan_page(heap_t* heap, uint32_t size_class) {
 	page->heap_first_class = 0;
 #endif
 #if RPMALLOC_HEAP_STATISTICS && ENABLE_DECOMMIT
-	heap->stats.committed_size += page_get_size(page);
+	heap->stats.committed_size += page->commit_size;
 #endif
 	page_t* head = heap->page_available[size_class];
 	page->next = head;
@@ -4251,6 +4302,11 @@ heap_allocate_block_small_to_large(heap_t* heap, uint32_t size_class, size_t zer
 			_rpmalloc_stat_inc_alloc(page->heap, size_class);
 			return block;
 		}
+#if ENABLE_DECOMMIT
+		// A page with blocks left to initialize only fails to allocate when committing their memory failed
+		if (UNEXPECTED(page->block_initialized != page->block_count))
+			return 0;
+#endif
 		// Running out of a page is a flush point of the thread free chain, bounding how long the blocks
 		// an allocating thread freed into other heaps stay hidden from their owner, at about one check per
 		// page of allocations

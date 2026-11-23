@@ -58,6 +58,13 @@ as when a thread pool retires idle workers, the free blocks in them were never r
 the orphan pages whose blocks have all been freed, checked at most once a second, are decommitted and taken for pages
 of any size class of their page type.
 
+A page of a span committing on demand commits its memory as its blocks are initialized, first a sixteenth of the page,
+of at least a small page and the commit granularity, then at least doubling the committed memory each time, and
+decommits only what it committed. A page was committed in full when a heap took it, so a large page holding a single
+block of a large size class charged the process commit for 16MiB, which made the commit charge of a heap far larger
+than the memory it touched. A page filled up makes at most five commit calls. A failed commit fails the allocation
+instead.
+
 Zeroed allocations take a page recommitted after a decommit as zero filled only where the system decommit zero fills
 pages (Windows, Linux and Android) and the default memory interface is in use. On the BSDs, and with a custom memory
 interface whose decommit keeps the page content, rpcalloc and rpzalloc could return blocks holding old data.
