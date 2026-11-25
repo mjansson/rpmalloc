@@ -41,7 +41,10 @@
 #include <unistd.h>
 #endif
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
 #include <sys/mman.h>
 #include <pthread.h>
 #endif
@@ -2801,13 +2804,14 @@ test_page_decommit(void) {
 	return 0;
 }
 
-#if !defined(_WIN32)
-
-// Memory interface failing the next commit or decommit when asked to, used by test_huge_cache. It keeps the
-// alignment padding mapped and reports it in the mapped size, so the mapped region extends beyond the requested size.
-// It counts the unmapped mappings and the decommitted bytes
+// Memory interface failing the next commit or decommit when asked to, used by test_huge_cache and
+// test_page_commit_parts. It keeps the alignment padding mapped and reports it in the mapped size, so the mapped region
+// extends beyond the requested size. It counts the unmapped mappings and the decommitted bytes. The memory is mapped
+// accessible and a decommit discards it, as on Linux, and on Windows too
 static int test_commit_fail_next;
+static int test_commit_collect_next;
 static int test_decommit_fail_next;
+static size_t test_commit_calls;
 static size_t test_commit_fail_maps;
 static size_t test_commit_fail_unmaps;
 static size_t test_commit_fail_decommitted;
@@ -2815,9 +2819,15 @@ static size_t test_commit_fail_decommitted;
 static void*
 test_commit_fail_map(size_t size, size_t alignment, size_t* offset, size_t* mapped_size) {
 	size_t map_size = size + alignment;
+#if defined(_WIN32)
+	void* ptr = VirtualAlloc(0, map_size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	if (!ptr)
+		return 0;
+#else
 	void* ptr = mmap(0, map_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
 	if (ptr == MAP_FAILED)
 		return 0;
+#endif
 	uintptr_t unalign = alignment ? ((uintptr_t)ptr & (uintptr_t)(alignment - 1)) : 0;
 	*offset = unalign ? (alignment - unalign) : 0;
 	*mapped_size = map_size;
@@ -2827,7 +2837,12 @@ test_commit_fail_map(size_t size, size_t alignment, size_t* offset, size_t* mapp
 
 static void
 test_commit_fail_unmap(void* address, size_t offset, size_t mapped_size) {
+#if defined(_WIN32)
+	(void)sizeof(mapped_size);
+	VirtualFree(pointer_offset(address, -(ptrdiff_t)offset), 0, MEM_RELEASE);
+#else
 	munmap(pointer_offset(address, -(ptrdiff_t)offset), mapped_size);
+#endif
 	++test_commit_fail_unmaps;
 }
 
@@ -2835,6 +2850,12 @@ static int
 test_commit_fail_commit(void* address, size_t size) {
 	(void)address;
 	(void)size;
+	++test_commit_calls;
+	if (test_commit_collect_next) {
+		// Collects as a map fail callback can before the commit is retried
+		test_commit_collect_next = 0;
+		rpmalloc_thread_collect_unused();
+	}
 	if (!test_commit_fail_next)
 		return 0;
 	test_commit_fail_next = 0;
@@ -2848,10 +2869,14 @@ test_commit_fail_decommit(void* address, size_t size) {
 		return 1;
 	}
 	test_commit_fail_decommitted += size;
+#if defined(_WIN32)
+	if (!VirtualFree(address, size, MEM_DECOMMIT))
+		return 1;
+	return VirtualAlloc(address, size, MEM_COMMIT, PAGE_READWRITE) ? 0 : 1;
+#else
 	return madvise(address, size, MADV_DONTNEED);
-}
-
 #endif
+}
 
 #if !defined(_WIN32)
 // Memory interface keeping the content of the pages it decommits, as an advisory decommit does
@@ -3401,6 +3426,988 @@ test_collect_crossthread(void) {
 
 	rpmalloc_finalize();
 	printf("Cross thread collect tests passed\n");
+	return 0;
+}
+
+#if !RPMALLOC_TEST_OVERRIDE
+static void
+test_initialize_unmapped(void);
+#endif
+
+static int
+test_page_commit_parts(void) {
+	// A page of a span committing on demand commits its memory in parts as its blocks are initialized, so the first
+	// block of a 16MiB large page does not commit the whole page. The parts initialized later read as zero, and
+	// freeing the blocks and collecting decommits the parts committed
+#if !RPMALLOC_TEST_OVERRIDE
+	test_initialize_unmapped();
+#else
+	rpmalloc_initialize(0);
+#endif
+	const size_t mib = 1024 * 1024;
+	const size_t size = 1200 * 1024;  // Large page type, 16MiB pages committed in 1MiB parts
+	enum { PARTS_BLOCKS = 13 };
+	static void* block[PARTS_BLOCKS];
+	const rpmalloc_config_t* config = rpmalloc_config();
+	int can_decommit = !config->disable_decommit && !config->enable_huge_pages && (config->page_size < (1024 * 1024));
+
+	rpmalloc_global_statistics_t before;
+	rpmalloc_global_statistics(&before);
+	block[0] = rpmalloc(size);
+	if (!block[0])
+		return test_fail("Allocation failed");
+	rpmalloc_global_statistics_t after;
+	rpmalloc_global_statistics(&after);
+	if (can_decommit && before.mapped && ((after.committed - before.committed) >= (8 * mib)))
+		return test_fail("First block of a large page committed the whole page");
+	if (can_decommit && before.mapped && ((after.committed - before.committed) < size))
+		return test_fail("First block of a large page not committed");
+	memset(block[0], 0x5a, size);
+
+	for (unsigned int i = 1; i < PARTS_BLOCKS; ++i) {
+		unsigned char* ptr = rpcalloc(1, size);
+		if (!ptr)
+			return test_fail("Allocation failed");
+		for (size_t ibyte = 0; ibyte < size; ++ibyte) {
+			if (ptr[ibyte] != 0)
+				return test_fail("Zeroed allocation from a part committed later not zeroed");
+		}
+		memset(ptr, 0x5a, size);
+		block[i] = ptr;
+	}
+	rpmalloc_global_statistics(&before);
+	for (unsigned int i = 0; i < PARTS_BLOCKS; ++i)
+		rpfree(block[i]);
+	rpmalloc_thread_collect_unused();
+	rpmalloc_global_statistics(&after);
+	if (can_decommit && before.mapped && ((after.decommitted - before.decommitted) < (PARTS_BLOCKS * size)))
+		return test_fail("Committed parts of a free large page not decommitted after thread collect");
+	// A page holding one block decommits only the parts the block committed
+	block[0] = rpmalloc(size);
+	if (!block[0])
+		return test_fail("Allocation failed");
+	rpfree(block[0]);
+	rpmalloc_global_statistics(&before);
+	rpmalloc_thread_collect_unused();
+	rpmalloc_global_statistics(&after);
+	if (can_decommit && before.mapped && ((after.decommitted - before.decommitted) >= (8 * mib)))
+		return test_fail("Page holding one block decommitted more than the parts it committed");
+	rpmalloc_finalize();
+
+	// When committing the next part of a page fails the allocation fails, and the next allocation commits it. Skipped
+	// when the interface is not in use (the allocator was initialized by another allocation)
+	rpmalloc_interface_t iface = {0};
+	iface.memory_map = test_commit_fail_map;
+	iface.memory_unmap = test_commit_fail_unmap;
+	iface.memory_commit = test_commit_fail_commit;
+	iface.memory_decommit = test_commit_fail_decommit;
+	test_commit_fail_next = 0;
+	test_commit_fail_maps = 0;
+	rpmalloc_initialize_config(&iface, 0);
+	block[0] = rpmalloc(size);
+	if (!block[0])
+		return test_fail("Allocation failed");
+	if (test_commit_fail_maps && !rpmalloc_config()->disable_decommit) {
+		// The first block committed the first two 1MiB parts, the second block ends in the third part
+		test_commit_fail_next = 1;
+		block[1] = rpmalloc(size);
+		if (block[1] || test_commit_fail_next)
+			return test_fail("Allocation did not fail when committing the next part of the page failed");
+		block[1] = rpmalloc(size);
+		if (!block[1])
+			return test_fail("Allocation failed after a failed commit of the next part of the page");
+		// Each commit at least doubles the committed memory of the page, the second block committed 4MiB, so filling
+		// the page up commits 8MiB and 16MiB. The blocks beyond the page take the next page
+		unsigned int page_blocks = (unsigned int)((16 * mib) / rpmalloc_usable_size(block[0]));
+		if (page_blocks > PARTS_BLOCKS)
+			page_blocks = PARTS_BLOCKS;
+		test_commit_calls = 0;
+		for (unsigned int i = 2; i < PARTS_BLOCKS; ++i) {
+			if ((i == page_blocks) && (test_commit_calls > 2))
+				return test_fail("Page filled up committed its memory in more calls than doubling it takes");
+			block[i] = rpmalloc(size);
+			if (!block[i])
+				return test_fail("Allocation failed");
+		}
+		if ((page_blocks == PARTS_BLOCKS) && (test_commit_calls > 2))
+			return test_fail("Page filled up committed its memory in more calls than doubling it takes");
+		for (unsigned int i = 0; i < PARTS_BLOCKS; ++i)
+			memset(block[i], 0x5a, size);
+		for (unsigned int i = 0; i < PARTS_BLOCKS; ++i)
+			rpfree(block[i]);
+
+		// A collect from the commit of the first part of a page, as by a map fail callback, leaves the page to the
+		// allocation committing it, which hands out its first block once
+		rpmalloc_thread_collect_unused();
+		test_commit_collect_next = 1;
+		block[0] = rpmalloc(size);
+		block[1] = rpmalloc(size);
+		if (!block[0] || !block[1] || test_commit_collect_next)
+			return test_fail("Allocation failed");
+		if (block[0] == block[1])
+			return test_fail("Block handed out twice after a collect from the commit of its page");
+		memset(block[0], 0x5a, size);
+		memset(block[1], 0x5a, size);
+		rpfree(block[1]);
+	} else {
+		printf("Page commit part failure test skipped\n");
+	}
+	rpfree(block[0]);
+	rpmalloc_finalize();
+
+	printf("Page commit part tests passed\n");
+	return 0;
+}
+
+enum { UNUSED_SIZE = 200 * 1024, UNUSED_BLOCKS = 10 };
+
+static void
+collect_unused_free_thread(void* arg) {
+	void** block = arg;
+	rpmalloc_thread_initialize();
+	for (unsigned int i = 0; i < UNUSED_BLOCKS; i += 2)
+		rpfree(block[i]);
+	rpmalloc_thread_finalize();
+	thread_exit(0);
+}
+
+static int
+test_collect_unused(void) {
+	// rpmalloc_thread_collect_unused retires the pages holding no used block and decommits them: the last available
+	// page of a size class, which the heap keeps, and a page whose used blocks are in its thread free list and local
+	// free list together. The free medium-large pages are all decommitted
+#if !RPMALLOC_TEST_OVERRIDE
+	test_initialize_unmapped();
+#else
+	rpmalloc_initialize(0);
+#endif
+	const rpmalloc_config_t* config = rpmalloc_config();
+	int can_decommit = !config->disable_decommit && !config->enable_huge_pages && (config->page_size < (1024 * 1024));
+	static void* block[UNUSED_BLOCKS];
+
+	// The last available page of the size class, kept when its only block is freed
+	block[0] = rpmalloc(UNUSED_SIZE);
+	if (!block[0])
+		return test_fail("Allocation failed");
+	memset(block[0], 0xcd, UNUSED_SIZE);
+	rpfree(block[0]);
+	rpmalloc_global_statistics_t before;
+	rpmalloc_global_statistics(&before);
+	rpmalloc_thread_collect_unused();
+	rpmalloc_global_statistics_t after;
+	rpmalloc_global_statistics(&after);
+	if (can_decommit && before.mapped && (after.decommitted <= before.decommitted))
+		return test_fail("Last available page of a size class not decommitted after thread collect");
+
+	// A page whose free blocks the heap keeps for its next allocations: two blocks freed to the page, the next
+	// allocation takes one and hands the other to the heap list, then the others are freed
+	block[0] = rpmalloc(UNUSED_SIZE);
+	block[1] = rpmalloc(UNUSED_SIZE);
+	block[2] = rpmalloc(UNUSED_SIZE);
+	if (!block[0] || !block[1] || !block[2])
+		return test_fail("Allocation failed");
+	rpfree(block[0]);
+	rpfree(block[1]);
+	block[3] = rpmalloc(UNUSED_SIZE);
+	if (!block[3])
+		return test_fail("Allocation failed");
+	rpfree(block[2]);
+	rpfree(block[3]);
+	rpmalloc_global_statistics(&before);
+	rpmalloc_thread_collect_unused();
+	rpmalloc_global_statistics(&after);
+	if (can_decommit && before.mapped && (after.decommitted <= before.decommitted))
+		return test_fail("Page of the free blocks the heap keeps not decommitted after thread collect");
+
+	// Half the blocks of a page freed by another thread and the others by the owner, the page stays available
+	for (unsigned int i = 0; i < UNUSED_BLOCKS; ++i) {
+		block[i] = rpmalloc(UNUSED_SIZE);
+		if (!block[i])
+			return test_fail("Allocation failed");
+		memset(block[i], 0xcd, UNUSED_SIZE);
+	}
+	thread_arg targ;
+	targ.fn = collect_unused_free_thread;
+	targ.arg = block;
+	if (thread_join(thread_run(&targ)) != 0)
+		return test_fail("Free thread failed");
+	for (unsigned int i = 1; i < UNUSED_BLOCKS; i += 2)
+		rpfree(block[i]);
+	rpmalloc_global_statistics(&before);
+	rpmalloc_thread_collect_unused();
+	rpmalloc_global_statistics(&after);
+	if (can_decommit && before.mapped && (after.decommitted <= before.decommitted))
+		return test_fail("Page emptied by thread free and local free not decommitted after thread collect");
+
+	rpmalloc_global_statistics(&before);
+	for (unsigned int i = 0; i < UNUSED_BLOCKS; ++i) {
+		unsigned char* ptr = rpcalloc(1, UNUSED_SIZE);
+		if (!ptr)
+			return test_fail("Allocation failed");
+		for (size_t ibyte = 0; ibyte < UNUSED_SIZE; ++ibyte) {
+			if (ptr[ibyte] != 0)
+				return test_fail("Zeroed allocation not zeroed after collect");
+		}
+		block[i] = ptr;
+	}
+	rpmalloc_global_statistics(&after);
+	if (can_decommit && before.mapped && ((after.committed - before.committed) < (UNUSED_BLOCKS * UNUSED_SIZE)))
+		return test_fail("Blocks of decommitted pages reused without committing them again");
+	for (unsigned int i = 0; i < UNUSED_BLOCKS; ++i)
+		rpfree(block[i]);
+
+	rpmalloc_finalize();
+	printf("Collect unused tests passed\n");
+	return 0;
+}
+
+//! Sort block pointers and check none is handed out twice
+static int
+test_blocks_unique(void** block, size_t count) {
+	for (size_t i = 1; i < count; ++i) {
+		void* value = block[i];
+		size_t j = i;
+		while ((j > 0) && ((uintptr_t)block[j - 1] > (uintptr_t)value)) {
+			block[j] = block[j - 1];
+			--j;
+		}
+		block[j] = value;
+	}
+	for (size_t i = 1; i < count; ++i) {
+		if (block[i] == block[i - 1])
+			return 0;
+	}
+	return 1;
+}
+
+enum { COLLECT_RACE_SIZE = 3000, COLLECT_RACE_BLOCKS = 21 * 16, COLLECT_RACE_ROUNDS = 64 };
+
+typedef struct collect_race_t {
+	void* block[COLLECT_RACE_BLOCKS];
+	atomic_uint round;
+	atomic_uint done;
+} collect_race_t;
+
+static collect_race_t collect_race;
+
+static void
+collect_race_free_thread(void* arg) {
+	(void)sizeof(arg);
+	rpmalloc_thread_initialize();
+	unsigned int rounds = test_scale(COLLECT_RACE_ROUNDS);
+	for (unsigned int round = 1; round <= rounds; ++round) {
+		while (atomic_load_explicit(&collect_race.round, memory_order_acquire) != round)
+			thread_yield();
+		// Every other block, the owner frees the rest, so pages empty from a free by either thread
+		for (unsigned int i = 0; i < COLLECT_RACE_BLOCKS; i += 2)
+			rpfree(collect_race.block[i]);
+		atomic_store_explicit(&collect_race.done, round, memory_order_release);
+	}
+	rpmalloc_thread_finalize();
+	thread_exit(0);
+}
+
+static int
+test_collect_race(void) {
+	// The owner collects while another thread frees blocks into its available pages. A free emptying a page the
+	// collect claims the thread free list of queues the page to the pending list, which retires it, and the collect
+	// leaves the page, so no page is retired twice and no block handed out twice
+	rpmalloc_initialize(0);
+	static void* check[2 * COLLECT_RACE_BLOCKS];
+	atomic_store_explicit(&collect_race.round, 0, memory_order_relaxed);
+	atomic_store_explicit(&collect_race.done, 0, memory_order_relaxed);
+	thread_arg targ;
+	targ.fn = collect_race_free_thread;
+	targ.arg = 0;
+	uintptr_t thread = thread_run(&targ);
+	if (!thread)
+		return test_fail("Unable to create thread");
+	unsigned int rounds = test_scale(COLLECT_RACE_ROUNDS);
+	for (unsigned int round = 1; round <= rounds; ++round) {
+		for (unsigned int i = 0; i < COLLECT_RACE_BLOCKS; ++i) {
+			collect_race.block[i] = rpmalloc(COLLECT_RACE_SIZE);
+			if (!collect_race.block[i])
+				return test_fail("Allocation failed");
+		}
+		atomic_store_explicit(&collect_race.round, round, memory_order_release);
+		for (unsigned int i = 1; i < COLLECT_RACE_BLOCKS; i += 2) {
+			rpfree(collect_race.block[i]);
+			if (!((i + 1) % 8))
+				rpmalloc_thread_collect_unused();
+		}
+		while (atomic_load_explicit(&collect_race.done, memory_order_acquire) != round) {
+			rpmalloc_thread_collect_unused();
+			thread_yield();
+		}
+		rpmalloc_thread_collect_unused();
+		for (unsigned int i = 0; i < 2 * COLLECT_RACE_BLOCKS; ++i) {
+			check[i] = rpmalloc(COLLECT_RACE_SIZE);
+			if (!check[i])
+				return test_fail("Allocation failed");
+		}
+		if (!test_blocks_unique(check, 2 * COLLECT_RACE_BLOCKS))
+			return test_fail("Block handed out twice after collecting alongside thread frees");
+		for (unsigned int i = 0; i < 2 * COLLECT_RACE_BLOCKS; ++i)
+			*(unsigned int*)check[i] = i;
+		for (unsigned int i = 0; i < 2 * COLLECT_RACE_BLOCKS; ++i) {
+			if (*(unsigned int*)check[i] != i)
+				return test_fail("Blocks overlap after collecting alongside thread frees");
+		}
+		for (unsigned int i = 0; i < 2 * COLLECT_RACE_BLOCKS; ++i)
+			rpfree(check[i]);
+	}
+	if (thread_join(thread) != 0)
+		return test_fail("Free thread failed");
+	rpmalloc_finalize();
+	printf("Collect race tests passed\n");
+	return 0;
+}
+
+enum { IDLE_SIZE = 200 * 1024, IDLE_BLOCKS = 40 };
+
+typedef struct idle_test_t {
+	void* block[IDLE_BLOCKS];
+	//! Steps of the test, the idle thread waits for the main thread to set the next one
+	atomic_uint step;
+	atomic_uint ready;
+	//! Set to end the idle period with rpmalloc_thread_idle_end rather than exit the thread with the heap idle
+	int end_idle;
+	int failed;
+} idle_test_t;
+
+static idle_test_t idle_test;
+
+static void
+idle_wait_step(unsigned int step) {
+	while (atomic_load_explicit(&idle_test.step, memory_order_acquire) < step)
+		thread_sleep(1);
+}
+
+static void
+idle_test_thread(void* arg) {
+	(void)sizeof(arg);
+	for (unsigned int i = 0; i < IDLE_BLOCKS; ++i) {
+		idle_test.block[i] = rpmalloc(IDLE_SIZE);
+		if (!idle_test.block[i])
+			idle_test.failed = 1;
+		else
+			memset(idle_test.block[i], 0xcd, IDLE_SIZE);
+	}
+	rpmalloc_thread_idle_begin();
+	atomic_store_explicit(&idle_test.ready, 1, memory_order_release);
+	idle_wait_step(1);
+	if (idle_test.end_idle) {
+		rpmalloc_thread_idle_end();
+		// The heap is used again after it was reaped
+		for (unsigned int i = 0; i < IDLE_BLOCKS; ++i) {
+			unsigned char* ptr = rpcalloc(1, IDLE_SIZE);
+			if (!ptr) {
+				idle_test.failed = 1;
+				continue;
+			}
+			for (size_t ibyte = 0; ibyte < IDLE_SIZE; ++ibyte) {
+				if (ptr[ibyte] != 0)
+					idle_test.failed = 1;
+			}
+			idle_test.block[i] = ptr;
+		}
+		for (unsigned int i = 0; i < IDLE_BLOCKS; ++i)
+			rpfree(idle_test.block[i]);
+	}
+	thread_exit(0);
+}
+
+enum { IDLE_STRESS_THREADS = 4, IDLE_STRESS_LOOPS = 2000, IDLE_STRESS_SLOTS = 64 };
+
+static atomic_uint idle_stress_done;
+static atomic_uintptr_t idle_stress_slot[IDLE_STRESS_SLOTS];
+
+static void
+idle_stress_thread(void* arg) {
+	uint32_t seed = (uint32_t)(uintptr_t)arg;
+	void* local[32] = {0};
+	unsigned int loops = test_scale(IDLE_STRESS_LOOPS);
+	for (unsigned int loop = 0; loop < loops; ++loop) {
+		for (unsigned int i = 0; i < 32; ++i) {
+			seed = seed * 1103515245u + 12345u;
+			size_t size = 16 + (seed >> 8) % ((seed & 1) ? 1024 : (300 * 1024));
+			if (local[i])
+				rpfree(local[i]);
+			local[i] = rpmalloc(size);
+			if (local[i])
+				memset(local[i], 0x3c, size < 256 ? size : 256);
+		}
+		// Hand blocks to the other threads, which free them, also while their heaps are idle
+		seed = seed * 1103515245u + 12345u;
+		unsigned int slot = (seed >> 8) % IDLE_STRESS_SLOTS;
+		void* prev =
+		    (void*)atomic_exchange_explicit(&idle_stress_slot[slot], (uintptr_t)local[seed & 31], memory_order_acq_rel);
+		local[seed & 31] = 0;
+		rpmalloc_thread_idle_begin();
+		if (prev)
+			rpfree(prev);
+		if (seed & 0x100) {
+			// An allocation while idle takes the heap back
+			void* ptr = rpmalloc(64);
+			rpfree(ptr);
+		}
+		if (seed & 0x200)
+			thread_yield();
+		rpmalloc_thread_idle_end();
+	}
+	for (unsigned int i = 0; i < 32; ++i)
+		rpfree(local[i]);
+	atomic_fetch_add_explicit(&idle_stress_done, 1, memory_order_release);
+	thread_exit(0);
+}
+
+static int
+test_thread_idle(void) {
+	// A thread leaving its heap idle takes the same heap back at rpmalloc_thread_idle_end or its next allocation,
+	// another thread reaps the heap meanwhile, and a thread exiting with its heap idle releases it
+	rpmalloc_initialize(0);
+	const rpmalloc_config_t* config = rpmalloc_config();
+	int can_decommit = !config->disable_decommit && !config->enable_huge_pages && (config->page_size < (1024 * 1024));
+	rpmalloc_global_statistics_t before;
+	rpmalloc_global_statistics_t after;
+
+	void* block = rpmalloc(64);
+	rpmalloc_global_statistics(&before);
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	rpmalloc_heap_t* heap = rpmalloc_get_heap_for_ptr(block);
+#endif
+	rpmalloc_thread_idle_begin();
+	rpmalloc_thread_idle_begin();
+	if (!rpmalloc_is_thread_initialized())
+		return test_fail("Thread with its heap idle not initialized");
+	rpmalloc_thread_idle_end();
+	rpmalloc_thread_idle_end();
+	void* again = rpmalloc(64);
+	rpmalloc_thread_idle_begin();
+	// A free while idle takes the cross-thread path, an allocation takes the heap back
+	rpfree(block);
+	void* idle = rpmalloc(64);
+	rpmalloc_thread_idle_end();
+	rpmalloc_global_statistics(&after);
+	if (!again || !idle)
+		return test_fail("Allocation failed");
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	if ((rpmalloc_get_heap_for_ptr(again) != heap) || (rpmalloc_get_heap_for_ptr(idle) != heap))
+		return test_fail("Thread did not take back the heap it left idle");
+#endif
+	if (after.heap_count != before.heap_count)
+		return test_fail("Thread taking back its idle heap allocated another heap");
+	rpfree(again);
+	rpfree(idle);
+
+	// A heap left idle and reaped by another thread, and a thread exiting with its heap idle
+	for (int pass = 0; pass < 2; ++pass) {
+		memset(&idle_test, 0, sizeof(idle_test));
+		idle_test.end_idle = !pass;
+		rpmalloc_global_statistics(&before);
+		size_t heap_count = before.heap_count;
+		thread_arg targ;
+		targ.fn = idle_test_thread;
+		targ.arg = 0;
+		uintptr_t thread = thread_run(&targ);
+		if (!thread)
+			return test_fail("Unable to create thread");
+		while (!atomic_load_explicit(&idle_test.ready, memory_order_acquire))
+			thread_sleep(1);
+		if (idle_test.failed)
+			return test_fail("Allocation failed");
+		if (!pass) {
+			// Freed by this thread, the pages of the idle heap are left without used blocks
+			for (unsigned int i = 0; i < IDLE_BLOCKS; ++i)
+				rpfree(idle_test.block[i]);
+			if (rpmalloc_reap_idle_heaps(60 * 1000, 0) != 0)
+				return test_fail("Heap idle for less than the minimum idle time reaped");
+			rpmalloc_global_statistics(&before);
+			if (rpmalloc_reap_idle_heaps(0, 0) != 1)
+				return test_fail("Idle heap not reaped");
+			rpmalloc_global_statistics(&after);
+			if (can_decommit && before.mapped && ((after.decommitted - before.decommitted) < (IDLE_BLOCKS * IDLE_SIZE)))
+				return test_fail("Pages of a reaped idle heap not decommitted");
+			if (rpmalloc_reap_idle_heaps(0, 0) != 0)
+				return test_fail("Idle heap reaped again without being used");
+		}
+		atomic_store_explicit(&idle_test.step, 1, memory_order_release);
+		if (thread_join(thread) != 0)
+			return test_fail("Idle thread failed");
+		if (idle_test.failed)
+			return test_fail("Allocation failed after the idle heap was reaped");
+		if (pass) {
+			for (unsigned int i = 0; i < IDLE_BLOCKS; ++i)
+				rpfree(idle_test.block[i]);
+		}
+		rpmalloc_global_statistics(&after);
+		if (after.heap_count != heap_count)
+			return test_fail("Heap of a thread exiting with its heap idle not released");
+		if (rpmalloc_reap_idle_heaps(0, 0) != 0)
+			return test_fail("Heap of an exited thread left idle");
+	}
+
+	// Threads leaving their heaps idle, freeing blocks of the others and allocating while idle, while this thread
+	// reaps the idle heaps in steps
+	atomic_store_explicit(&idle_stress_done, 0, memory_order_relaxed);
+	uintptr_t thread[IDLE_STRESS_THREADS];
+	thread_arg targ[IDLE_STRESS_THREADS];
+	for (unsigned int ithread = 0; ithread < IDLE_STRESS_THREADS; ++ithread) {
+		targ[ithread].fn = idle_stress_thread;
+		targ[ithread].arg = (void*)(uintptr_t)(ithread * 7919 + 1);
+		thread[ithread] = thread_run(&targ[ithread]);
+		if (!thread[ithread])
+			return test_fail("Unable to create thread");
+	}
+	while (atomic_load_explicit(&idle_stress_done, memory_order_acquire) < IDLE_STRESS_THREADS) {
+		rpmalloc_reap_idle_heaps(0, 2);
+		thread_yield();
+	}
+	for (unsigned int ithread = 0; ithread < IDLE_STRESS_THREADS; ++ithread) {
+		if (thread_join(thread[ithread]) != 0)
+			return test_fail("Idle stress thread failed");
+	}
+	for (unsigned int slot = 0; slot < IDLE_STRESS_SLOTS; ++slot)
+		rpfree((void*)atomic_exchange_explicit(&idle_stress_slot[slot], 0, memory_order_relaxed));
+
+	rpmalloc_finalize();
+	printf("Thread idle tests passed\n");
+	return 0;
+}
+
+static void
+idle_rules_thread(void* arg) {
+	(void)sizeof(arg);
+	for (unsigned int i = 0; i < IDLE_BLOCKS; ++i)
+		idle_test.block[i] = rpmalloc(IDLE_SIZE);
+	rpmalloc_thread_idle_begin();
+	rpmalloc_thread_idle_end();
+	if (!rpmalloc_is_thread_initialized())
+		idle_test.failed = 1;
+	atomic_store_explicit(&idle_test.ready, 1, memory_order_release);
+	idle_wait_step(1);
+	// Full pages, a page the main thread empties is queued to the heap and retired by the next reap
+	for (unsigned int i = 0; i < IDLE_BLOCKS; ++i)
+		idle_test.block[i] = rpmalloc(IDLE_SIZE);
+	rpmalloc_thread_idle_begin();
+	atomic_store_explicit(&idle_test.ready, 2, memory_order_release);
+	// Woken without work each time, the heap keeps its idle time
+	for (unsigned int step = 2; step <= 3; ++step) {
+		idle_wait_step(step);
+		rpmalloc_thread_idle_end();
+		rpmalloc_thread_idle_begin();
+		atomic_store_explicit(&idle_test.ready, step + 1, memory_order_release);
+	}
+	idle_wait_step(4);
+	rpmalloc_thread_idle_end();
+	thread_exit(0);
+}
+
+static atomic_uint idle_many_ready;
+static atomic_uint idle_many_go;
+
+static void
+idle_many_thread(void* arg) {
+	(void)sizeof(arg);
+	void* block[8];
+	for (unsigned int i = 0; i < 8; ++i)
+		block[i] = rpmalloc(IDLE_SIZE);
+	for (unsigned int i = 0; i < 8; ++i)
+		rpfree(block[i]);
+	rpmalloc_thread_idle_begin();
+	atomic_fetch_add_explicit(&idle_many_ready, 1, memory_order_release);
+	while (!atomic_load_explicit(&idle_many_go, memory_order_acquire))
+		thread_sleep(1);
+	rpmalloc_thread_idle_end();
+	thread_exit(0);
+}
+
+static void* idle_flush_block[2];
+static atomic_uint idle_flush_state;
+
+static void
+idle_flush_thread(void* arg) {
+	(void)sizeof(arg);
+	rpmalloc_thread_initialize();
+	atomic_store_explicit(&idle_flush_state, 1, memory_order_release);
+	while (atomic_load_explicit(&idle_flush_state, memory_order_acquire) != 2)
+		thread_sleep(1);
+	// The second free into the same page is held in the thread free chain until a flush point
+	rpfree(idle_flush_block[0]);
+	rpfree(idle_flush_block[1]);
+	rpmalloc_thread_idle_begin();
+	atomic_store_explicit(&idle_flush_state, 3, memory_order_release);
+	while (atomic_load_explicit(&idle_flush_state, memory_order_acquire) != 4)
+		thread_sleep(1);
+	rpmalloc_thread_idle_end();
+	thread_exit(0);
+}
+
+static size_t
+idle_alloc_current(void) {
+	rpmalloc_thread_statistics_t stats;
+	rpmalloc_thread_statistics(&stats);
+	size_t sum = 0;
+	for (unsigned int i = 0; i < sizeof(stats.size_use) / sizeof(stats.size_use[0]); ++i)
+		sum += stats.size_use[i].alloc_current;
+	return sum;
+}
+
+static atomic_uint idle_exit_stop;
+
+static void
+idle_exit_worker(void* arg) {
+	uint32_t seed = (uint32_t)(uintptr_t)arg;
+	void* local[16] = {0};
+	for (unsigned int loop = 0; loop < 200; ++loop) {
+		for (unsigned int i = 0; i < 16; ++i) {
+			seed = seed * 1103515245u + 12345u;
+			rpfree(local[i]);
+			local[i] = rpmalloc(16 + (seed >> 8) % ((seed & 1) ? 2048 : (256 * 1024)));
+		}
+		rpmalloc_thread_idle_begin();
+		thread_yield();
+		rpmalloc_thread_idle_end();
+	}
+	for (unsigned int i = 0; i < 16; ++i)
+		rpfree(local[i]);
+	// Exits with the heap idle, the thread exit takes it back while the reaper may hold it
+	rpmalloc_thread_idle_begin();
+	thread_exit(0);
+}
+
+static void
+idle_exit_reaper(void* arg) {
+	(void)sizeof(arg);
+	rpmalloc_thread_initialize();
+	while (!atomic_load_explicit(&idle_exit_stop, memory_order_acquire)) {
+		rpmalloc_reap_idle_heaps(0, 0);
+		thread_yield();
+	}
+	rpmalloc_thread_finalize();
+	thread_exit(0);
+}
+
+#if RPMALLOC_FIRST_CLASS_HEAPS
+static atomic_uint idle_first_class_state;
+static int idle_first_class_failed;
+
+static void
+idle_first_class_thread(void* arg) {
+	(void)sizeof(arg);
+	void* block = rpmalloc(64);
+	rpfree(block);
+	rpmalloc_heap_t* heap = rpmalloc_heap_acquire();
+	rpmalloc_global_statistics_t before;
+	rpmalloc_global_statistics_t after;
+	rpmalloc_global_statistics(&before);
+	rpmalloc_thread_idle_begin();
+	// Taking a first class heap while idle releases the idle heap
+	rpmalloc_heap_thread_set_current(heap);
+	rpmalloc_global_statistics(&after);
+	if (before.mapped && (after.heap_count != before.heap_count - 1))
+		idle_first_class_failed = 1;
+	// A first class heap is never left idle
+	block = rpmalloc(IDLE_SIZE);
+	rpfree(block);
+	rpmalloc_thread_idle_begin();
+	atomic_store_explicit(&idle_first_class_state, 1, memory_order_release);
+	while (atomic_load_explicit(&idle_first_class_state, memory_order_acquire) != 2)
+		thread_sleep(1);
+	rpmalloc_thread_idle_end();
+	// Releases the first class heap, the current heap of the thread
+	rpmalloc_heap_thread_set_current(0);
+	thread_exit(0);
+}
+#endif
+
+static int
+test_thread_idle_reap(void) {
+	// The calling thread heap is collected as by rpmalloc_thread_collect and not counted. rpmalloc_thread_idle_end
+	// takes the heap back from the reaps. An idle heap is reaped once idle for the min idle time and used since its
+	// last reap, not again within the min idle time, nor after a check finding nothing to reap, and a thread woken
+	// without work keeps its idle time. Reaps are limited to max_heaps per call, a thread exiting while its idle
+	// heap is reaped releases it, and a first class heap is never left idle
+	rpmalloc_initialize(0);
+	const rpmalloc_config_t* config = rpmalloc_config();
+	int can_decommit = !config->disable_decommit && (config->page_size < (64 * 1024));
+	rpmalloc_global_statistics_t before;
+	rpmalloc_global_statistics_t after;
+
+	// Pages of this thread emptied by another thread freeing into them
+	static void* block[COLLECT_BLOCKS];
+	for (unsigned int i = 0; i < COLLECT_BLOCKS; ++i) {
+		block[i] = rpmalloc(4000);
+		if (!block[i])
+			return test_fail("Allocation failed");
+	}
+	thread_arg targ;
+	targ.fn = collect_free_thread;
+	targ.arg = block;
+	if (thread_join(thread_run(&targ)) != 0)
+		return test_fail("Free thread failed");
+	rpmalloc_global_statistics(&before);
+	if (rpmalloc_reap_idle_heaps(0, 0) != 0)
+		return test_fail("Calling thread heap counted as reaped");
+	rpmalloc_global_statistics(&after);
+	if (can_decommit && before.mapped && (after.decommitted <= before.decommitted))
+		return test_fail("Calling thread heap not collected by the reap");
+
+	// Real time, a call right after another must run within the min idle time
+	const unsigned int min_ms = 300;
+	memset(&idle_test, 0, sizeof(idle_test));
+	targ.fn = idle_rules_thread;
+	uintptr_t thread = thread_run(&targ);
+	if (!thread)
+		return test_fail("Unable to create thread");
+	size_t reaped[8] = {0};
+	while (atomic_load_explicit(&idle_test.ready, memory_order_acquire) < 1)
+		thread_sleep(1);
+	for (unsigned int i = 0; i < IDLE_BLOCKS; ++i)
+		rpfree(idle_test.block[i]);
+	reaped[1] = rpmalloc_reap_idle_heaps(0, 0);
+	atomic_store_explicit(&idle_test.step, 1, memory_order_release);
+	while (atomic_load_explicit(&idle_test.ready, memory_order_acquire) < 2)
+		thread_sleep(1);
+	thread_sleep((int)min_ms + 150);
+	for (unsigned int i = 4; i < IDLE_BLOCKS; ++i)
+		rpfree(idle_test.block[i]);
+	reaped[2] = rpmalloc_reap_idle_heaps(min_ms, 0);
+	rpfree(idle_test.block[0]);
+	reaped[3] = rpmalloc_reap_idle_heaps(min_ms, 0);
+	// Woken without work after a reap retired pages of the heap, the heap is due again
+	thread_sleep((int)min_ms + 150);
+	atomic_store_explicit(&idle_test.step, 2, memory_order_release);
+	while (atomic_load_explicit(&idle_test.ready, memory_order_acquire) < 3)
+		thread_sleep(1);
+	reaped[4] = rpmalloc_reap_idle_heaps(min_ms, 0);
+	thread_sleep((int)min_ms + 150);
+	reaped[5] = rpmalloc_reap_idle_heaps(min_ms, 0);
+	rpfree(idle_test.block[1]);
+	reaped[6] = rpmalloc_reap_idle_heaps(min_ms, 0);
+	thread_sleep((int)min_ms + 150);
+	atomic_store_explicit(&idle_test.step, 3, memory_order_release);
+	while (atomic_load_explicit(&idle_test.ready, memory_order_acquire) < 4)
+		thread_sleep(1);
+	rpfree(idle_test.block[2]);
+	reaped[7] = rpmalloc_reap_idle_heaps(min_ms, 0);
+	atomic_store_explicit(&idle_test.step, 4, memory_order_release);
+	if (thread_join(thread) != 0)
+		return test_fail("Idle thread failed");
+	rpfree(idle_test.block[3]);
+	if (idle_test.failed)
+		return test_fail("Thread not initialized after rpmalloc_thread_idle_end");
+	if (reaped[1] != 0)
+		return test_fail("Heap reaped after its thread took it back with rpmalloc_thread_idle_end");
+	if (reaped[2] != 1)
+		return test_fail("Idle heap not reaped after the min idle time");
+	if (reaped[3] != 0)
+		return test_fail("Heap reaped again within the min idle time");
+	if (reaped[4] != 1)
+		return test_fail("Heap with blocks freed into an available page not reaped, or its idle time restarted");
+	if (reaped[5] != 0)
+		return test_fail("Heap with nothing to reap reaped");
+	if (reaped[6] != 0)
+		return test_fail("Heap found with nothing to reap reaped again within the min idle time");
+	if (reaped[7] != 1)
+		return test_fail("Heap of a thread woken without work did not keep its idle time");
+
+	// A call reaps up to max_heaps heaps, a heap used only by its own thread included
+	enum { IDLE_MANY = 3 };
+	atomic_store_explicit(&idle_many_ready, 0, memory_order_relaxed);
+	atomic_store_explicit(&idle_many_go, 0, memory_order_relaxed);
+	uintptr_t many[IDLE_MANY];
+	targ.fn = idle_many_thread;
+	for (unsigned int i = 0; i < IDLE_MANY; ++i) {
+		many[i] = thread_run(&targ);
+		if (!many[i])
+			return test_fail("Unable to create thread");
+	}
+	while (atomic_load_explicit(&idle_many_ready, memory_order_acquire) < IDLE_MANY)
+		thread_sleep(1);
+	reaped[1] = rpmalloc_reap_idle_heaps(0, 1);
+	reaped[2] = rpmalloc_reap_idle_heaps(0, 2);
+	reaped[3] = rpmalloc_reap_idle_heaps(0, 1);
+	atomic_store_explicit(&idle_many_go, 1, memory_order_release);
+	for (unsigned int i = 0; i < IDLE_MANY; ++i) {
+		if (thread_join(many[i]) != 0)
+			return test_fail("Idle thread failed");
+	}
+	if ((reaped[1] != 1) || (reaped[2] != 2) || (reaped[3] != 0))
+		return test_fail("Reap did not reap max_heaps heaps per call");
+
+	// rpmalloc_thread_idle_begin pushes the blocks the thread freed into other heaps
+	idle_flush_block[0] = rpmalloc(4000);
+	idle_flush_block[1] = rpmalloc(4000);
+	if (!idle_flush_block[0] || !idle_flush_block[1])
+		return test_fail("Allocation failed");
+	atomic_store_explicit(&idle_flush_state, 0, memory_order_relaxed);
+	targ.fn = idle_flush_thread;
+	thread = thread_run(&targ);
+	if (!thread)
+		return test_fail("Unable to create thread");
+	// Counted once the thread runs: with malloc overridden, starting a thread allocates from the calling thread heap
+	while (atomic_load_explicit(&idle_flush_state, memory_order_acquire) != 1)
+		thread_sleep(1);
+	rpmalloc_thread_collect_unused();
+	size_t current = idle_alloc_current();
+	atomic_store_explicit(&idle_flush_state, 2, memory_order_release);
+	while (atomic_load_explicit(&idle_flush_state, memory_order_acquire) != 3)
+		thread_sleep(1);
+	rpmalloc_thread_collect_unused();
+	size_t collected = current - idle_alloc_current();
+	atomic_store_explicit(&idle_flush_state, 4, memory_order_release);
+	if (thread_join(thread) != 0)
+		return test_fail("Idle thread failed");
+	if (before.mapped && (collected != 2))
+		return test_fail("Blocks freed by a thread before rpmalloc_thread_idle_begin not pushed");
+
+	// Threads exiting with their heaps idle while another thread reaps them
+	for (unsigned int round = 0; round < 20; ++round) {
+		enum { IDLE_EXITERS = 4 };
+		rpmalloc_global_statistics(&before);
+		atomic_store_explicit(&idle_exit_stop, 0, memory_order_relaxed);
+		targ.fn = idle_exit_reaper;
+		uintptr_t reaper = thread_run(&targ);
+		if (!reaper)
+			return test_fail("Unable to create thread");
+		uintptr_t exiter[IDLE_EXITERS];
+		thread_arg etarg[IDLE_EXITERS];
+		for (unsigned int i = 0; i < IDLE_EXITERS; ++i) {
+			etarg[i].fn = idle_exit_worker;
+			etarg[i].arg = (void*)(uintptr_t)(round * 131 + i * 7919 + 1);
+			exiter[i] = thread_run(&etarg[i]);
+			if (!exiter[i])
+				return test_fail("Unable to create thread");
+		}
+		for (unsigned int i = 0; i < IDLE_EXITERS; ++i) {
+			if (thread_join(exiter[i]) != 0)
+				return test_fail("Idle exit thread failed");
+		}
+		atomic_store_explicit(&idle_exit_stop, 1, memory_order_release);
+		if (thread_join(reaper) != 0)
+			return test_fail("Reaper thread failed");
+		rpmalloc_global_statistics(&after);
+		if (after.heap_count != before.heap_count)
+			return test_fail("Heap of a thread exiting while its idle heap is reaped not released");
+	}
+
+#if RPMALLOC_FIRST_CLASS_HEAPS
+	atomic_store_explicit(&idle_first_class_state, 0, memory_order_relaxed);
+	idle_first_class_failed = 0;
+	targ.fn = idle_first_class_thread;
+	thread = thread_run(&targ);
+	if (!thread)
+		return test_fail("Unable to create thread");
+	while (atomic_load_explicit(&idle_first_class_state, memory_order_acquire) != 1)
+		thread_sleep(1);
+	reaped[1] = rpmalloc_reap_idle_heaps(0, 0);
+	atomic_store_explicit(&idle_first_class_state, 2, memory_order_release);
+	if (thread_join(thread) != 0)
+		return test_fail("First class heap thread failed");
+	if (idle_first_class_failed)
+		return test_fail("Taking a first class heap while idle did not release the idle heap");
+	if (reaped[1] != 0)
+		return test_fail("First class heap left idle and reaped");
+#endif
+
+	rpmalloc_finalize();
+	printf("Thread idle reap tests passed\n");
+	return 0;
+}
+
+enum { IDLE_FREE_SIZE = 16 * 1024, IDLE_FREE_PAGES = 6, IDLE_FREE_PAGE_SIZE = 1024 * 1024 };
+
+typedef struct idle_free_test_t {
+	void* block[IDLE_FREE_PAGES * (IDLE_FREE_PAGE_SIZE / IDLE_FREE_SIZE)];
+	unsigned int count;
+	atomic_uint step;
+	int failed;
+} idle_free_test_t;
+
+static idle_free_test_t idle_free_test;
+
+static void
+idle_free_wait_step(unsigned int step) {
+	while (atomic_load_explicit(&idle_free_test.step, memory_order_acquire) < step)
+		thread_sleep(1);
+}
+
+static void
+idle_free_owner_thread(void* arg) {
+	(void)sizeof(arg);
+	// Whole medium-small pages of blocks
+	void* first = rpmalloc(IDLE_FREE_SIZE);
+	unsigned int per_page = first ? (unsigned int)(IDLE_FREE_PAGE_SIZE / rpmalloc_usable_size(first)) : 0;
+	idle_free_test.count = IDLE_FREE_PAGES * per_page;
+	idle_free_test.block[0] = first;
+	for (unsigned int i = 1; i < idle_free_test.count; ++i) {
+		idle_free_test.block[i] = rpmalloc(IDLE_FREE_SIZE);
+		if (!idle_free_test.block[i])
+			idle_free_test.failed = 1;
+	}
+	if (!first)
+		idle_free_test.failed = 1;
+	rpmalloc_thread_idle_begin();
+	atomic_store_explicit(&idle_free_test.step, 1, memory_order_release);
+	idle_free_wait_step(3);
+	rpmalloc_thread_idle_end();
+	thread_exit(0);
+}
+
+static void
+idle_free_freer_thread(void* arg) {
+	(void)sizeof(arg);
+	void* own = rpmalloc(64);
+	idle_free_wait_step(1);
+	rpmalloc_thread_idle_begin();
+	for (unsigned int i = 0; i < idle_free_test.count; ++i)
+		rpfree(idle_free_test.block[i]);
+	atomic_store_explicit(&idle_free_test.step, 2, memory_order_release);
+	idle_free_wait_step(3);
+	rpmalloc_thread_idle_end();
+	rpfree(own);
+	thread_exit(0);
+}
+
+static int
+test_thread_idle_free(void) {
+	// A thread with its heap idle frees the blocks of another heap at once rather than in its free chain, which it
+	// would push only once it allocates again, so a reap of the other heap retires all the pages the frees empty and
+	// decommits those beyond the two free medium-small pages it keeps
+	rpmalloc_initialize(0);
+	const rpmalloc_config_t* config = rpmalloc_config();
+	int can_decommit = !config->disable_decommit && !config->enable_huge_pages && (config->page_size < (64 * 1024));
+	memset(&idle_free_test, 0, sizeof(idle_free_test));
+	thread_arg targ[2];
+	targ[0].fn = idle_free_owner_thread;
+	targ[0].arg = 0;
+	targ[1].fn = idle_free_freer_thread;
+	targ[1].arg = 0;
+	uintptr_t thread[2];
+	for (unsigned int ithread = 0; ithread < 2; ++ithread) {
+		thread[ithread] = thread_run(&targ[ithread]);
+		if (!thread[ithread])
+			return test_fail("Unable to create thread");
+	}
+	idle_free_wait_step(2);
+	if (idle_free_test.failed)
+		return test_fail("Allocation failed");
+	rpmalloc_global_statistics_t before;
+	rpmalloc_global_statistics_t after;
+	rpmalloc_global_statistics(&before);
+	rpmalloc_reap_idle_heaps(0, 0);
+	rpmalloc_global_statistics(&after);
+	if (can_decommit && before.mapped &&
+	    ((after.decommitted - before.decommitted) < ((IDLE_FREE_PAGES - 2) * (size_t)IDLE_FREE_PAGE_SIZE)))
+		return test_fail("Page emptied by frees of a thread with its heap idle not decommitted by a reap");
+	atomic_store_explicit(&idle_free_test.step, 3, memory_order_release);
+	for (unsigned int ithread = 0; ithread < 2; ++ithread) {
+		if (thread_join(thread[ithread]) != 0)
+			return test_fail("Idle free thread failed");
+	}
+	rpmalloc_finalize();
+	printf("Thread idle free tests passed\n");
 	return 0;
 }
 
@@ -4744,6 +5751,18 @@ test_run(int argc, char** argv) {
 	if (test_huge_cache())
 		return -1;
 	if (test_collect_crossthread())
+		return -1;
+	if (test_page_commit_parts())
+		return -1;
+	if (test_collect_unused())
+		return -1;
+	if (test_collect_race())
+		return -1;
+	if (test_thread_idle())
+		return -1;
+	if (test_thread_idle_reap())
+		return -1;
+	if (test_thread_idle_free())
 		return -1;
 	printf("All tests passed\n");
 	return 0;

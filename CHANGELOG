@@ -58,6 +58,28 @@ as when a thread pool retires idle workers, the free blocks in them were never r
 the orphan pages whose blocks have all been freed, checked at most once a second, are decommitted and taken for pages
 of any size class of their page type.
 
+A page of a span committing on demand commits its memory as its blocks are initialized, first a sixteenth of the page,
+of at least a small page and the commit granularity, then at least doubling the committed memory each time, and
+decommits only what it committed. A page was committed in full when a heap took it, so a large page holding a single
+block of a large size class charged the process commit for 16MiB, which made the commit charge of a heap far larger
+than the memory it touched. A page filled up makes at most five commit calls. A failed commit fails the allocation
+instead.
+
+New rpmalloc_thread_collect_unused collects all of the memory the heap holds without using it: the free blocks the heap
+keeps for its next allocations of each size class, and the blocks other threads freed into its available pages,
+retiring the pages left without used blocks, including the last available page of each size class the heap keeps to
+spare initializing a page again. The free medium-large and large pages are all decommitted, beyond the free small and
+medium-small pages it keeps for reuse. rpmalloc_thread_collect is unchanged, the cheap collect of what other threads
+freed into the heap.
+
+rpmalloc_thread_idle_begin and rpmalloc_thread_idle_end leave the heap of a thread idle while the thread waits for work,
+and rpmalloc_reap_idle_heaps collects the memory the idle heaps hold without using it from any thread, as
+rpmalloc_thread_collect_unused does for the calling thread. A heap collects the blocks other threads free into its
+pages and decommits its free pages as its thread allocates, so the heap of a thread waiting for work, as the worker
+threads of a pool are most of the time, kept that memory until the thread had work again. The thread gets back the heap
+it left idle, at rpmalloc_thread_idle_end or its first allocation before that, with one atomic operation unless a reap
+of the heap is running, and a heap is only reaped once it has been idle for the time given and used since its last reap.
+
 Zeroed allocations take a page recommitted after a decommit as zero filled only where the system decommit zero fills
 pages (Windows, Linux and Android) and the default memory interface is in use. On the BSDs, and with a custom memory
 interface whose decommit keeps the page content, rpcalloc and rpzalloc could return blocks holding old data.
