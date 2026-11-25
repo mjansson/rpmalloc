@@ -1,160 +1,106 @@
 2.1.0
 
-The page structure keeps the fields the owning thread writes on every free in a cache line apart from the cross-thread
-free list and the fields threads freeing into the page read, and the malloc, free, calloc, realloc and usable size
-entry points are aligned to a cache line, removing up to 12% swings in the speed of allocation heavy loops from the
-placement of unrelated code.
+Page fields written by the owning thread no longer share a cache line with the cross-thread free
+list, and the malloc, free, calloc, realloc and usable size entry points are cache line aligned.
+Removes speed swings of up to 12% caused by code placement.
 
-Transparent huge pages are managed by page type. Huge block mappings are advised to be backed by huge pages, and a
-span of small pages once its heap uses more than the first huge page of the span, so a heap using less keeps its small
-pages instead of a whole huge page. The spans of larger pages hold the partly used pages of the larger size classes,
-where each partly used page would keep a whole huge page resident, and are not advised. When the system backs every
-mapping by huge pages (transparent huge page mode "always") this is the default, and those spans are advised not to be
-backed by huge pages. In mode "madvise" it takes enable_thp, or ENABLE_THP defined to 1 for builds where the program
-cannot pass a configuration, as with the standard library override. disable_thp opts out in both modes. Transparent
-huge pages are not used in mode "never", when the huge page size has mode "never" of its own, or when the process
-has them disabled.
+Transparent huge pages are used per page type. Huge blocks, and small page spans once a heap uses
+more than their first huge page, get huge pages. Spans of larger pages do not, since a partly used
+page would keep a whole huge page resident. On by default in THP mode "always", enabled with
+enable_thp (or ENABLE_THP=1) in mode "madvise", disabled with disable_thp.
 
-With transparent huge pages a new mapping is advised before it is first accessed, and first accessed by a write. The
-span header was read first, which mapped the huge zero page, and the write after it split the zero page into small
-pages. Huge block mappings are rounded up to a whole number of huge pages when that adds at most an eighth of their
-size, and cached huge block mappings are decommitted from a huge page boundary. Only mappings of the default memory
-interface are advised, and huge block mappings are not rounded for a huge page size above 2MiB or below the configured
-page size, where the usable size of a huge block could be smaller than its request.
+Fixed new mappings getting the huge zero page on first read and then being split into small pages on
+the first write when using transparent huge pages. Huge block mappings are rounded up to whole huge
+pages when that adds at most an eighth of their size.
 
-A heap decommits the free pages it held committed through a whole decommit delay window without reusing them, beyond
-the pages it keeps for reuse, instead of decommitting down to those only once it held at least 16 free small pages (8
-medium-small, 4 medium-large and 2 large pages) through the whole delay. A heap reusing its free pages keeps them
-committed whatever their number, and a heap freeing pages faster than it reuses them, as the heap of a thread whose
-blocks other threads free, decommits them after one window. While more heaps free pages than there are processors the
-process can run on, the window is shortened by that ratio, to at least a quarter of the delay, as the free pages a
-heap keeps for reuse sit unused while its thread waits for a processor.
+Heaps decommit free pages they have not reused within the decommit delay instead of waiting for a
+minimum page count, returning memory sooner from threads whose blocks are freed by other threads.
+The delay is shortened when more heaps are freeing pages than there are CPUs.
 
-A huge block mapping reserves the address range up to the next multiple of the span size, which the span alignment
-leaves unusable for other spans and huge blocks, and commits only the block. A cached mapping is reused for any request
-up to the reserved range, and realloc grows a block in place up to it instead of moving it. The range is not reserved
-with strict overcommit accounting (overcommit_memory 2) or an address space limit (RLIMIT_AS), without decommit, with
-huge pages or a custom memory interface, on 32-bit platforms, and with transparent huge pages for a block not ending on
-a huge page boundary, where the fault of its last partial huge page would fill the whole huge page.
+Huge block mappings reserve address space up to the next span size multiple, which span alignment
+leaves unused anyway, and commit only the block. Cached mappings can serve more request sizes and
+realloc can grow blocks in place. Not done with strict overcommit, RLIMIT_AS, huge pages, a custom
+memory interface or on 32-bit platforms.
 
-Over its budget the huge block cache trims the least recently freed mapping holding more than the excess by it instead
-of unmapping the whole mapping, which the next request reusing a mapping faulted in again. A cached mapping is reused
-for a request of at least two fifths of its committed size instead of a quarter, leaving the larger mappings for the
-larger requests instead of decommitting them for the smaller ones, and a request missing the cache while it holds
-mappings too large for it takes the bytes it commits out of the cache. Cached and live huge blocks are kept within the
-peak of the requested bytes plus a fifth of it as headroom, instead of a quarter. The cached mappings are kept in the
-order they were freed with their sizes in the slot, so a lookup reads no span headers under the lock, eviction is one
-pass, and no array of all slots is kept on the stack.
+When over budget the huge block cache trims a mapping instead of unmapping it. Cached mappings are
+only reused for requests of at least two fifths of their size, and the headroom kept above peak use
+is lowered from a quarter to a fifth.
 
-A page whose used blocks are all freed by other threads is queued to its heap, which retires it at its next
-allocation slow path, at rpmalloc_thread_collect or when the thread exits, instead of keeping the memory until it
-allocates from the page again.
+Pages emptied by frees from other threads are queued to the owning heap and retired at its next
+allocation slow path, rpmalloc_thread_collect or thread exit, instead of holding memory until
+reused.
 
-A thread heap left in the queue of released heaps for a second hands its partly used pages to per size class orphan
-lists at the next heap release, and the pages that were full when it was released when another thread frees a block
-into them. A thread heap takes an orphan page of a size class before a free page or a new page. The pages
-of a released heap were only reused once another thread adopted the heap, so with fewer threads than released heaps,
-as when a thread pool retires idle workers, the free blocks in them were never reused. The free pages of the heap and
-the orphan pages whose blocks have all been freed, checked at most once a second, are decommitted and taken for pages
-of any size class of their page type.
+Heaps released for over a second hand their pages to per size class orphan lists that any thread can
+allocate from. Previously these pages were only reused when a thread adopted the heap, so their free
+blocks were stuck when a thread pool retired idle workers.
 
-A page of a span committing on demand commits its memory as its blocks are initialized, first a sixteenth of the page,
-of at least a small page and the commit granularity, then at least doubling the committed memory each time, and
-decommits only what it committed. A page was committed in full when a heap took it, so a large page holding a single
-block of a large size class charged the process commit for 16MiB, which made the commit charge of a heap far larger
-than the memory it touched. A page filled up makes at most five commit calls. A failed commit fails the allocation
-instead.
+Pages in spans committing on demand are committed in steps as blocks are used, at most five commit
+calls per page, instead of in full. A large page holding a single block no longer charges 16MiB of
+commit. A failed commit now fails the allocation.
 
-New rpmalloc_thread_collect_unused collects all of the memory the heap holds without using it: the free blocks the heap
-keeps for its next allocations of each size class, and the blocks other threads freed into its available pages,
-retiring the pages left without used blocks, including the last available page of each size class the heap keeps to
-spare initializing a page again. The free medium-large and large pages are all decommitted, beyond the free small and
-medium-small pages it keeps for reuse. rpmalloc_thread_collect is unchanged, the cheap collect of what other threads
-freed into the heap.
+Added rpmalloc_thread_collect_unused to release all memory the calling thread heap holds but does
+not use, including cached free blocks and empty pages. rpmalloc_thread_collect is unchanged.
 
-rpmalloc_thread_idle_begin and rpmalloc_thread_idle_end leave the heap of a thread idle while the thread waits for work,
-and rpmalloc_reap_idle_heaps collects the memory the idle heaps hold without using it from any thread, as
-rpmalloc_thread_collect_unused does for the calling thread. A heap collects the blocks other threads free into its
-pages and decommits its free pages as its thread allocates, so the heap of a thread waiting for work, as the worker
-threads of a pool are most of the time, kept that memory until the thread had work again. The thread gets back the heap
-it left idle, at rpmalloc_thread_idle_end or its first allocation before that, with one atomic operation unless a reap
-of the heap is running, and a heap is only reaped once it has been idle for the time given and used since its last reap.
+Added rpmalloc_thread_idle_begin and rpmalloc_thread_idle_end to mark a thread heap as idle while
+the thread waits for work, and rpmalloc_reap_idle_heaps to release unused memory of idle heaps from
+any thread. Lets thread pools get memory back from waiting workers.
 
-Zeroed allocations take a page recommitted after a decommit as zero filled only where the system decommit zero fills
-pages (Windows, Linux and Android) and the default memory interface is in use. On the BSDs, and with a custom memory
-interface whose decommit keeps the page content, rpcalloc and rpzalloc could return blocks holding old data.
-rpmalloc_heap_free with a null pointer no longer crashes, and an aligned reallocation of a null pointer allocates a
-block for alignments above 16 bytes and a size of zero as for smaller alignments.
+Fixed rpcalloc and rpzalloc returning old data on the BSDs and with a custom memory interface whose
+decommit keeps page contents. Fixed a crash in rpmalloc_heap_free with a null pointer. Aligned
+realloc of a null pointer with size zero and alignment above 16 now allocates a block.
 
-Unloading a DLL or shared object that has rpmalloc compiled in no longer leaves the thread exit
-destructor (a fiber local storage slot on Windows, a pthread key elsewhere) registered in unmapped
-code, which crashed the next exit of a thread that had allocated through the module, and on Windows
-the process exit. The destructor is released when the module is unloaded, by a TLS callback in
-Windows static builds (MSVC and MinGW), DllMain in the Windows dynamic library build and a module
-destructor on other platforms, and is not registered again by allocations made during the rest of
-the unload. Memory mapped by the module is only unmapped if rpmalloc_finalize is called with
-unmap_on_finalize enabled before the unload. The fiber local storage callback now uses the NTAPI
-calling convention, as required on 32-bit Windows.
+Fixed a crash at thread exit, and on Windows at process exit, after unloading a DLL or shared object
+with rpmalloc compiled in. The thread exit destructor is now released on unload. Memory mapped by
+the module is only unmapped if rpmalloc_finalize is called with unmap_on_finalize before the unload.
+The fiber local storage callback uses NTAPI as required on 32-bit Windows.
 
-rpmalloc_finalize does nothing if the allocator is not initialized, instead of freeing a thread
-destructor slot or key it does not hold. The DllMain of the Windows dynamic library build no longer
-finalizes the allocator when the process is terminating.
+rpmalloc_finalize does nothing if the allocator is not initialized, and the Windows DLL build no
+longer finalizes in DllMain at process termination.
 
-A shared object with rpmalloc compiled in can be loaded with dlopen on Linux with musl libc, which
-rejects initial-exec thread local storage in a library loaded at runtime. Shared objects on Linux
-with a C library other than glibc use the local-dynamic TLS model, executables and glibc keep
-initial-exec, and the model can be overridden by defining TLS_MODEL.
+Shared objects with rpmalloc compiled in can be loaded with dlopen on musl. Shared objects on Linux
+without glibc use the local-dynamic TLS model, override with TLS_MODEL.
 
-Blocks other threads free into full pages are collected for every page type whenever a thread needs
-a new page, and by rpmalloc_thread_collect, instead of only when the thread needs a new page of the
-same type. Pages of a type the thread no longer allocates are reclaimed and decommitted.
+Blocks freed by other threads into full pages are collected for every page type when a thread needs
+a new page, not just the type it needs, so pages of types a thread no longer uses are reclaimed.
 
-calloc, its aligned and heap variants and reallocarray now always check the size multiplication for
-overflow and fail with ENOMEM, instead of only when argument validation is enabled.
+calloc, reallocarray and their variants always check for size overflow and fail with ENOMEM, not
+only with argument validation enabled.
 
-calloc, zalloc and their aligned and heap variants zero only the requested size instead of the whole
-block, which can be up to a size class larger. The bytes beyond the request up to the usable size of
-the block are no longer zeroed: the C standard only defines the requested size, and the bytes realloc
-adds beyond the old size are indeterminate.
+calloc, zalloc and their variants zero only the requested size instead of the whole block.
 
-Free pages are decommitted after a delay (PAGE_DECOMMIT_DELAY_MS, 250 ms by default) instead of as
-soon as a fixed page count is exceeded, avoiding decommit and page fault cycles in workloads that
-allocate and free in phases. There is no background thread, the owning thread checks the delay when
-it frees a page, and rpmalloc_thread_collect now decommits the excess immediately.
+Free pages are decommitted after a delay (PAGE_DECOMMIT_DELAY_MS, 250 ms by default) instead of past
+a fixed page count, avoiding decommit and page fault cycles in workloads that allocate in phases. No
+background thread is used. rpmalloc_thread_collect decommits the excess immediately.
 
-A released heap retires the empty medium-large and large pages kept for their size class and
-decommits its free pages of those types to below the overflow threshold. The trim is done on release
-when other heaps are already queued for reuse, and otherwise by the thread that adopts the heap.
-Small and medium-small pages are left to the decommit delay.
+Released heaps retire their empty medium-large and large pages and decommit their free pages of
+those types.
 
-The last available page of a size class is kept when its final block is freed, so alternating
-allocation and free of a single block no longer reinitializes the page on every pair.
+The last available page of a size class is kept when emptied, so alternating malloc and free of a
+single block no longer reinitializes the page.
 
-calloc of huge blocks no longer clears fresh mappings that the OS has already zero filled.
+calloc of huge blocks no longer clears fresh mappings the OS already zero filled.
 
 Growing a huge block with realloc on Linux moves the mapping with mremap instead of copying it.
 
-Aligned allocations with an alignment of up to 128 bytes use a naturally aligned size class instead
-of over-allocating and realigning the block.
+Aligned allocations with alignment up to 128 bytes use a naturally aligned size class instead of
+over-allocating.
 
-Block ownership on free is checked by comparing heap pointers, and the heap fields accessed by other
-threads are kept on their own cache line, reducing contention between owning and freeing threads.
+Block ownership on free is checked by comparing heap pointers, and heap fields used by other threads
+are on their own cache line, reducing contention between owning and freeing threads.
 
-Cross-thread frees store byte offsets instead of block indices in the deferred free list and keep
-the CAS retry loops out of line, and deferred free lists are claimed with a single atomic exchange.
+Cross-thread frees store byte offsets instead of block indices, keep the CAS retry loops out of line
+and claim deferred free lists with a single atomic exchange.
 
-The size class computation no longer emits a redundant subtraction after the bit scan with GCC.
+Removed a redundant subtraction after the bit scan in the size class computation with GCC.
 
-GCC builds now apply the malloc and alloc_size attributes to the allocation API, and the malloc
-attribute is no longer applied to the realloc style functions.
+GCC builds apply the malloc and alloc_size attributes to the allocation API, and no longer apply
+malloc to the realloc style functions.
 
-A custom memory_map function must now store the size of the mapped region in mapped_size, covering
-at least the alignment offset plus the requested size. The whole region must be usable, huge block
-mappings are reused and grown in place within it. Builds with asserts enabled check the reported size.
+A custom memory_map function must now store the size of the mapped region in mapped_size, at least
+the alignment offset plus the requested size, and the whole region must be usable. Builds with
+asserts enabled check it.
 
-Fixed a leak on macOS of the heap of every thread exiting without calling rpmalloc_thread_finalize,
-along with the memory it held. Thread local storage is usually freed before the thread exit destructor
-runs, so the destructor now releases the heap it is passed instead of the thread heap.
+Fixed a leak on macOS of the heap of every thread exiting without calling rpmalloc_thread_finalize.
 
 
 2.0.1
